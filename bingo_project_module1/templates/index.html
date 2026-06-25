@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>台彩賓果｜專案模組1</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <p class="tag">Bingo Bingo Analysis</p>
+        <h1>台彩賓果｜專案模組1</h1>
+        <p class="sub">自動抓期數、重號、補號、斜線、雙生號、大小單雙、超級獎號候選。</p>
+      </div>
+      <button id="updateBtn">立即更新</button>
+    </section>
+
+    {% if analysis.error %}
+      <div class="card warn">{{ analysis.error }}，請按「立即更新」。</div>
+    {% else %}
+      <section class="grid">
+        <div class="card wide">
+          <h2>最新期別</h2>
+          <div class="issue">{{ analysis.latest_issue }} <span>{{ analysis.latest_time }}</span></div>
+          <div class="balls">
+            {% for n in analysis.last_numbers %}<span>{{ n }}</span>{% endfor %}
+          </div>
+        </div>
+        <div class="card">
+          <h2>三星</h2>
+          <div class="pick">{{ analysis.three_star|join('　') }}</div>
+        </div>
+        <div class="card">
+          <h2>五星</h2>
+          <div class="pick">{{ analysis.five_star|join('　') }}</div>
+        </div>
+        <div class="card">
+          <h2>超級獎號候選</h2>
+          <div class="pick">{{ analysis.super_candidates|join('　') }}</div>
+        </div>
+        <div class="card">
+          <h2>大小 / 單雙</h2>
+          <div class="pick small">{{ analysis.big_small_bias }}｜{{ analysis.odd_even_bias }}</div>
+        </div>
+      </section>
+    {% endif %}
+
+    <section class="card note">
+      <h2>狀態</h2>
+      <p>最後更新：<span id="lastUpdate">{{ state.last_update or '尚未更新' }}</span></p>
+      <p>新增期數：<span id="lastAdded">{{ state.last_added }}</span></p>
+      <p class="err" id="err">{{ state.last_error or '' }}</p>
+      <p class="muted">提醒：賓果賓果是隨機開獎，分析只當參考，投注請控制本金。</p>
+    </section>
+  </main>
+<script>
+async function updateNow(){
+  const btn = document.getElementById('updateBtn');
+  btn.disabled = true; btn.textContent = '更新中...';
+  try{
+    const r = await fetch('/api/update');
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || '更新失敗');
+    location.reload();
+  }catch(e){
+    document.getElementById('err').textContent = e.message;
+  }finally{
+    btn.disabled = false; btn.textContent = '立即更新';
+  }
+}
+document.getElementById('updateBtn').addEventListener('click', updateNow);
+setInterval(async ()=>{
+  const r = await fetch('/api/analysis');
+  if(r.ok){
+    const data = await r.json();
+    document.getElementById('lastUpdate').textContent = data.state.last_update || '尚未更新';
+    document.getElementById('lastAdded').textContent = data.state.last_added || 0;
+  }
+}, 30000);
+</script>
+</body>
+</html>
