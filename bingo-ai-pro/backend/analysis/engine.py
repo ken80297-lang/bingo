@@ -5,6 +5,7 @@ from analysis.consecutive import analyze as consecutive_analyze
 from analysis.repeat import analyze as repeat_analyze
 from analysis.missing import analyze as missing_analyze
 from analysis.brother import analyze as brother_analyze
+from analysis.diagonal import analyze as diagonal_analyze
 
 
 def analyze_all(limit=50):
@@ -24,5 +25,6 @@ def analyze_all(limit=50):
         "consecutive": consecutive_analyze(draws),
         "repeat": repeat_analyze(draws),
         "missing": missing_analyze(draws),
-        "brother": brother_analyze(draws)
+        "brother": brother_analyze(draws),
+        "diagonal": diagonal_analyze(draws),
     }
