@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="32" fill="#0f766e" />
+  <path d="M32 42c0-5.523 4.477-10 10-10h44c5.523 0 10 4.477 10 10v44c0 5.523-4.477 10-10 10H42c-5.523 0-10-4.477-10-10V42z" fill="#0f766e" opacity="0.15" />
+  <path d="M42 46h44v36H42z" fill="#ffffff" opacity="0.14" />
+  <path d="M44 48h40v32H44z" fill="#fff" opacity="0.85" />
+  <text x="64" y="88" text-anchor="middle" fill="#0f766e" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700">B</text>
+</svg>

@@ -1,0 +1,16 @@
+{
+  "name": "Bingo AI Pro",
+  "short_name": "BingoPro",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#0f766e",
+  "description": "Bingo AI Pro - 最新期號與分析推薦",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
