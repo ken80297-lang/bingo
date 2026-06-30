@@ -15,6 +15,7 @@ from api.analysis import router as analysis_router
 from api.draws import router as draws_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
+from database import get_connection
 from db import (
     fetch_latest_draws,
     get_analysis_by_issue,
@@ -28,13 +29,12 @@ from db import (
     save_recommendation_result,
     save_statistics,
 )
-from database import get_connection
+
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 
 app = FastAPI(title="Bingo AI Pro API")
 
-app = FastAPI(title="Bingo AI Pro API")
 
 try:
     conn = get_connection()
@@ -43,6 +43,7 @@ try:
 except Exception as e:
     print("❌ Supabase 連線失敗")
     print(e)
+
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
