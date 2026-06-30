@@ -1,4 +1,5 @@
-from db import get_history_draws
+from database.cloud_draws import get_cloud_history_draws
+
 from analysis.hot_cold import analyze as hot_cold_analyze
 from analysis.basic import analyze as basic_analyze
 from analysis.consecutive import analyze as consecutive_analyze
@@ -9,7 +10,7 @@ from analysis.diagonal import analyze as diagonal_analyze
 
 
 def analyze_all(limit=50):
-    draws = get_history_draws(limit)
+    draws = get_cloud_history_draws(limit)
 
     if not draws:
         return {

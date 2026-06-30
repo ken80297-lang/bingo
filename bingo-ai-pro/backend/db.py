@@ -11,6 +11,7 @@ from typing import Iterable
 
 import requests
 from bs4 import BeautifulSoup
+from database.cloud_draws import insert_cloud_draw
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "data" / "bingo.db"
@@ -89,6 +90,9 @@ def save_draws(draws: Iterable[Draw]) -> int:
         )
         for draw in draws
     ]
+
+    added = 0
+
     with _connect() as con:
         before = con.total_changes
         con.executemany(
@@ -98,7 +102,21 @@ def save_draws(draws: Iterable[Draw]) -> int:
             """,
             rows,
         )
-        return con.total_changes - before
+        added = con.total_changes - before
+
+    for draw in draws:
+        try:
+            insert_cloud_draw(
+                issue=draw.issue,
+                time_text=draw.time_text,
+                numbers=draw.numbers,
+                super_number=draw.super_number,
+                source="auto",
+            )
+        except Exception as e:
+            print(f"Supabase 寫入失敗 {draw.issue}: {e}")
+
+    return added
 
 
 def save_analysis_result(issue: str, data: dict) -> None:

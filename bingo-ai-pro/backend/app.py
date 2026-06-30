@@ -28,11 +28,21 @@ from db import (
     save_recommendation_result,
     save_statistics,
 )
-
+from database import get_connection
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 
 app = FastAPI(title="Bingo AI Pro API")
+
+app = FastAPI(title="Bingo AI Pro API")
+
+try:
+    conn = get_connection()
+    print("✅ Supabase 連線成功")
+    conn.close()
+except Exception as e:
+    print("❌ Supabase 連線失敗")
+    print(e)
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
