@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -35,7 +35,6 @@ DIST_DIR = ROOT.parent / "frontend" / "dist"
 
 app = FastAPI(title="Bingo AI Pro API")
 
-
 try:
     conn = get_connection()
     print("✅ Supabase 連線成功")
@@ -43,7 +42,6 @@ try:
 except Exception as e:
     print("❌ Supabase 連線失敗")
     print(e)
-
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
@@ -115,10 +113,13 @@ def refresh_data() -> dict[str, object]:
 def startup_event() -> None:
     init_db()
 
-    try:
-        refresh_data()
-    except Exception as exc:
-        STATE["last_error"] = str(exc)
+    scheduler.add_job(
+        refresh_data,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=10),
+        id="first_refresh",
+        replace_existing=True,
+    )
 
     scheduler.add_job(
         refresh_data,
@@ -127,6 +128,7 @@ def startup_event() -> None:
         id="refresh_job",
         replace_existing=True,
     )
+
     scheduler.start()
 
 
