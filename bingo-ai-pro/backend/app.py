@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.analysis import router as analysis_router
 from api.draws import router as draws_router
+from api.laowanjia import router as laowanjia_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from database import get_connection
@@ -45,6 +46,7 @@ except Exception as e:
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
+app.include_router(laowanjia_router)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
