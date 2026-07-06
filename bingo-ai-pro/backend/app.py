@@ -16,6 +16,7 @@ from api.backtest import router as backtest_router
 from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
+from api.system_status import router as system_status_router
 from api.today import router as today_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
@@ -51,6 +52,7 @@ app.include_router(draws_router)
 app.include_router(analysis_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_v2_router)
+app.include_router(system_status_router)
 app.include_router(today_router)
 app.include_router(backtest_router)
 
@@ -69,6 +71,7 @@ STATE: dict[str, str | int | None] = {
 }
 
 scheduler = BackgroundScheduler()
+app.state.scheduler = scheduler
 
 
 def summary_statistics(draws: list[dict]) -> dict:
