@@ -67,3 +67,60 @@ SQLite 檔案會建立於 `backend/data/bingo.db`。
 - 分析模組位於 `backend/analysis`
 - 資料存取與歷史查詢位於 `backend/db.py`
 - 排程每 5 分鐘自動更新
+
+## Cloud Deployment
+
+### Render
+
+1. Create a new Render Web Service from this repository.
+2. Use Python as the runtime.
+3. Set the build command:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+4. Set the start command:
+
+```bash
+uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+```
+
+5. Add the required environment variables in Render.
+
+### Supabase Environment Variables
+
+```env
+DATABASE_URL=
+SUPABASE_URL=
+SUPABASE_KEY=
+PROVIDER=kuaishou
+```
+
+`DATABASE_URL` should be the Supabase Postgres connection string. The collector storage layer writes to Supabase first and falls back to local SQLite if the cloud database is unavailable.
+
+### API Checks
+
+After deployment, verify these endpoints:
+
+- `GET /api/health`
+- `GET /api/system/status`
+- `GET /api/collector/status`
+- `GET /api/kuaishou/latest`
+- `GET /api/kuaishou/history?limit=50`
+- `GET /api/draws/latest`
+- `GET /api/draws/history?limit=50`
+- `GET /api/latest`
+- `GET /api/history`
+- `GET /api/recommend`
+
+### VPS
+
+Install dependencies and run the same start command:
+
+```bash
+pip install -r backend/requirements.txt
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+For production VPS usage, run the command under a process manager such as systemd, Supervisor, or pm2.

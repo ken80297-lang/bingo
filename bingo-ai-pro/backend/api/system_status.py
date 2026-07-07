@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 
+from database.collector_store import get_collector_status
 from database.cloud_draws import get_cloud_history_draws
 from db import get_latest_draw, get_statistics
 
@@ -62,4 +63,5 @@ def api_system_status(request: Request):
             "sqlite": _sqlite_status(),
             "cloud": _cloud_status(),
         },
+        "collector": get_collector_status(),
     }

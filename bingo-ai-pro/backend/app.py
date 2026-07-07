@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
@@ -13,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.analysis import router as analysis_router
 from api.backtest import router as backtest_router
+from api.collector import router as collector_router
 from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
@@ -20,7 +26,9 @@ from api.system_status import router as system_status_router
 from api.today import router as today_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
+from collectors import collect_kuaishou_snapshot, collect_pilio_today
 from database import get_connection
+from database.collector_store import init_collector_tables
 from db import (
     fetch_latest_draws,
     get_analysis_by_issue,
@@ -35,7 +43,6 @@ from db import (
     save_statistics,
 )
 
-ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 
 app = FastAPI(title="Bingo AI Pro API")
@@ -50,6 +57,7 @@ except Exception as e:
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
+app.include_router(collector_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_v2_router)
 app.include_router(system_status_router)
@@ -123,6 +131,32 @@ def refresh_data() -> dict[str, object]:
 @app.on_event("startup")
 def startup_event() -> None:
     init_db()
+
+    try:
+        init_collector_tables()
+        scheduler.add_job(
+            collect_pilio_today,
+            "date",
+            run_date=datetime.utcnow() + timedelta(seconds=3),
+            id="collector_pilio_startup",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            collect_kuaishou_snapshot,
+            "interval",
+            minutes=5,
+            id="collector_kuaishou_snapshot",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            collect_pilio_today,
+            "interval",
+            hours=1,
+            id="collector_pilio_today",
+            replace_existing=True,
+        )
+    except Exception as exc:
+        print(f"Collector scheduler setup failed: {exc}")
 
     scheduler.add_job(
         refresh_data,
