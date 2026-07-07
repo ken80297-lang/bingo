@@ -172,6 +172,10 @@ def startup_event() -> None:
             id="data_quality_daily",
             replace_existing=True,
         )
+        try:
+            run_kuaishou_data_quality_check()
+        except Exception as exc:
+            print(f"Data quality startup check failed: {exc}")
     except Exception as exc:
         print(f"Collector scheduler setup failed: {exc}")
 
