@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.analysis import router as analysis_router
+from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
 from api.collector import router as collector_router
 from api.draws import router as draws_router
@@ -28,6 +29,7 @@ from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from collectors import collect_kuaishou_snapshot, collect_pilio_today
 from database import get_connection
+from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
 from db import (
     fetch_latest_draws,
@@ -57,6 +59,7 @@ except Exception as e:
 
 app.include_router(draws_router)
 app.include_router(analysis_router)
+app.include_router(analysis_history_router)
 app.include_router(collector_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_v2_router)
@@ -134,6 +137,7 @@ def startup_event() -> None:
 
     try:
         init_collector_tables()
+        init_analysis_tables()
         scheduler.add_job(
             collect_pilio_today,
             "date",
