@@ -20,6 +20,7 @@ from api.analysis import router as analysis_router
 from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
 from api.collector import router as collector_router
+from api.data_quality import router as data_quality_router
 from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
@@ -31,6 +32,7 @@ from collectors import collect_kuaishou_snapshot, collect_pilio_today
 from database import get_connection
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
+from database.data_quality_store import init_data_quality_tables
 from db import (
     fetch_latest_draws,
     get_analysis_by_issue,
@@ -44,6 +46,7 @@ from db import (
     save_recommendation_result,
     save_statistics,
 )
+from services.data_quality import run_kuaishou_data_quality_check
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 
@@ -61,6 +64,7 @@ app.include_router(draws_router)
 app.include_router(analysis_router)
 app.include_router(analysis_history_router)
 app.include_router(collector_router)
+app.include_router(data_quality_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_v2_router)
 app.include_router(system_status_router)
@@ -138,6 +142,7 @@ def startup_event() -> None:
     try:
         init_collector_tables()
         init_analysis_tables()
+        init_data_quality_tables()
         scheduler.add_job(
             collect_pilio_today,
             "date",
@@ -157,6 +162,14 @@ def startup_event() -> None:
             "interval",
             hours=1,
             id="collector_pilio_today",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_kuaishou_data_quality_check,
+            "cron",
+            hour=3,
+            minute=0,
+            id="data_quality_daily",
             replace_existing=True,
         )
     except Exception as exc:

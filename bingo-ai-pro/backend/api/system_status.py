@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 
 from database.collector_store import get_collector_status
 from database.cloud_draws import get_cloud_history_draws
+from database.data_quality_store import get_data_quality_status
 from db import get_latest_draw, get_statistics
 
 router = APIRouter(
@@ -64,4 +65,5 @@ def api_system_status(request: Request):
             "cloud": _cloud_status(),
         },
         "collector": get_collector_status(),
+        "data_quality": get_data_quality_status(),
     }
