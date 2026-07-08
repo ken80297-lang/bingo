@@ -292,6 +292,20 @@ def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: d
     }
 
 
+def _build_sync_status(simulation_issue: str | None, recommendation_issue: str | None, super_issue: str | None) -> dict:
+    values = [
+        str(value)
+        for value in [simulation_issue, recommendation_issue, super_issue]
+        if value not in (None, "")
+    ]
+    return {
+        "status": "ok" if len(values) == 3 and len(set(values)) == 1 else "warning",
+        "simulation_issue": simulation_issue,
+        "recommendation_issue": recommendation_issue,
+        "super_issue": super_issue,
+    }
+
+
 def _confidence(total_score: float, max_total_score: float, rank_score: float, hit_rate: float, quality_status: str) -> float:
     value = (
         _normalize_score(total_score, max_total_score) * 0.40
@@ -366,6 +380,11 @@ def generate_recommendation_center() -> dict:
         strategy_hit_rate = _safe_float(best.get("hit_rate") or (adaptive or {}).get("hit_rate"))
         weight_source = "adaptive" if adaptive else "default"
         super_recommendation = _build_super_recommendation(simulation, adaptive, best, issue)
+        super_issue = super_recommendation.get("based_on_issue") or super_recommendation.get("source_issue")
+        if issue and str(super_issue) != str(issue):
+            super_recommendation = _build_super_recommendation(simulation, adaptive, best, issue)
+            super_issue = super_recommendation.get("based_on_issue") or super_recommendation.get("source_issue")
+        sync = _build_sync_status(simulation.get("source_issue"), issue, super_issue)
 
         results = []
         confidences = []
@@ -414,6 +433,7 @@ def generate_recommendation_center() -> dict:
             "confidence": run_confidence,
             "data_quality_status": quality_status,
             "super_recommendation": super_recommendation,
+            "sync": sync,
             "explanation": run_explanation,
         }
         saved = save_recommendation_run(run, results)

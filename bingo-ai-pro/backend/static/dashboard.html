@@ -274,6 +274,11 @@
       </article>
 
       <article class="card span-12">
+        <h2>同步狀態</h2>
+        <div id="syncStatus"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>&#21205;&#24907;&#36229;&#29518;&#25512;&#34214;</h2>
         <div id="superRecommendation"></div>
       </article>
@@ -390,6 +395,7 @@
       renderLaowanjiaFeatures(laowanjiaFeatures);
       renderStrategies(strategies);
       renderRecommendation(recommendation);
+      renderSyncStatus(recommendation, simulation);
       renderSuperRecommendation(recommendation ? recommendation.super_recommendation : null);
       renderSimulation(simulation);
     }
@@ -712,6 +718,37 @@
           <tbody>${rows}</tbody>
         </table>
       `;
+    }
+
+    function buildSyncStatus(recommendation, simulation) {
+      if (recommendation && recommendation.sync) {
+        return recommendation.sync;
+      }
+      const superRecommendation = recommendation ? recommendation.super_recommendation || {} : {};
+      const simulationIssue = (simulation && simulation.source_issue) || superRecommendation.source_issue;
+      const recommendationIssue = recommendation ? recommendation.issue : null;
+      const superIssue = superRecommendation.based_on_issue || superRecommendation.source_issue;
+      const values = [simulationIssue, recommendationIssue, superIssue]
+        .filter(value => value !== null && value !== undefined && value !== "")
+        .map(value => String(value));
+      return {
+        status: values.length === 3 && new Set(values).size === 1 ? "ok" : "warning",
+        simulation_issue: simulationIssue,
+        recommendation_issue: recommendationIssue,
+        super_issue: superIssue
+      };
+    }
+
+    function renderSyncStatus(recommendation, simulation) {
+      const sync = buildSyncStatus(recommendation, simulation);
+      const label = sync.status === "ok" ? "已同步" : "不同步";
+      const badge = sync.status === "ok" ? statusBadge("ok") : statusBadge("warning");
+      document.getElementById("syncStatus").innerHTML = [
+        metric("Simulation Issue", text(sync.simulation_issue)),
+        metric("Recommendation Issue", text(sync.recommendation_issue)),
+        metric("Super Recommendation Issue", text(sync.super_issue)),
+        metric("同步狀態", `${badge} ${label}`)
+      ].join("");
     }
 
     function renderSuperRecommendation(superRecommendation) {

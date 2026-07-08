@@ -275,7 +275,7 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
 
 
 def _row_to_run(row: Any) -> dict:
-    return {
+    run = {
         "id": row[0],
         "issue": row[1],
         "target_issue": row[2],
@@ -286,6 +286,26 @@ def _row_to_run(row: Any) -> dict:
         "explanation": row[7],
         "created_at": str(row[8]) if row[8] is not None else None,
         "updated_at": str(row[9]) if row[9] is not None else None,
+    }
+    run["sync"] = _recommendation_sync(run)
+    return run
+
+
+def _recommendation_sync(run: dict) -> dict:
+    super_recommendation = run.get("super_recommendation") or {}
+    simulation_issue = super_recommendation.get("source_issue")
+    recommendation_issue = run.get("issue")
+    super_issue = super_recommendation.get("based_on_issue") or super_recommendation.get("source_issue")
+    values = [
+        str(value)
+        for value in [simulation_issue, recommendation_issue, super_issue]
+        if value not in (None, "")
+    ]
+    return {
+        "status": "ok" if len(values) == 3 and len(set(values)) == 1 else "warning",
+        "simulation_issue": simulation_issue,
+        "recommendation_issue": recommendation_issue,
+        "super_issue": super_issue,
     }
 
 
