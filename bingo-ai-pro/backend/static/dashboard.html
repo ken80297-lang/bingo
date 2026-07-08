@@ -176,6 +176,16 @@
       font-weight: 700;
     }
 
+    .ball.super {
+      background: #f4c84a;
+      color: #071018;
+      box-shadow: 0 0 0 2px rgba(244, 200, 74, 0.18);
+    }
+
+    .draw-numbers {
+      margin-top: 8px;
+    }
+
     .empty, .error-box {
       color: var(--muted);
       background: var(--panel-2);
@@ -234,6 +244,11 @@
       </article>
 
       <article class="card span-6">
+        <h2>&#26368;&#26032;&#38283;&#29518;&#36039;&#35338;</h2>
+        <div id="latestDrawInfo"></div>
+      </article>
+
+      <article class="card span-6">
         <h2>資料品質</h2>
         <div id="dataQuality"></div>
       </article>
@@ -279,7 +294,8 @@
       adaptive: "/api/adaptive-weight/latest",
       quality: "/api/data-quality/latest",
       recommendation: "/api/recommendation-center/latest",
-      laowanjiaFeatures: "/api/laowanjia-features/latest"
+      laowanjiaFeatures: "/api/laowanjia-features/latest",
+      kuaishouLatest: "/api/kuaishou/latest"
     };
 
     const statusText = {
@@ -361,12 +377,14 @@
       const simulation = (data.simulation && data.simulation.data) || dashboard.latest_simulation || {};
       const recommendation = (data.recommendation && data.recommendation.data) || {};
       const laowanjiaFeatures = (data.laowanjiaFeatures && data.laowanjiaFeatures.data) || {};
+      const latestDraw = (data.kuaishouLatest && data.kuaishouLatest.data) || data.kuaishouLatest || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
       document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
 
       renderSystem(system, collector);
+      renderLatestDrawInfo(latestDraw);
       renderQuality(quality);
       renderAdaptive(adaptive);
       renderLaowanjiaFeatures(laowanjiaFeatures);
@@ -385,6 +403,200 @@
         metric("收集器", statusBadge(kuaishou.status)),
         metric("最新期數", text(system.latest_issue)),
         metric("最後更新", text(system.last_update))
+      ].join("");
+    }
+
+    function latestParsedRow(snapshot) {
+      const parsed = snapshot && snapshot.parsed_json ? snapshot.parsed_json : {};
+      const apiData = parsed.api_get_data || {};
+      const rows = Array.isArray(apiData.data) ? apiData.data : [];
+      return rows[0] || {};
+    }
+
+    function normalizeDrawNumbers(value) {
+      if (Array.isArray(value)) return value;
+      if (value && typeof value === "object") {
+        return normalizeDrawNumbers(
+          value.numbers ||
+          value.draw_numbers ||
+          value.result ||
+          value["\u4e00\u822c\u734e\u865f"]
+        );
+      }
+      if (typeof value === "string") {
+        return value.split(/[,\s]+/).filter(Boolean);
+      }
+      return [];
+    }
+
+    function cleanDrawNumbers(value) {
+      const seen = new Set();
+      return normalizeDrawNumbers(value)
+        .map((n) => Number(n))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 80)
+        .filter((n) => {
+          if (seen.has(n)) return false;
+          seen.add(n);
+          return true;
+        })
+        .slice(0, 20);
+    }
+
+    function parseNumbersFromRawHtml(rawHtml) {
+      if (!rawHtml) return [];
+      const html = String(rawHtml);
+      const labeledMatch = html.match(/(?:\u4e00\u822c\u734e\u865f|\u4e00\u822c\u5956\u53f7|draw_numbers|numbers)[\s\S]{0,900}/i);
+      const source = labeledMatch ? labeledMatch[0] : html;
+      const matches = [...source.matchAll(/(?:^|[^\d])([1-9]|[1-7]\d|80)(?!\d)/g)].map((match) => match[1]);
+      return cleanDrawNumbers(matches);
+    }
+
+    function findNestedDrawNumbers(value, depth = 0) {
+      if (!value || depth > 5) return [];
+      const direct = cleanDrawNumbers(value);
+      if (direct.length >= 20) return direct;
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const nested = findNestedDrawNumbers(item, depth + 1);
+          if (nested.length >= 20) return nested;
+        }
+        return direct;
+      }
+
+      if (typeof value === "object") {
+        const priorityKeys = [
+          "numbers",
+          "draw_numbers",
+          "result",
+          "\u4e00\u822c\u734e\u865f",
+          "\u4e00\u822c\u5956\u53f7"
+        ];
+        for (const key of priorityKeys) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            const nested = findNestedDrawNumbers(value[key], depth + 1);
+            if (nested.length >= 20) return nested;
+          }
+        }
+        for (const key of Object.keys(value)) {
+          const nested = findNestedDrawNumbers(value[key], depth + 1);
+          if (nested.length >= 20) return nested;
+        }
+      }
+
+      return [];
+    }
+
+    function findNestedSuperNumber(value, depth = 0) {
+      if (!value || depth > 5 || typeof value !== "object") return "";
+      const keys = [
+        "super_number",
+        "super",
+        "\u8d85\u7d1a\u734e\u865f",
+        "\u8d85\u7d1a\u5956\u53f7"
+      ];
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          const n = Number(value[key]);
+          if (Number.isFinite(n) && n >= 1 && n <= 80) return n;
+        }
+      }
+
+      const children = Array.isArray(value) ? value : Object.values(value);
+      for (const child of children) {
+        const nested = findNestedSuperNumber(child, depth + 1);
+        if (nested) return nested;
+      }
+      return "";
+    }
+
+    function parseSuperNumberFromRawHtml(rawHtml) {
+      if (!rawHtml) return "";
+      const html = String(rawHtml);
+      const labeledMatch = html.match(/(?:\u8d85\u7d1a\u734e\u865f|\u8d85\u7d1a\u5956\u53f7|super_number|super)[\s\S]{0,160}?(?:^|[^\d])([1-9]|[1-7]\d|80)(?!\d)/i);
+      if (!labeledMatch) return "";
+      const n = Number(labeledMatch[1]);
+      return Number.isFinite(n) && n >= 1 && n <= 80 ? n : "";
+    }
+
+    function getLatestDrawNumbers(snapshot) {
+      const row = latestParsedRow(snapshot);
+      const candidates = [
+        snapshot ? snapshot.numbers : null,
+        snapshot ? snapshot.draw_numbers : null,
+        snapshot ? snapshot.result : null,
+        row["\u4e00\u822c\u734e\u865f"],
+        row.numbers,
+        row.draw_numbers
+      ];
+
+      let partial = [];
+      for (const candidate of candidates) {
+        const numbers = cleanDrawNumbers(candidate);
+        if (numbers.length >= 20) return numbers;
+        if (!partial.length && numbers.length) partial = numbers;
+      }
+
+      const nestedNumbers = findNestedDrawNumbers(snapshot ? snapshot.parsed_json : null);
+      if (nestedNumbers.length >= 20) return nestedNumbers;
+
+      const rawNumbers = parseNumbersFromRawHtml(snapshot ? snapshot.raw_html : "");
+      if (rawNumbers.length >= 20) return rawNumbers;
+      return partial.length ? partial : rawNumbers;
+    }
+
+    function getLatestSuperNumber(snapshot) {
+      const row = latestParsedRow(snapshot);
+      return (snapshot && (snapshot.super_number || snapshot.super)) ||
+        row["\u8d85\u7d1a\u734e\u865f"] ||
+        row["\u8d85\u7d1a\u5956\u53f7"] ||
+        row.super_number ||
+        row.super ||
+        findNestedSuperNumber(snapshot ? snapshot.parsed_json : null) ||
+        parseSuperNumberFromRawHtml(snapshot ? snapshot.raw_html : "");
+    }
+
+    function getLatestDrawTime(snapshot) {
+      const row = latestParsedRow(snapshot);
+      return snapshot && snapshot.draw_time
+        ? snapshot.draw_time
+        : row["\u958b\u734e\u6642\u9593"];
+    }
+
+    function getLatestIssue(snapshot) {
+      const row = latestParsedRow(snapshot);
+      return snapshot && snapshot.issue ? snapshot.issue : row["\u671f\u6578"];
+    }
+
+    function renderLatestDrawInfo(snapshot) {
+      const target = document.getElementById("latestDrawInfo");
+      const issue = getLatestIssue(snapshot);
+      const drawTime = getLatestDrawTime(snapshot);
+      const numbers = getLatestDrawNumbers(snapshot);
+      const superNumber = getLatestSuperNumber(snapshot);
+
+      if (!issue && !drawTime && !numbers.length && !superNumber) {
+        target.innerHTML = `<div class="empty">&#23578;&#28961;&#36039;&#26009;</div>`;
+        return;
+      }
+
+      const balls = numbers
+        .map((n) => `<span class="ball">${String(n).padStart(2, "0")}</span>`)
+        .join("");
+      const superBall = superNumber
+        ? `<span class="ball super">${String(superNumber).padStart(2, "0")}</span>`
+        : "&#23578;&#28961;&#36039;&#26009;";
+
+      target.innerHTML = [
+        metric("&#26399;&#25976;", text(issue)),
+        metric("&#38283;&#29518;&#26178;&#38291;", text(drawTime)),
+        `<div class="metric">
+          <span class="label">&#19968;&#33324;&#29518;&#34399;</span>
+          <span class="value">
+            <span class="numbers draw-numbers">${balls || "&#23578;&#28961;&#36039;&#26009;"}</span>
+          </span>
+        </div>`,
+        metric("&#36229;&#32026;&#29518;&#34399;", superBall)
       ].join("");
     }
 
