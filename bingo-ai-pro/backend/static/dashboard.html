@@ -267,6 +267,11 @@
       </article>
 
       <article class="card span-12">
+        <h2>AI &#20170;&#26085;&#25512;&#34214;</h2>
+        <div id="recommendationCenter"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>Latest Simulation</h2>
         <div id="latestSimulation"></div>
       </article>
@@ -280,7 +285,8 @@
       strategy: "/api/strategy-ranking/latest",
       simulation: "/api/simulation/latest",
       adaptive: "/api/adaptive-weight/latest",
-      quality: "/api/data-quality/latest"
+      quality: "/api/data-quality/latest",
+      recommendation: "/api/recommendation-center/latest"
     };
 
     const text = (value, fallback = "-") => {
@@ -337,6 +343,7 @@
       const adaptive = (data.adaptive && data.adaptive.data) || dashboard.adaptive_weight || {};
       const strategies = (data.strategy && data.strategy.data) || dashboard.strategy_ranking || [];
       const simulation = (data.simulation && data.simulation.data) || dashboard.latest_simulation || {};
+      const recommendation = (data.recommendation && data.recommendation.data) || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 讀取失敗：${errors.join("；")}` : "";
@@ -346,6 +353,7 @@
       renderQuality(quality);
       renderAdaptive(adaptive);
       renderStrategies(strategies);
+      renderRecommendation(recommendation);
       renderSimulation(simulation);
     }
 
@@ -407,6 +415,46 @@
               <th>average_hits</th>
               <th>hit_rate</th>
               <th>rank_score</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function renderRecommendation(recommendation) {
+      if (!recommendation || !recommendation.results || !recommendation.results.length) {
+        document.getElementById("recommendationCenter").innerHTML = `<div class="empty">No AI recommendation yet. Run POST /api/recommendation-center/generate.</div>`;
+        return;
+      }
+      const summary = [
+        metric("confidence", `${number(recommendation.confidence)}%`),
+        metric("best_strategy", text(recommendation.best_strategy)),
+        metric("target_issue", text(recommendation.target_issue)),
+        metric("data_quality", statusBadge(recommendation.data_quality_status))
+      ].join("");
+      const rows = recommendation.results.slice(0, 5).map((item, index) => {
+        const balls = (item.numbers || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
+        return `
+          <tr>
+            <td>${index + 1}</td>
+            <td><div class="numbers">${balls}</div></td>
+            <td>${number(item.total_score)}</td>
+            <td>${number(item.confidence)}%</td>
+            <td>${text(item.explanation)}</td>
+          </tr>
+        `;
+      }).join("");
+      document.getElementById("recommendationCenter").innerHTML = `
+        <div>${summary}</div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>numbers</th>
+              <th>total_score</th>
+              <th>confidence</th>
+              <th>explanation</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
