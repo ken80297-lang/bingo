@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import random
 from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
 from database.analysis_store import get_analysis_history, get_latest_analysis_history
-from database.collector_store import get_kuaishou_history, get_latest_draw_history, get_latest_kuaishou_snapshot
+from database.collector_store import (
+    get_kuaishou_history,
+    get_latest_draw_history,
+    get_latest_kuaishou_snapshot,
+)
 from database.data_quality_store import get_data_quality_status
 from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
@@ -26,10 +31,21 @@ SUPER_KEYS = [
     "super_number",
     "superNumber",
     "super",
-    "超級獎號",
-    "超級號",
-    "超級獎號號碼",
+    "\u8d85\u7d1a\u734e\u865f",
+    "\u8d85\u7d1a\u865f",
+    "\u8d85\u7d1a\u734e\u865f\u865f\u78bc",
 ]
+
+FEATURE_LABELS = {
+    "consecutive": "consecutive numbers",
+    "missing": "missing-number rebound",
+    "big_small_balance": "big/small balance",
+    "odd_even_balance": "odd/even balance",
+    "diagonal": "diagonal pattern",
+    "gap": "gap pattern",
+    "repeat": "repeat numbers",
+    "twin": "twin numbers",
+}
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -43,6 +59,13 @@ def _normalize_score(value: float, maximum: float) -> float:
     if maximum <= 0:
         return 0
     return max(0, min(1, value / maximum))
+
+
+def _issue_sort_key(issue: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(issue):020d}")
+    except Exception:
+        return (1, issue)
 
 
 def _latest_issue() -> str | None:
@@ -68,13 +91,6 @@ def _latest_issue() -> str | None:
     if numeric:
         return sorted(numeric, key=_issue_sort_key)[-1]
     return sorted(candidates)[-1]
-
-
-def _issue_sort_key(issue: str) -> tuple[int, str]:
-    try:
-        return (0, f"{int(issue):020d}")
-    except Exception:
-        return (1, issue)
 
 
 def _target_issue(issue: str | None) -> str | None:
@@ -164,49 +180,115 @@ def _simulation_trend_numbers(simulation: dict) -> set[int]:
     return result
 
 
-def _super_reason(number: int, hot: list[int], cold: list[int], trend: set[int]) -> str:
-    if number in hot and number in trend:
-        return "hot + recent trend"
-    if number in cold:
-        return "cold rebound"
-    if number in trend:
-        return "strategy balance"
-    return "balanced candidate"
+def _recent_missing_numbers(super_numbers: list[int], recent_window: int = 20) -> list[int]:
+    recent = set(super_numbers[:recent_window])
+    return [number for number in range(1, 81) if number not in recent]
 
 
-def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict) -> dict:
+def _gap_pattern_candidates(super_numbers: list[int], trend: set[int]) -> set[int]:
+    candidates = set()
+    if super_numbers:
+        latest = super_numbers[0]
+        for gap in [1, 2, 9, 10, 11]:
+            for value in [latest - gap, latest + gap]:
+                if 1 <= value <= 80:
+                    candidates.add(value)
+    for number in trend:
+        for gap in [1, 2, 9, 10, 11]:
+            for value in [number - gap, number + gap]:
+                if 1 <= value <= 80:
+                    candidates.add(value)
+    return candidates
+
+
+def _dynamic_super_reason(
+    number: int,
+    hot: list[int],
+    cold: list[int],
+    recent_missing: list[int],
+    gap_candidates: set[int],
+    explored: bool,
+) -> str:
+    parts = []
+    if number in hot:
+        parts.append("\u71b1\u9580\u8d8b\u52e2")
+    if number in cold or number in recent_missing:
+        parts.append("\u88dc\u865f\u6a5f\u6703")
+    if number in gap_candidates:
+        parts.append("\u5dee\u503c\u578b\u614b")
+    if explored:
+        parts.append("issue seed \u63a2\u7d22")
+    return " + ".join(parts) if parts else "\u5e73\u8861\u5019\u9078"
+
+
+def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict, issue: str | None) -> dict:
     super_numbers = _load_super_numbers(100)
     counter = Counter(super_numbers)
     hot = [number for number, _ in counter.most_common(5)]
     cold_pool = [number for number in range(1, 81) if number not in counter]
     cold = (cold_pool + [number for number, _ in counter.most_common()[-5:]])[:5]
+    recent_missing = _recent_missing_numbers(super_numbers)
     trend = _simulation_trend_numbers(simulation)
+    gap_candidates = _gap_pattern_candidates(super_numbers, trend)
     adaptive_hit_rate = _safe_float((adaptive or {}).get("hit_rate"))
     strategy_factor = _normalize_score(_safe_float(best.get("rank_score")), 300)
     max_count = max(counter.values()) if counter else 1
+    based_on_issue = issue or simulation.get("source_issue")
+    rng = random.Random(f"super:{based_on_issue or 'unknown'}")
 
     scored = []
     for number in range(1, 81):
-        heat = _normalize_score(counter.get(number, 0), max_count)
-        missing = 1 if number not in counter else 1 - heat
-        strategy_bonus = 0.6
-        if number in trend:
-            strategy_bonus += 0.25
-        strategy_bonus += min(0.15, adaptive_hit_rate * 0.15)
-        score = ((heat * 0.50) + (missing * 0.30) + (strategy_factor * strategy_bonus * 0.20)) * 100
+        hot_score = _normalize_score(counter.get(number, 0), max_count)
+        cold_rebound_score = 1 if number in cold_pool else 1 - hot_score
+        recent_missing_score = 1 if number in recent_missing else 0
+        gap_score = 1 if number in gap_candidates else 0
+        exploration_score = min(1, rng.random() + (adaptive_hit_rate * 0.05) + (strategy_factor * 0.05))
+        explored = exploration_score >= 0.92
+        score = (
+            hot_score * 0.35
+            + cold_rebound_score * 0.25
+            + recent_missing_score * 0.20
+            + gap_score * 0.10
+            + exploration_score * 0.10
+        ) * 100
         scored.append(
             {
                 "number": number,
                 "confidence": round(max(0, min(100, score)), 2),
-                "reason": _super_reason(number, hot, cold, trend),
+                "reason": _dynamic_super_reason(number, hot, cold, recent_missing, gap_candidates, explored),
             }
         )
 
     scored.sort(key=lambda item: item["confidence"], reverse=True)
+    recommended = []
+    source_checks = [
+        lambda item: item["number"] in hot,
+        lambda item: item["number"] in cold or item["number"] in recent_missing,
+        lambda item: item["number"] in gap_candidates,
+        lambda item: "issue seed" in item["reason"],
+    ]
+    for check in source_checks:
+        for item in scored:
+            if item["number"] not in [picked["number"] for picked in recommended] and check(item):
+                recommended.append(item)
+                break
+        if len(recommended) == 3:
+            break
+    for item in scored:
+        if len(recommended) == 3:
+            break
+        if item["number"] not in [picked["number"] for picked in recommended]:
+            recommended.append(item)
+    recommended.sort(key=lambda item: item["confidence"], reverse=True)
+
     return {
-        "recommended": scored[:3],
+        "based_on_issue": based_on_issue,
+        "source_issue": simulation.get("source_issue"),
+        "recommended": recommended[:3],
         "hot": hot,
         "cold": cold[:5],
+        "recent_missing": recent_missing[:5],
+        "gap_candidates": sorted(gap_candidates)[:10],
     }
 
 
@@ -218,18 +300,6 @@ def _confidence(total_score: float, max_total_score: float, rank_score: float, h
         + _quality_value(quality_status) * 0.10
     ) * 100
     return round(max(0, min(100, value)), 2)
-
-
-FEATURE_LABELS = {
-    "consecutive": "consecutive numbers",
-    "missing": "missing-number rebound",
-    "big_small_balance": "big/small balance",
-    "odd_even_balance": "odd/even balance",
-    "diagonal": "diagonal pattern",
-    "gap": "gap pattern",
-    "repeat": "repeat numbers",
-    "twin": "twin numbers",
-}
 
 
 def _laowanjia_text(scores: dict | None) -> str:
@@ -295,7 +365,7 @@ def generate_recommendation_center() -> dict:
         rank_score = _safe_float(best.get("rank_score"))
         strategy_hit_rate = _safe_float(best.get("hit_rate") or (adaptive or {}).get("hit_rate"))
         weight_source = "adaptive" if adaptive else "default"
-        super_recommendation = _build_super_recommendation(simulation, adaptive, best)
+        super_recommendation = _build_super_recommendation(simulation, adaptive, best, issue)
 
         results = []
         confidences = []

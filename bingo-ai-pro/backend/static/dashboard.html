@@ -259,7 +259,7 @@
       </article>
 
       <article class="card span-12">
-        <h2>超級獎號推薦</h2>
+        <h2>&#21205;&#24907;&#36229;&#29518;&#25512;&#34214;</h2>
         <div id="superRecommendation"></div>
       </article>
 
@@ -517,7 +517,12 @@
       `).join("");
       const hot = (superRecommendation.hot || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
       const cold = (superRecommendation.cold || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
+      const basedOnIssue = superRecommendation.based_on_issue || superRecommendation.source_issue;
       document.getElementById("superRecommendation").innerHTML = `
+        <div class="metric">
+          <span class="label">依據期數</span>
+          <span class="value">${text(basedOnIssue)}</span>
+        </div>
         <table>
           <thead>
             <tr>
