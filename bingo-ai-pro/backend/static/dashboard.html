@@ -524,7 +524,14 @@
           </tr>
         `;
       }).join("");
+      const summary = [
+        metric("Latest Simulation", text(simulation.source_issue)),
+        metric("Generated", text(simulation.generated_at || simulation.created_at)),
+        metric("Model", text(simulation.model_version)),
+        metric("sample_size", number(simulation.sample_size))
+      ].join("");
       document.getElementById("latestSimulation").innerHTML = `
+        <div>${summary}</div>
         <table>
           <thead>
             <tr>

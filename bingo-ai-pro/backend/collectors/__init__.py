@@ -7,8 +7,36 @@ from collectors.kuaishou_collector import fetch_kuaishou_snapshot
 from collectors.pilio_collector import fetch_pilio_history
 from database.analysis_store import save_analysis_history
 from database.collector_store import save_draw_history, save_kuaishou_snapshot
+from services.recommendation_center import generate_recommendation_center
+from services.simulation_model import ensure_simulation_for_issue
 
 logger = logging.getLogger(__name__)
+
+
+def _run_dynamic_ai_pipeline(issue: str | None, result: dict) -> None:
+    if not issue:
+        return
+    try:
+        simulation = ensure_simulation_for_issue(issue, window=100, groups=5, numbers_per_group=10)
+        result["simulation"] = {
+            "status": simulation.get("status"),
+            "skipped": simulation.get("skipped", False),
+            "source_issue": issue,
+            "run_id": (simulation.get("run") or {}).get("run_id") or (simulation.get("run") or {}).get("id"),
+        }
+    except Exception as exc:
+        logger.exception("dynamic simulation failed")
+        result["simulation"] = {"status": "error", "error": str(exc)}
+
+    try:
+        recommendation = generate_recommendation_center()
+        result["recommendation_center"] = {
+            "status": recommendation.get("status"),
+            "run_id": (recommendation.get("saved") or {}).get("run_id"),
+        }
+    except Exception as exc:
+        logger.exception("dynamic recommendation failed")
+        result["recommendation_center"] = {"status": "error", "error": str(exc)}
 
 
 def collect_kuaishou_snapshot() -> dict:
@@ -18,6 +46,7 @@ def collect_kuaishou_snapshot() -> dict:
         try:
             if result.get("status") == "ok":
                 result["analysis"] = save_analysis_history(snapshot)
+                _run_dynamic_ai_pipeline(snapshot.get("issue"), result)
         except Exception as exc:
             logger.exception("kuaishou analysis history save failed")
             result["analysis"] = {"status": "error", "error": str(exc)}
@@ -36,6 +65,7 @@ def collect_pilio_today() -> dict:
             try:
                 if result.get("status") == "ok":
                     result["analysis"] = save_analysis_history(draw)
+                    _run_dynamic_ai_pipeline(draw.get("issue"), result)
             except Exception as exc:
                 logger.exception("pilio analysis history save failed")
                 result["analysis"] = {"status": "error", "error": str(exc)}

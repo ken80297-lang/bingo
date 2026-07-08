@@ -4,13 +4,14 @@ import logging
 from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
-from database.analysis_store import get_analysis_history
-from database.collector_store import get_kuaishou_history
+from database.analysis_store import get_analysis_history, get_latest_analysis_history
+from database.collector_store import get_kuaishou_history, get_latest_draw_history, get_latest_kuaishou_snapshot
 from database.data_quality_store import get_data_quality_status
 from database.recommendation_center_store import save_recommendation_run
-from database.simulation_store import get_latest_simulation_run
+from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
 from database.strategy_ranking_store import get_latest_strategy_rankings
 from db import get_latest_draw
+from services.simulation_model import ensure_simulation_for_issue
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,35 @@ def _normalize_score(value: float, maximum: float) -> float:
 
 
 def _latest_issue() -> str | None:
+    candidates = []
+    for loader in [get_latest_analysis_history, get_latest_kuaishou_snapshot, get_latest_draw_history]:
+        try:
+            item = loader()
+            if item and item.get("issue") is not None:
+                candidates.append(str(item.get("issue")))
+        except Exception:
+            logger.exception("failed to load latest collector issue for recommendation center")
+
     try:
         latest = get_latest_draw()
-        return latest.get("issue") if latest else None
+        if latest and latest.get("issue") is not None:
+            candidates.append(str(latest.get("issue")))
     except Exception:
         logger.exception("failed to load latest issue for recommendation center")
+
+    if not candidates:
         return None
+    numeric = [issue for issue in candidates if _issue_sort_key(issue)[0] == 0]
+    if numeric:
+        return sorted(numeric, key=_issue_sort_key)[-1]
+    return sorted(candidates)[-1]
+
+
+def _issue_sort_key(issue: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(issue):020d}")
+    except Exception:
+        return (1, issue)
 
 
 def _target_issue(issue: str | None) -> str | None:
@@ -208,7 +232,14 @@ def _explanation(strategy: str, hit_rate: float, weight_source: str, quality_sta
 
 def generate_recommendation_center() -> dict:
     try:
-        simulation = get_latest_simulation_run()
+        issue = _latest_issue()
+        simulation = get_simulation_run_by_issue(issue) if issue else None
+        if issue and not simulation:
+            created = ensure_simulation_for_issue(issue, window=100, groups=5, numbers_per_group=10)
+            if created.get("status") == "ok":
+                simulation = get_simulation_run_by_issue(issue)
+        if not simulation:
+            simulation = get_latest_simulation_run()
         if not simulation or not simulation.get("results"):
             return {
                 "status": "error",
@@ -221,7 +252,7 @@ def generate_recommendation_center() -> dict:
         adaptive = get_active_adaptive_weights()
         quality = get_data_quality_status()
         quality_status = quality.get("status", "unknown")
-        issue = _latest_issue()
+        issue = simulation.get("source_issue") or issue
         target_issue = _target_issue(issue)
 
         candidates = simulation.get("results", [])[:5]

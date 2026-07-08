@@ -56,11 +56,39 @@ def init_simulation_tables() -> dict:
                         "window" integer,
                         groups integer,
                         numbers_per_group integer,
+                        source_issue text,
+                        generated_at timestamptz default now(),
+                        sample_size integer,
+                        model_version text,
                         features jsonb,
                         status text,
                         created_at timestamptz default now(),
                         updated_at timestamptz default now()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table simulation_runs
+                    add column if not exists source_issue text
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table simulation_runs
+                    add column if not exists generated_at timestamptz default now()
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table simulation_runs
+                    add column if not exists sample_size integer
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table simulation_runs
+                    add column if not exists model_version text
                     """
                 )
                 cur.execute(
@@ -91,6 +119,10 @@ def init_simulation_tables() -> dict:
                     "window" integer,
                     groups integer,
                     numbers_per_group integer,
+                    source_issue text,
+                    generated_at text,
+                    sample_size integer,
+                    model_version text,
                     features text,
                     status text,
                     created_at text default current_timestamp,
@@ -98,6 +130,10 @@ def init_simulation_tables() -> dict:
                 )
                 """
             )
+            _ensure_sqlite_column(conn, "source_issue", "text")
+            _ensure_sqlite_column(conn, "generated_at", "text")
+            _ensure_sqlite_column(conn, "sample_size", "integer")
+            _ensure_sqlite_column(conn, "model_version", "text")
             conn.execute(
                 """
                 create table if not exists simulation_results (
@@ -119,20 +155,36 @@ def init_simulation_tables() -> dict:
     return results
 
 
+def _ensure_sqlite_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    existing = {
+        row[1]
+        for row in conn.execute("pragma table_info(simulation_runs)").fetchall()
+    }
+    if column not in existing:
+        conn.execute(f"alter table simulation_runs add column {column} {column_type}")
+
+
 def _insert_run_cloud(payload: dict) -> int:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 insert into simulation_runs
-                ("window", groups, numbers_per_group, features, status, updated_at)
-                values (%s, %s, %s, %s::jsonb, %s, now())
+                (
+                    "window", groups, numbers_per_group, source_issue,
+                    generated_at, sample_size, model_version, features,
+                    status, updated_at
+                )
+                values (%s, %s, %s, %s, now(), %s, %s, %s::jsonb, %s, now())
                 returning id
                 """,
                 (
                     payload.get("window"),
                     payload.get("groups"),
                     payload.get("numbers_per_group"),
+                    payload.get("source_issue"),
+                    payload.get("sample_size"),
+                    payload.get("model_version"),
                     _json_dumps(payload.get("features", {})),
                     payload.get("status", "ok"),
                 ),
@@ -147,13 +199,21 @@ def _insert_run_sqlite(payload: dict) -> int:
         cursor = conn.execute(
             """
             insert into simulation_runs
-            ("window", groups, numbers_per_group, features, status, updated_at)
-            values (?, ?, ?, ?, ?, ?)
+            (
+                "window", groups, numbers_per_group, source_issue,
+                generated_at, sample_size, model_version, features,
+                status, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.get("window"),
                 payload.get("groups"),
                 payload.get("numbers_per_group"),
+                payload.get("source_issue"),
+                _now(),
+                payload.get("sample_size"),
+                payload.get("model_version"),
                 _json_dumps(payload.get("features", {})),
                 payload.get("status", "ok"),
                 _now(),
@@ -257,10 +317,14 @@ def _row_to_run(row: Any) -> dict:
         "window": row[1],
         "groups": row[2],
         "numbers_per_group": row[3],
-        "features": _json_loads(row[4]) or {},
-        "status": row[5],
-        "created_at": str(row[6]) if row[6] is not None else None,
-        "updated_at": str(row[7]) if row[7] is not None else None,
+        "source_issue": row[4],
+        "generated_at": str(row[5]) if row[5] is not None else None,
+        "sample_size": row[6],
+        "model_version": row[7],
+        "features": _json_loads(row[8]) or {},
+        "status": row[9],
+        "created_at": str(row[10]) if row[10] is not None else None,
+        "updated_at": str(row[11]) if row[11] is not None else None,
     }
 
 
@@ -299,9 +363,40 @@ def get_simulation_results(run_id: int) -> list[dict]:
 def get_latest_simulation_run() -> dict | None:
     rows = _query_with_fallback(
         """
-        select id, "window", groups, numbers_per_group, features, status, created_at, updated_at
+        select id, "window", groups, numbers_per_group, source_issue,
+               generated_at, sample_size, model_version, features,
+               status, created_at, updated_at
         from simulation_runs
-        order by created_at desc, id desc
+        order by generated_at desc, created_at desc, id desc
+        limit 1
+        """,
+    )
+    if not rows:
+        return None
+    run = _row_to_run(rows[0])
+    run["results"] = get_simulation_results(run["id"])
+    return run
+
+
+def get_simulation_run_by_issue(issue: str) -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select id, "window", groups, numbers_per_group, source_issue,
+               generated_at, sample_size, model_version, features,
+               status, created_at, updated_at
+        from simulation_runs
+        where source_issue = %s
+        order by generated_at desc, created_at desc, id desc
+        limit 1
+        """,
+        (str(issue),),
+        sqlite_sql="""
+        select id, "window", groups, numbers_per_group, source_issue,
+               generated_at, sample_size, model_version, features,
+               status, created_at, updated_at
+        from simulation_runs
+        where source_issue = ?
+        order by generated_at desc, created_at desc, id desc
         limit 1
         """,
     )
@@ -315,16 +410,20 @@ def get_latest_simulation_run() -> dict | None:
 def get_simulation_history(limit: int = 20) -> list[dict]:
     rows = _query_with_fallback(
         """
-        select id, "window", groups, numbers_per_group, features, status, created_at, updated_at
+        select id, "window", groups, numbers_per_group, source_issue,
+               generated_at, sample_size, model_version, features,
+               status, created_at, updated_at
         from simulation_runs
-        order by created_at desc, id desc
+        order by generated_at desc, created_at desc, id desc
         limit %s
         """,
         (limit,),
         sqlite_sql="""
-        select id, "window", groups, numbers_per_group, features, status, created_at, updated_at
+        select id, "window", groups, numbers_per_group, source_issue,
+               generated_at, sample_size, model_version, features,
+               status, created_at, updated_at
         from simulation_runs
-        order by created_at desc, id desc
+        order by generated_at desc, created_at desc, id desc
         limit ?
         """,
     )

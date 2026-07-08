@@ -7,9 +7,11 @@ from collections import Counter
 from database.analysis_store import get_analysis_history
 from database.adaptive_weight_store import get_active_adaptive_weights
 from database.collector_store import get_kuaishou_history
-from database.simulation_store import save_simulation_run
+from database.simulation_store import get_simulation_run_by_issue, save_simulation_run
 
 logger = logging.getLogger(__name__)
+MODEL_VERSION = "v1"
+EXPLORATION_RATE = 0.05
 
 DEFAULT_SCORE_WEIGHTS = {
     "laowanjia_weight": 0.30,
@@ -181,11 +183,37 @@ def _score_candidate(numbers: list[int], features: dict, rng: random.Random, wei
     }
 
 
-def _generate_candidates(features: dict, groups: int, numbers_per_group: int, weights: dict | None = None) -> list[dict]:
-    rng = random.Random()
+def _explore_candidate(numbers: list[int], pool: list[int], rng: random.Random) -> list[int]:
+    explored = list(numbers)
+    swap_count = rng.randint(1, 2)
+    for _ in range(swap_count):
+        if not explored:
+            break
+        remove_at = rng.randrange(len(explored))
+        available = [number for number in pool if number not in explored]
+        if not available:
+            break
+        explored[remove_at] = rng.choice(available)
+        explored = sorted(set(explored))
+        while len(explored) < len(numbers):
+            candidate = rng.choice(pool)
+            if candidate not in explored:
+                explored.append(candidate)
+        explored = sorted(explored[:len(numbers)])
+    return explored
+
+
+def _generate_candidates(
+    features: dict,
+    groups: int,
+    numbers_per_group: int,
+    weights: dict | None = None,
+    seed: str | None = None,
+) -> list[dict]:
+    rng = random.Random(str(seed)) if seed is not None else random.Random()
     weights = weights or {"source": "default", **DEFAULT_SCORE_WEIGHTS}
     pool = _candidate_pool(features)
-    attempts = max(groups * 12, 40)
+    attempts = max(groups * 20, 80)
     candidates = []
     seen = set()
 
@@ -212,17 +240,56 @@ def _generate_candidates(features: dict, groups: int, numbers_per_group: int, we
         )
 
     candidates.sort(key=lambda item: item["total_score"], reverse=True)
-    top = candidates[:groups]
+    top_pool = candidates[:20]
+    top = []
+    seen = set()
+    for item in top_pool:
+        numbers = item["numbers"]
+        if seed is not None and rng.random() < EXPLORATION_RATE:
+            numbers = _explore_candidate(numbers, pool, rng)
+            scores = _score_candidate(numbers, features, rng, weights)
+            item = {
+                "numbers": numbers,
+                "scores": {**scores, "exploration": True, "exploration_rate": EXPLORATION_RATE},
+                "total_score": scores["total_score"],
+            }
+        key = tuple(item["numbers"])
+        if key in seen:
+            continue
+        seen.add(key)
+        top.append(item)
+        if len(top) == groups:
+            break
+    if len(top) < groups:
+        top = candidates[:groups]
     for index, item in enumerate(top, start=1):
         item["rank"] = index
     return top
 
 
-def run_simulation(window: int = 100, groups: int = 5, numbers_per_group: int = 10) -> dict:
+def run_simulation(
+    window: int = 100,
+    groups: int = 5,
+    numbers_per_group: int = 10,
+    source_issue: str | None = None,
+    force: bool = False,
+) -> dict:
     try:
         window = max(1, min(int(window), 1000))
         groups = max(1, min(int(groups), 50))
         numbers_per_group = max(1, min(int(numbers_per_group), 20))
+        source_issue = str(source_issue) if source_issue is not None else None
+
+        if source_issue and not force:
+            existing = get_simulation_run_by_issue(source_issue)
+            if existing:
+                return {
+                    "status": "ok",
+                    "skipped": True,
+                    "message": "simulation already exists for source_issue",
+                    "run": existing,
+                    "results": existing.get("results", []),
+                }
 
         draws = _load_recent_draws(window)
         if not draws:
@@ -234,11 +301,15 @@ def run_simulation(window: int = 100, groups: int = 5, numbers_per_group: int = 
 
         features = _build_features(draws)
         weights = _load_score_weights()
-        results = _generate_candidates(features, groups, numbers_per_group, weights)
+        seed = source_issue or (draws[0].get("issue") if draws else None)
+        results = _generate_candidates(features, groups, numbers_per_group, weights, seed=seed)
         payload = {
             "window": window,
             "groups": groups,
             "numbers_per_group": numbers_per_group,
+            "source_issue": source_issue or seed,
+            "sample_size": len(draws),
+            "model_version": MODEL_VERSION,
             "features": {**features, "score_weights": weights},
             "status": "ok",
         }
@@ -256,4 +327,18 @@ def run_simulation(window: int = 100, groups: int = 5, numbers_per_group: int = 
         }
     except Exception as exc:
         logger.exception("simulation failed")
+        return {"status": "error", "message": str(exc), "results": []}
+
+
+def ensure_simulation_for_issue(issue: str, window: int = 100, groups: int = 5, numbers_per_group: int = 10) -> dict:
+    try:
+        return run_simulation(
+            window=window,
+            groups=groups,
+            numbers_per_group=numbers_per_group,
+            source_issue=issue,
+            force=False,
+        )
+    except Exception as exc:
+        logger.exception("ensure simulation for issue failed")
         return {"status": "error", "message": str(exc), "results": []}
