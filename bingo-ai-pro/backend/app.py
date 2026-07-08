@@ -13,6 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -57,6 +58,7 @@ from db import (
 from services.data_quality import run_kuaishou_data_quality_check
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
+STATIC_DIR = ROOT / "static"
 
 app = FastAPI(title="Bingo AI Pro API")
 
@@ -295,6 +297,11 @@ def api_update() -> JSONResponse:
 @app.get("/api/health")
 def api_health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/dashboard")
+def dashboard_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dashboard.html")
 
 
 if DIST_DIR.exists():

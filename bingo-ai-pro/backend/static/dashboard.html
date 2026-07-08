@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bingo AI Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #151b23;
+      --panel-2: #10161d;
+      --text: #eef4fb;
+      --muted: #9aa8b7;
+      --line: #26313d;
+      --ok: #31d07f;
+      --warning: #f4c84a;
+      --error: #ff6470;
+      --unknown: #8994a3;
+      --accent: #74b7ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, "Microsoft JhengHei", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 24px 0 40px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      min-width: 0;
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-6 {
+      grid-column: span 6;
+    }
+
+    .span-8 {
+      grid-column: span 8;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    .status-line,
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .status-line:first-of-type,
+    .metric:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .label {
+      color: var(--muted);
+    }
+
+    .value {
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      background: var(--unknown);
+      color: #071018;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .badge.ok {
+      background: var(--ok);
+    }
+
+    .badge.warning {
+      background: var(--warning);
+    }
+
+    .badge.error {
+      background: var(--error);
+    }
+
+    .badge.unknown {
+      background: var(--unknown);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 10px 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      border-top: 0;
+    }
+
+    .numbers {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .ball {
+      width: 30px;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: #223142;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .empty,
+    .error-box {
+      color: var(--muted);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .error-box {
+      color: var(--error);
+      margin-bottom: 14px;
+      display: none;
+    }
+
+    @media (max-width: 860px) {
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .meta {
+        text-align: left;
+      }
+
+      .span-4,
+      .span-6,
+      .span-8,
+      .span-12 {
+        grid-column: span 12;
+      }
+
+      table {
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        padding: 9px 6px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Bingo AI Dashboard</h1>
+      </div>
+      <div class="meta">
+        <div id="refreshState">載入中</div>
+        <div>每 30 秒自動刷新</div>
+      </div>
+    </header>
+
+    <div id="errorBox" class="error-box"></div>
+
+    <section class="grid">
+      <article class="card span-6">
+        <h2>系統狀態</h2>
+        <div id="systemStatus"></div>
+      </article>
+
+      <article class="card span-6">
+        <h2>Data Quality</h2>
+        <div id="dataQuality"></div>
+      </article>
+
+      <article class="card span-4">
+        <h2>Adaptive Weight</h2>
+        <div id="adaptiveWeight"></div>
+      </article>
+
+      <article class="card span-8">
+        <h2>Strategy Ranking</h2>
+        <div id="strategyRanking"></div>
+      </article>
+
+      <article class="card span-12">
+        <h2>Latest Simulation</h2>
+        <div id="latestSimulation"></div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const apis = {
+      dashboard: "/api/dashboard",
+      system: "/api/system/status",
+      strategy: "/api/strategy-ranking/latest",
+      simulation: "/api/simulation/latest",
+      adaptive: "/api/adaptive-weight/latest",
+      quality: "/api/data-quality/latest"
+    };
+
+    const text = (value, fallback = "-") => {
+      if (value === null || value === undefined || value === "") return fallback;
+      return String(value);
+    };
+
+    const number = (value) => {
+      if (value === null || value === undefined || value === "") return "-";
+      const n = Number(value);
+      return Number.isFinite(n) ? n.toFixed(4).replace(/\.?0+$/, "") : text(value);
+    };
+
+    const statusBadge = (status) => {
+      const value = text(status, "unknown").toLowerCase();
+      const type = ["ok", "warning", "error", "unknown"].includes(value) ? value : "unknown";
+      return `<span class="badge ${type}">${value}</span>`;
+    };
+
+    const metric = (label, value) => `
+      <div class="metric">
+        <span class="label">${label}</span>
+        <span class="value">${value}</span>
+      </div>
+    `;
+
+    async function loadJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
+      return response.json();
+    }
+
+    async function loadAll() {
+      const entries = await Promise.allSettled(
+        Object.entries(apis).map(async ([key, url]) => [key, await loadJson(url)])
+      );
+      const data = {};
+      const errors = [];
+      for (const entry of entries) {
+        if (entry.status === "fulfilled") {
+          data[entry.value[0]] = entry.value[1];
+        } else {
+          errors.push(entry.reason.message);
+        }
+      }
+      render(data, errors);
+    }
+
+    function render(data, errors) {
+      const dashboard = data.dashboard || {};
+      const system = data.system || dashboard.system || {};
+      const collector = system.collector || dashboard.collector || {};
+      const quality = (data.quality && data.quality.data) || dashboard.data_quality || {};
+      const adaptive = (data.adaptive && data.adaptive.data) || dashboard.adaptive_weight || {};
+      const strategies = (data.strategy && data.strategy.data) || dashboard.strategy_ranking || [];
+      const simulation = (data.simulation && data.simulation.data) || dashboard.latest_simulation || {};
+
+      document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
+      document.getElementById("errorBox").textContent = errors.length ? `API 讀取失敗：${errors.join("；")}` : "";
+      document.getElementById("refreshState").textContent = `最後更新：${new Date().toLocaleString()}`;
+
+      renderSystem(system, collector);
+      renderQuality(quality);
+      renderAdaptive(adaptive);
+      renderStrategies(strategies);
+      renderSimulation(simulation);
+    }
+
+    function renderSystem(system, collector) {
+      const kuaishou = collector.kuaishou || {};
+      const cloud = system.database ? system.database.cloud : undefined;
+      document.getElementById("systemStatus").innerHTML = [
+        metric("scheduler", statusBadge(system.scheduler)),
+        metric("cloud database", statusBadge(cloud || "unknown")),
+        metric("collector.kuaishou.status", statusBadge(kuaishou.status)),
+        metric("latest_issue", text(system.latest_issue)),
+        metric("last_update", text(system.last_update))
+      ].join("");
+    }
+
+    function renderQuality(quality) {
+      document.getElementById("dataQuality").innerHTML = [
+        metric("status", statusBadge(quality.status)),
+        metric("missing_count", number(quality.missing_count)),
+        metric("invalid_count", number(quality.invalid_count))
+      ].join("");
+    }
+
+    function renderAdaptive(adaptive) {
+      if (!adaptive) {
+        document.getElementById("adaptiveWeight").innerHTML = `<div class="empty">尚無 active weight</div>`;
+        return;
+      }
+      document.getElementById("adaptiveWeight").innerHTML = [
+        metric("laowanjia_weight", number(adaptive.laowanjia_weight)),
+        metric("hot_cold_weight", number(adaptive.hot_cold_weight)),
+        metric("balance_weight", number(adaptive.balance_weight)),
+        metric("tail_weight", number(adaptive.tail_weight)),
+        metric("random_weight", number(adaptive.random_weight)),
+        metric("hit_rate", number(adaptive.hit_rate))
+      ].join("");
+    }
+
+    function renderStrategies(strategies) {
+      if (!strategies || !strategies.length) {
+        document.getElementById("strategyRanking").innerHTML = `<div class="empty">尚無策略排行榜</div>`;
+        return;
+      }
+      const rows = strategies.map((item, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${text(item.strategy)}</td>
+          <td>${number(item.average_hits)}</td>
+          <td>${number(item.hit_rate)}</td>
+          <td>${number(item.rank_score)}</td>
+        </tr>
+      `).join("");
+      document.getElementById("strategyRanking").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>排名</th>
+              <th>strategy</th>
+              <th>average_hits</th>
+              <th>hit_rate</th>
+              <th>rank_score</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function renderSimulation(simulation) {
+      const results = (simulation && simulation.results) || [];
+      if (!results.length) {
+        document.getElementById("latestSimulation").innerHTML = `<div class="empty">尚無 simulation 結果</div>`;
+        return;
+      }
+      const rows = results.slice(0, 5).map((item, index) => {
+        const source = item.scores && item.scores.weights ? item.scores.weights.source : "default";
+        const balls = (item.numbers || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
+        return `
+          <tr>
+            <td>${index + 1}</td>
+            <td><div class="numbers">${balls}</div></td>
+            <td>${number(item.total_score)}</td>
+            <td>${text(source)}</td>
+          </tr>
+        `;
+      }).join("");
+      document.getElementById("latestSimulation").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>推薦號碼</th>
+              <th>total_score</th>
+              <th>source</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    loadAll();
+    setInterval(loadAll, 30000);
+  </script>
+</body>
+</html>
