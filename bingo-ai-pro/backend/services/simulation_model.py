@@ -7,6 +7,7 @@ from collections import Counter
 from database.analysis_store import get_analysis_history
 from database.adaptive_weight_store import get_active_adaptive_weights
 from database.collector_store import get_kuaishou_history
+from database.laowanjia_feature_store import get_latest_laowanjia_feature
 from database.simulation_store import get_simulation_run_by_issue, save_simulation_run
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,82 @@ def _load_score_weights() -> dict:
         return {"source": "default", **DEFAULT_SCORE_WEIGHTS}
 
 
-def _score_candidate(numbers: list[int], features: dict, rng: random.Random, weights: dict | None = None) -> dict:
+def _load_laowanjia_feature() -> dict | None:
+    try:
+        return get_latest_laowanjia_feature()
+    except Exception:
+        logger.exception("failed to load laowanjia feature for simulation")
+        return None
+
+
+def _score_laowanjia_feature_candidate(numbers: list[int], feature: dict | None) -> dict:
+    if not feature:
+        return {
+            "score": 0,
+            "matched_features": [],
+        }
+
+    feature_json = feature.get("feature_json") or {}
+    number_set = set(numbers)
+    matched = []
+    score = 0
+
+    for label, key, points in [
+        ("consecutive", "consecutive_pairs", 4),
+        ("twin", "twin_pairs", 3),
+        ("diagonal", "diagonal_pairs", 4),
+    ]:
+        count = 0
+        for pair in feature_json.get(key, []):
+            pair_set = set(_as_int_list(pair))
+            if pair_set and pair_set.issubset(number_set):
+                count += 1
+        if count:
+            matched.append(label)
+            score += count * points
+
+    gap_hits = 0
+    gap_candidates = feature_json.get("gap_candidates") or {}
+    for values in gap_candidates.values():
+        gap_hits += len(number_set & set(_as_int_list(values)))
+    if gap_hits:
+        matched.append("gap")
+        score += min(16, gap_hits * 2)
+
+    missing_hits = len(number_set & set(_as_int_list(feature_json.get("recent_missing_numbers"))))
+    if missing_hits:
+        matched.append("missing")
+        score += min(12, missing_hits * 2)
+
+    repeat_hits = len(number_set & set(_as_int_list(feature_json.get("repeat_numbers"))))
+    if repeat_hits:
+        matched.append("repeat")
+        score += min(16, repeat_hits * 3)
+
+    big_count = len([number for number in numbers if number >= 41])
+    odd_count = len([number for number in numbers if number % 2 == 1])
+    balance_score = max(0, 12 - abs(big_count - (len(numbers) / 2)) * 2)
+    parity_score = max(0, 12 - abs(odd_count - (len(numbers) / 2)) * 2)
+    if balance_score >= 8:
+        matched.append("big_small_balance")
+    if parity_score >= 8:
+        matched.append("odd_even_balance")
+    score += balance_score + parity_score
+
+    return {
+        "score": round(min(100, score), 2),
+        "matched_features": sorted(set(matched)),
+        "source_issue": feature.get("issue"),
+    }
+
+
+def _score_candidate(
+    numbers: list[int],
+    features: dict,
+    rng: random.Random,
+    weights: dict | None = None,
+    laowanjia_feature: dict | None = None,
+) -> dict:
     number_set = set(numbers)
     hot = set(features.get("hot_numbers", []))
     cold = set(features.get("cold_numbers", []))
@@ -163,10 +239,13 @@ def _score_candidate(numbers: list[int], features: dict, rng: random.Random, wei
     tail_score = len(set(number % 10 for number in numbers)) * 1.5
     random_score = rng.uniform(0, 6)
     laowanjia_score = repeat_score + consecutive_score + len(number_set & hot) * 3
+    laowanjia_feature = laowanjia_feature or features.get("laowanjia_feature")
+    laowanjia_feature_result = _score_laowanjia_feature_candidate(numbers, laowanjia_feature)
+    laowanjia_feature_score = laowanjia_feature_result["score"]
 
     total_score = (
         hot_cold_score * weights.get("hot_cold_weight", DEFAULT_SCORE_WEIGHTS["hot_cold_weight"])
-        + laowanjia_score * weights.get("laowanjia_weight", DEFAULT_SCORE_WEIGHTS["laowanjia_weight"])
+        + (laowanjia_score + laowanjia_feature_score) * weights.get("laowanjia_weight", DEFAULT_SCORE_WEIGHTS["laowanjia_weight"])
         + balance_score * weights.get("balance_weight", DEFAULT_SCORE_WEIGHTS["balance_weight"])
         + tail_score * weights.get("tail_weight", DEFAULT_SCORE_WEIGHTS["tail_weight"])
         + random_score * weights.get("random_weight", DEFAULT_SCORE_WEIGHTS["random_weight"])
@@ -178,6 +257,9 @@ def _score_candidate(numbers: list[int], features: dict, rng: random.Random, wei
         "balance_score": round(balance_score, 2),
         "tail_score": round(tail_score, 2),
         "random_score": round(random_score, 2),
+        "laowanjia_feature_score": laowanjia_feature_score,
+        "laowanjia_feature_matches": laowanjia_feature_result.get("matched_features", []),
+        "laowanjia_feature_source_issue": laowanjia_feature_result.get("source_issue"),
         "weights": weights,
         "total_score": round(total_score, 2),
     }
@@ -212,6 +294,7 @@ def _generate_candidates(
 ) -> list[dict]:
     rng = random.Random(str(seed)) if seed is not None else random.Random()
     weights = weights or {"source": "default", **DEFAULT_SCORE_WEIGHTS}
+    laowanjia_feature = features.get("laowanjia_feature")
     pool = _candidate_pool(features)
     attempts = max(groups * 20, 80)
     candidates = []
@@ -230,7 +313,7 @@ def _generate_candidates(
         if key in seen:
             continue
         seen.add(key)
-        scores = _score_candidate(numbers, features, rng, weights)
+        scores = _score_candidate(numbers, features, rng, weights, laowanjia_feature)
         candidates.append(
             {
                 "numbers": numbers,
@@ -247,7 +330,7 @@ def _generate_candidates(
         numbers = item["numbers"]
         if seed is not None and rng.random() < EXPLORATION_RATE:
             numbers = _explore_candidate(numbers, pool, rng)
-            scores = _score_candidate(numbers, features, rng, weights)
+            scores = _score_candidate(numbers, features, rng, weights, laowanjia_feature)
             item = {
                 "numbers": numbers,
                 "scores": {**scores, "exploration": True, "exploration_rate": EXPLORATION_RATE},
@@ -301,6 +384,9 @@ def run_simulation(
 
         features = _build_features(draws)
         weights = _load_score_weights()
+        laowanjia_feature = _load_laowanjia_feature()
+        if laowanjia_feature:
+            features["laowanjia_feature"] = laowanjia_feature
         seed = source_issue or (draws[0].get("issue") if draws else None)
         results = _generate_candidates(features, groups, numbers_per_group, weights, seed=seed)
         payload = {

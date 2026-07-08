@@ -220,12 +220,46 @@ def _confidence(total_score: float, max_total_score: float, rank_score: float, h
     return round(max(0, min(100, value)), 2)
 
 
-def _explanation(strategy: str, hit_rate: float, weight_source: str, quality_status: str, confidence: float) -> str:
+FEATURE_LABELS = {
+    "consecutive": "consecutive numbers",
+    "missing": "missing-number rebound",
+    "big_small_balance": "big/small balance",
+    "odd_even_balance": "odd/even balance",
+    "diagonal": "diagonal pattern",
+    "gap": "gap pattern",
+    "repeat": "repeat numbers",
+    "twin": "twin numbers",
+}
+
+
+def _laowanjia_text(scores: dict | None) -> str:
+    if not scores:
+        return "Laowanjia feature score is not available."
+    feature_score = _safe_float(scores.get("laowanjia_feature_score"))
+    matches = scores.get("laowanjia_feature_matches") or []
+    if not matches:
+        return f"Laowanjia feature score is {feature_score:.2f}."
+    labels = [FEATURE_LABELS.get(item, item) for item in matches[:3]]
+    return (
+        f"This group matches {', '.join(labels)}, "
+        f"so its Laowanjia feature score is {feature_score:.2f}."
+    )
+
+
+def _explanation(
+    strategy: str,
+    hit_rate: float,
+    weight_source: str,
+    quality_status: str,
+    confidence: float,
+    scores: dict | None = None,
+) -> str:
     return (
         f"Current best strategy is {strategy}. "
         f"Recent walk-forward hit_rate is {hit_rate:.4f}. "
         f"The system uses {weight_source} weights. "
         f"Data Quality status is {quality_status}. "
+        f"{_laowanjia_text(scores)} "
         f"This group confidence is {confidence:.2f}%."
     )
 
@@ -280,6 +314,7 @@ def generate_recommendation_center() -> dict:
                 weight_source,
                 quality_status,
                 confidence,
+                item.get("scores"),
             )
             confidences.append(confidence)
             results.append(
@@ -300,6 +335,7 @@ def generate_recommendation_center() -> dict:
             weight_source,
             quality_status,
             run_confidence,
+            (candidates[0] or {}).get("scores") if candidates else None,
         )
         run = {
             "issue": issue,

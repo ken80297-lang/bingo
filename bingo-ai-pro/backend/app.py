@@ -25,6 +25,7 @@ from api.collector import router as collector_router
 from api.data_quality import router as data_quality_router
 from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
+from api.laowanjia_features import router as laowanjia_features_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
 from api.recommendation_center import router as recommendation_center_router
 from api.simulation import router as simulation_router
@@ -40,6 +41,7 @@ from database.adaptive_weight_store import init_adaptive_weight_tables
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
 from database.data_quality_store import init_data_quality_tables
+from database.laowanjia_feature_store import init_laowanjia_feature_tables
 from database.recommendation_center_store import init_recommendation_center_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
 from database.simulation_store import init_simulation_tables
@@ -79,6 +81,7 @@ app.include_router(analysis_history_router)
 app.include_router(collector_router)
 app.include_router(data_quality_router)
 app.include_router(laowanjia_router)
+app.include_router(laowanjia_features_router)
 app.include_router(laowanjia_v2_router)
 app.include_router(recommendation_center_router)
 app.include_router(simulation_router)
@@ -165,6 +168,7 @@ def startup_event() -> None:
         init_adaptive_weight_tables()
         init_strategy_ranking_tables()
         init_recommendation_center_tables()
+        init_laowanjia_feature_tables()
         scheduler.add_job(
             collect_pilio_today,
             "date",

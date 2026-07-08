@@ -261,6 +261,11 @@
         <div id="adaptiveWeight"></div>
       </article>
 
+      <article class="card span-4">
+        <h2>&#32769;&#29609;&#23478;&#29305;&#24501;</h2>
+        <div id="laowanjiaFeatures"></div>
+      </article>
+
       <article class="card span-8">
         <h2>Strategy Ranking</h2>
         <div id="strategyRanking"></div>
@@ -291,7 +296,8 @@
       simulation: "/api/simulation/latest",
       adaptive: "/api/adaptive-weight/latest",
       quality: "/api/data-quality/latest",
-      recommendation: "/api/recommendation-center/latest"
+      recommendation: "/api/recommendation-center/latest",
+      laowanjiaFeatures: "/api/laowanjia-features/latest"
     };
 
     const text = (value, fallback = "-") => {
@@ -349,6 +355,7 @@
       const strategies = (data.strategy && data.strategy.data) || dashboard.strategy_ranking || [];
       const simulation = (data.simulation && data.simulation.data) || dashboard.latest_simulation || {};
       const recommendation = (data.recommendation && data.recommendation.data) || {};
+      const laowanjiaFeatures = (data.laowanjiaFeatures && data.laowanjiaFeatures.data) || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 讀取失敗：${errors.join("；")}` : "";
@@ -357,6 +364,7 @@
       renderSystem(system, collector);
       renderQuality(quality);
       renderAdaptive(adaptive);
+      renderLaowanjiaFeatures(laowanjiaFeatures);
       renderStrategies(strategies);
       renderRecommendation(recommendation);
       renderSuperRecommendation(recommendation ? recommendation.super_recommendation : null);
@@ -395,6 +403,23 @@
         metric("tail_weight", number(adaptive.tail_weight)),
         metric("random_weight", number(adaptive.random_weight)),
         metric("hit_rate", number(adaptive.hit_rate))
+      ].join("");
+    }
+
+    function renderLaowanjiaFeatures(feature) {
+      if (!feature) {
+        document.getElementById("laowanjiaFeatures").innerHTML = `<div class="empty">No Laowanjia feature yet.</div>`;
+        return;
+      }
+      document.getElementById("laowanjiaFeatures").innerHTML = [
+        metric("total", number(feature.total_laowanjia_feature_score)),
+        metric("consecutive", number(feature.consecutive_score)),
+        metric("twin", number(feature.twin_score)),
+        metric("diagonal", number(feature.diagonal_score)),
+        metric("gap", number(feature.gap_score)),
+        metric("missing", number(feature.missing_score)),
+        metric("big_small", number(feature.big_small_score)),
+        metric("odd_even", number(feature.odd_even_score))
       ].join("");
     }
 
