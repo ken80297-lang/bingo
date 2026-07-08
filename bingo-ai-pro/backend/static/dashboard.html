@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bingo AI Dashboard</title>
+  <title>Bingo AI 智慧分析儀表板</title>
   <style>
     :root {
       color-scheme: dark;
@@ -17,12 +17,9 @@
       --warning: #f4c84a;
       --error: #ff6470;
       --unknown: #8994a3;
-      --accent: #74b7ff;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -60,6 +57,24 @@
       text-align: right;
     }
 
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 14px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #223142;
+      color: var(--text);
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:hover { background: #2b3b4e; }
+
     .grid {
       display: grid;
       grid-template-columns: repeat(12, 1fr);
@@ -74,21 +89,10 @@
       min-width: 0;
     }
 
-    .span-4 {
-      grid-column: span 4;
-    }
-
-    .span-6 {
-      grid-column: span 6;
-    }
-
-    .span-8 {
-      grid-column: span 8;
-    }
-
-    .span-12 {
-      grid-column: span 12;
-    }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
 
     h2 {
       margin: 0 0 12px;
@@ -96,7 +100,6 @@
       letter-spacing: 0;
     }
 
-    .status-line,
     .metric {
       display: flex;
       justify-content: space-between;
@@ -105,15 +108,12 @@
       border-top: 1px solid rgba(255, 255, 255, 0.06);
     }
 
-    .status-line:first-of-type,
     .metric:first-of-type {
       border-top: 0;
       padding-top: 0;
     }
 
-    .label {
-      color: var(--muted);
-    }
+    .label { color: var(--muted); }
 
     .value {
       text-align: right;
@@ -130,24 +130,13 @@
       color: #071018;
       font-size: 12px;
       font-weight: 700;
-      text-transform: uppercase;
+      white-space: nowrap;
     }
 
-    .badge.ok {
-      background: var(--ok);
-    }
-
-    .badge.warning {
-      background: var(--warning);
-    }
-
-    .badge.error {
-      background: var(--error);
-    }
-
-    .badge.unknown {
-      background: var(--unknown);
-    }
+    .badge.ok, .badge.running, .badge.available { background: var(--ok); }
+    .badge.warning { background: var(--warning); }
+    .badge.error { background: var(--error); }
+    .badge.unknown { background: var(--unknown); }
 
     table {
       width: 100%;
@@ -155,8 +144,7 @@
       font-size: 14px;
     }
 
-    th,
-    td {
+    th, td {
       padding: 10px 8px;
       border-top: 1px solid rgba(255, 255, 255, 0.06);
       text-align: left;
@@ -188,8 +176,7 @@
       font-weight: 700;
     }
 
-    .empty,
-    .error-box {
+    .empty, .error-box {
       color: var(--muted);
       background: var(--panel-2);
       border: 1px solid var(--line);
@@ -209,25 +196,16 @@
         flex-direction: column;
       }
 
-      .meta {
-        text-align: left;
-      }
+      .meta { text-align: left; }
 
-      .span-4,
-      .span-6,
-      .span-8,
-      .span-12 {
+      .span-4, .span-6, .span-8, .span-12 {
         grid-column: span 12;
       }
 
-      table {
-        font-size: 13px;
-      }
-
-      th,
-      td {
-        padding: 9px 6px;
-      }
+      .toolbar { justify-content: flex-start; }
+      table { font-size: 13px; }
+      th, td { padding: 9px 6px; }
+      .metric { align-items: flex-start; }
     }
   </style>
 </head>
@@ -235,13 +213,17 @@
   <main>
     <header>
       <div>
-        <h1>Bingo AI Dashboard</h1>
+        <h1>Bingo AI 智慧分析儀表板</h1>
       </div>
       <div class="meta">
         <div id="refreshState">載入中</div>
         <div>每 30 秒自動刷新</div>
       </div>
     </header>
+
+    <div class="toolbar">
+      <button type="button" id="refreshButton">重新整理</button>
+    </div>
 
     <div id="errorBox" class="error-box"></div>
 
@@ -252,37 +234,37 @@
       </article>
 
       <article class="card span-6">
-        <h2>Data Quality</h2>
+        <h2>資料品質</h2>
         <div id="dataQuality"></div>
       </article>
 
       <article class="card span-4">
-        <h2>Adaptive Weight</h2>
+        <h2>自適應權重</h2>
         <div id="adaptiveWeight"></div>
       </article>
 
       <article class="card span-4">
-        <h2>&#32769;&#29609;&#23478;&#29305;&#24501;</h2>
+        <h2>老玩家特徵</h2>
         <div id="laowanjiaFeatures"></div>
       </article>
 
       <article class="card span-8">
-        <h2>Strategy Ranking</h2>
+        <h2>策略排行榜</h2>
         <div id="strategyRanking"></div>
       </article>
 
       <article class="card span-12">
-        <h2>AI &#20170;&#26085;&#25512;&#34214;</h2>
+        <h2>AI 今日推薦</h2>
         <div id="recommendationCenter"></div>
       </article>
 
       <article class="card span-12">
-        <h2>&#36229;&#32026;&#29518;&#34399;&#25512;&#34214;</h2>
+        <h2>超級獎號推薦</h2>
         <div id="superRecommendation"></div>
       </article>
 
       <article class="card span-12">
-        <h2>Latest Simulation</h2>
+        <h2>最新模擬</h2>
         <div id="latestSimulation"></div>
       </article>
     </section>
@@ -300,6 +282,23 @@
       laowanjiaFeatures: "/api/laowanjia-features/latest"
     };
 
+    const statusText = {
+      ok: "正常",
+      running: "執行中",
+      available: "可用",
+      warning: "警告",
+      error: "錯誤",
+      unknown: "未知",
+      stopped: "停止"
+    };
+
+    const reasonText = {
+      "hot + recent trend": "熱門 + 近期趨勢",
+      "cold rebound": "冷門反彈",
+      "balanced candidate": "平衡候選",
+      "strategy balance": "策略平衡"
+    };
+
     const text = (value, fallback = "-") => {
       if (value === null || value === undefined || value === "") return fallback;
       return String(value);
@@ -311,10 +310,15 @@
       return Number.isFinite(n) ? n.toFixed(4).replace(/\.?0+$/, "") : text(value);
     };
 
+    const translateStatus = (status) => {
+      const value = text(status, "unknown").toLowerCase();
+      return statusText[value] || text(status, "未知");
+    };
+
     const statusBadge = (status) => {
       const value = text(status, "unknown").toLowerCase();
-      const type = ["ok", "warning", "error", "unknown"].includes(value) ? value : "unknown";
-      return `<span class="badge ${type}">${value}</span>`;
+      const type = ["ok", "running", "available", "warning", "error", "unknown"].includes(value) ? value : "unknown";
+      return `<span class="badge ${type}">${translateStatus(value)}</span>`;
     };
 
     const metric = (label, value) => `
@@ -331,6 +335,7 @@
     }
 
     async function loadAll() {
+      document.getElementById("refreshState").textContent = "載入中";
       const entries = await Promise.allSettled(
         Object.entries(apis).map(async ([key, url]) => [key, await loadJson(url)])
       );
@@ -358,8 +363,8 @@
       const laowanjiaFeatures = (data.laowanjiaFeatures && data.laowanjiaFeatures.data) || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
-      document.getElementById("errorBox").textContent = errors.length ? `API 讀取失敗：${errors.join("；")}` : "";
-      document.getElementById("refreshState").textContent = `最後更新：${new Date().toLocaleString()}`;
+      document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
+      document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
 
       renderSystem(system, collector);
       renderQuality(quality);
@@ -375,57 +380,57 @@
       const kuaishou = collector.kuaishou || {};
       const cloud = system.database ? system.database.cloud : undefined;
       document.getElementById("systemStatus").innerHTML = [
-        metric("scheduler", statusBadge(system.scheduler)),
-        metric("cloud database", statusBadge(cloud || "unknown")),
-        metric("collector.kuaishou.status", statusBadge(kuaishou.status)),
-        metric("latest_issue", text(system.latest_issue)),
-        metric("last_update", text(system.last_update))
+        metric("排程狀態", statusBadge(system.scheduler)),
+        metric("雲端資料庫", statusBadge(cloud || "unknown")),
+        metric("收集器", statusBadge(kuaishou.status)),
+        metric("最新期數", text(system.latest_issue)),
+        metric("最後更新", text(system.last_update))
       ].join("");
     }
 
     function renderQuality(quality) {
       document.getElementById("dataQuality").innerHTML = [
-        metric("status", statusBadge(quality.status)),
-        metric("missing_count", number(quality.missing_count)),
-        metric("invalid_count", number(quality.invalid_count))
+        metric("資料品質狀態", statusBadge(quality.status)),
+        metric("漏期數", number(quality.missing_count)),
+        metric("異常資料數", number(quality.invalid_count))
       ].join("");
     }
 
     function renderAdaptive(adaptive) {
       if (!adaptive) {
-        document.getElementById("adaptiveWeight").innerHTML = `<div class="empty">尚無 active weight</div>`;
+        document.getElementById("adaptiveWeight").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
       document.getElementById("adaptiveWeight").innerHTML = [
-        metric("laowanjia_weight", number(adaptive.laowanjia_weight)),
-        metric("hot_cold_weight", number(adaptive.hot_cold_weight)),
-        metric("balance_weight", number(adaptive.balance_weight)),
-        metric("tail_weight", number(adaptive.tail_weight)),
-        metric("random_weight", number(adaptive.random_weight)),
-        metric("hit_rate", number(adaptive.hit_rate))
+        metric("老玩家權重", number(adaptive.laowanjia_weight)),
+        metric("熱門冷門權重", number(adaptive.hot_cold_weight)),
+        metric("平衡權重", number(adaptive.balance_weight)),
+        metric("尾數權重", number(adaptive.tail_weight)),
+        metric("隨機權重", number(adaptive.random_weight)),
+        metric("命中率", number(adaptive.hit_rate))
       ].join("");
     }
 
     function renderLaowanjiaFeatures(feature) {
       if (!feature) {
-        document.getElementById("laowanjiaFeatures").innerHTML = `<div class="empty">No Laowanjia feature yet.</div>`;
+        document.getElementById("laowanjiaFeatures").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
       document.getElementById("laowanjiaFeatures").innerHTML = [
-        metric("total", number(feature.total_laowanjia_feature_score)),
-        metric("consecutive", number(feature.consecutive_score)),
-        metric("twin", number(feature.twin_score)),
-        metric("diagonal", number(feature.diagonal_score)),
-        metric("gap", number(feature.gap_score)),
-        metric("missing", number(feature.missing_score)),
-        metric("big_small", number(feature.big_small_score)),
-        metric("odd_even", number(feature.odd_even_score))
+        metric("總分", number(feature.total_laowanjia_feature_score)),
+        metric("連號分數", number(feature.consecutive_score)),
+        metric("雙生號分數", number(feature.twin_score)),
+        metric("斜線分數", number(feature.diagonal_score)),
+        metric("差值分數", number(feature.gap_score)),
+        metric("補號分數", number(feature.missing_score)),
+        metric("大小平衡", number(feature.big_small_score)),
+        metric("單雙平衡", number(feature.odd_even_score))
       ].join("");
     }
 
     function renderStrategies(strategies) {
       if (!strategies || !strategies.length) {
-        document.getElementById("strategyRanking").innerHTML = `<div class="empty">尚無策略排行榜</div>`;
+        document.getElementById("strategyRanking").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
       const rows = strategies.map((item, index) => `
@@ -442,10 +447,10 @@
           <thead>
             <tr>
               <th>排名</th>
-              <th>strategy</th>
-              <th>average_hits</th>
-              <th>hit_rate</th>
-              <th>rank_score</th>
+              <th>策略</th>
+              <th>平均命中</th>
+              <th>命中率</th>
+              <th>排名分數</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -453,16 +458,20 @@
       `;
     }
 
+    function chineseExplanation(item, recommendation) {
+      return `目前最佳策略為 ${text(item.strategy || recommendation.best_strategy)}，資料品質狀態為 ${translateStatus(recommendation.data_quality_status)}，本組推薦信心為 ${number(item.confidence)}%。`;
+    }
+
     function renderRecommendation(recommendation) {
       if (!recommendation || !recommendation.results || !recommendation.results.length) {
-        document.getElementById("recommendationCenter").innerHTML = `<div class="empty">No AI recommendation yet. Run POST /api/recommendation-center/generate.</div>`;
+        document.getElementById("recommendationCenter").innerHTML = `<div class="empty">尚無資料，請先執行 POST /api/recommendation-center/generate。</div>`;
         return;
       }
       const summary = [
-        metric("confidence", `${number(recommendation.confidence)}%`),
-        metric("best_strategy", text(recommendation.best_strategy)),
-        metric("target_issue", text(recommendation.target_issue)),
-        metric("data_quality", statusBadge(recommendation.data_quality_status))
+        metric("信心值", `${number(recommendation.confidence)}%`),
+        metric("最佳策略", text(recommendation.best_strategy)),
+        metric("目標期數", text(recommendation.target_issue)),
+        metric("資料品質狀態", statusBadge(recommendation.data_quality_status))
       ].join("");
       const rows = recommendation.results.slice(0, 5).map((item, index) => {
         const balls = (item.numbers || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
@@ -472,7 +481,7 @@
             <td><div class="numbers">${balls}</div></td>
             <td>${number(item.total_score)}</td>
             <td>${number(item.confidence)}%</td>
-            <td>${text(item.explanation)}</td>
+            <td>${chineseExplanation(item, recommendation)}</td>
           </tr>
         `;
       }).join("");
@@ -482,10 +491,10 @@
           <thead>
             <tr>
               <th>#</th>
-              <th>numbers</th>
-              <th>total_score</th>
-              <th>confidence</th>
-              <th>explanation</th>
+              <th>推薦號碼</th>
+              <th>總分</th>
+              <th>信心值</th>
+              <th>說明</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -495,7 +504,7 @@
 
     function renderSuperRecommendation(superRecommendation) {
       if (!superRecommendation || !superRecommendation.recommended || !superRecommendation.recommended.length) {
-        document.getElementById("superRecommendation").innerHTML = `<div class="empty">No super number recommendation yet.</div>`;
+        document.getElementById("superRecommendation").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
       const rows = superRecommendation.recommended.slice(0, 3).map((item, index) => `
@@ -503,7 +512,7 @@
           <td>${index + 1}</td>
           <td><span class="ball">${text(item.number)}</span></td>
           <td>${number(item.confidence)}%</td>
-          <td>${text(item.reason)}</td>
+          <td>${reasonText[item.reason] || text(item.reason)}</td>
         </tr>
       `).join("");
       const hot = (superRecommendation.hot || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
@@ -513,19 +522,19 @@
           <thead>
             <tr>
               <th>#</th>
-              <th>super number</th>
-              <th>confidence</th>
-              <th>reason</th>
+              <th>超級獎號</th>
+              <th>信心值</th>
+              <th>原因</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
         <div class="metric">
-          <span class="label">hot super numbers</span>
+          <span class="label">熱門超級獎號</span>
           <span class="value"><span class="numbers">${hot || "-"}</span></span>
         </div>
         <div class="metric">
-          <span class="label">cold super numbers</span>
+          <span class="label">冷門超級獎號</span>
           <span class="value"><span class="numbers">${cold || "-"}</span></span>
         </div>
       `;
@@ -534,7 +543,7 @@
     function renderSimulation(simulation) {
       const results = (simulation && simulation.results) || [];
       if (!results.length) {
-        document.getElementById("latestSimulation").innerHTML = `<div class="empty">尚無 simulation 結果</div>`;
+        document.getElementById("latestSimulation").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
       const rows = results.slice(0, 5).map((item, index) => {
@@ -550,10 +559,10 @@
         `;
       }).join("");
       const summary = [
-        metric("Latest Simulation", text(simulation.source_issue)),
-        metric("Generated", text(simulation.generated_at || simulation.created_at)),
-        metric("Model", text(simulation.model_version)),
-        metric("sample_size", number(simulation.sample_size))
+        metric("最新模擬期數", text(simulation.source_issue)),
+        metric("產生時間", text(simulation.generated_at || simulation.created_at)),
+        metric("模型版本", text(simulation.model_version)),
+        metric("樣本數", number(simulation.sample_size))
       ].join("");
       document.getElementById("latestSimulation").innerHTML = `
         <div>${summary}</div>
@@ -562,8 +571,8 @@
             <tr>
               <th>#</th>
               <th>推薦號碼</th>
-              <th>total_score</th>
-              <th>source</th>
+              <th>總分</th>
+              <th>來源</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -571,6 +580,7 @@
       `;
     }
 
+    document.getElementById("refreshButton").addEventListener("click", loadAll);
     loadAll();
     setInterval(loadAll, 30000);
   </script>
