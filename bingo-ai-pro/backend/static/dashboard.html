@@ -763,6 +763,18 @@
         document.getElementById("latestSimulation").innerHTML = `<div class="empty">尚無資料</div>`;
         return;
       }
+      const features = simulation.features || {};
+      const sampleInfo = features.sample_info || {};
+      const requestedSample = sampleInfo.requested || simulation.window || "-";
+      const usedSample = sampleInfo.used || simulation.sample_size || 0;
+      const filteredSample = sampleInfo.filtered ?? Math.max(0, Number(requestedSample || 0) - Number(usedSample || 0));
+      const laowanjiaFeature = features.laowanjia_feature || {};
+      const laowanjiaIssue = features.laowanjia_feature_issue || laowanjiaFeature.issue;
+      const laowanjiaStatus = features.laowanjia_feature_status || (laowanjiaIssue ? "ok" : "missing");
+      const laowanjiaSynced = laowanjiaIssue && String(laowanjiaIssue) === String(simulation.source_issue);
+      const laowanjiaDisplay = laowanjiaSynced
+        ? text(laowanjiaIssue)
+        : `${text(laowanjiaIssue, "無")} ${statusBadge(laowanjiaStatus === "ok" ? "warning" : laowanjiaStatus)}`;
       const rows = results.slice(0, 5).map((item, index) => {
         const source = item.scores && item.scores.weights ? item.scores.weights.source : "default";
         const balls = (item.numbers || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
@@ -779,7 +791,10 @@
         metric("最新模擬期數", text(simulation.source_issue)),
         metric("產生時間", text(simulation.generated_at || simulation.created_at)),
         metric("模型版本", text(simulation.model_version)),
-        metric("樣本數", number(simulation.sample_size))
+        metric("樣本數", `${number(usedSample)} / ${number(requestedSample)}`),
+        metric("排除", number(filteredSample)),
+        metric("老玩家特徵期數", laowanjiaDisplay),
+        metric("recent_missing_status", text(features.recent_missing_status))
       ].join("");
       document.getElementById("latestSimulation").innerHTML = `
         <div>${summary}</div>

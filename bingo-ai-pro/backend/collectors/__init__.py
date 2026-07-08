@@ -7,6 +7,7 @@ from collectors.kuaishou_collector import fetch_kuaishou_snapshot
 from collectors.pilio_collector import fetch_pilio_history
 from database.analysis_store import save_analysis_history
 from database.collector_store import save_draw_history, save_kuaishou_snapshot
+from services.laowanjia_features import run_laowanjia_feature_analysis
 from services.recommendation_center import generate_recommendation_center
 from services.simulation_model import ensure_simulation_for_issue
 
@@ -16,6 +17,17 @@ logger = logging.getLogger(__name__)
 def _run_dynamic_ai_pipeline(issue: str | None, result: dict) -> None:
     if not issue:
         return
+    try:
+        laowanjia_feature = run_laowanjia_feature_analysis(limit=100, issue=str(issue))
+        result["laowanjia_feature"] = {
+            "status": laowanjia_feature.get("status"),
+            "issue": (laowanjia_feature.get("data") or {}).get("issue"),
+            "storage": (laowanjia_feature.get("saved") or {}).get("storage"),
+        }
+    except Exception as exc:
+        logger.exception("dynamic laowanjia feature failed")
+        result["laowanjia_feature"] = {"status": "error", "error": str(exc)}
+
     try:
         simulation = ensure_simulation_for_issue(issue, window=100, groups=5, numbers_per_group=10)
         result["simulation"] = {

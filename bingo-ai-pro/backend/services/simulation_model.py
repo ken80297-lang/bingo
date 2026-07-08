@@ -7,8 +7,9 @@ from collections import Counter
 from database.analysis_store import get_analysis_history
 from database.adaptive_weight_store import get_active_adaptive_weights
 from database.collector_store import get_kuaishou_history
-from database.laowanjia_feature_store import get_latest_laowanjia_feature
+from database.laowanjia_feature_store import get_laowanjia_feature_by_issue
 from database.simulation_store import get_simulation_run_by_issue, save_simulation_run
+from services.laowanjia_features import run_laowanjia_feature_analysis
 
 logger = logging.getLogger(__name__)
 MODEL_VERSION = "v1"
@@ -76,7 +77,7 @@ def _find_consecutive(numbers: list[int]) -> list[list[int]]:
     ]
 
 
-def _build_features(draws: list[dict]) -> dict:
+def _build_features(draws: list[dict], requested_window: int | None = None) -> dict:
     all_numbers = []
     for draw in draws:
         all_numbers.extend(draw["numbers"])
@@ -91,6 +92,16 @@ def _build_features(draws: list[dict]) -> dict:
     if len(draws) >= 2:
         recent_repeat = sorted(set(draws[0]["numbers"]) & set(draws[1]["numbers"]))
 
+    recent_missing = []
+    recent_missing_status = "not_enough_data"
+    if len(draws) >= 2:
+        recent_source = draws[1:21]
+        recent_appeared = set()
+        for draw in recent_source:
+            recent_appeared.update(draw["numbers"])
+        recent_missing = [number for number in range(1, 81) if number not in recent_appeared]
+        recent_missing_status = "empty" if not recent_missing else "available"
+
     latest_numbers = draws[0]["numbers"] if draws else []
     big_count = len([number for number in latest_numbers if number >= 41])
     small_count = len([number for number in latest_numbers if number <= 40])
@@ -99,11 +110,29 @@ def _build_features(draws: list[dict]) -> dict:
 
     tail_distribution = Counter(number % 10 for number in all_numbers)
 
+    requested = int(requested_window or len(draws))
+    used = len(draws)
+    filtered = max(0, requested - used)
+
     return {
         "sample_size": len(draws),
+        "sample_info": {
+            "requested": requested,
+            "used": used,
+            "filtered": filtered,
+            "reasons": {
+                "missing_issue": 0,
+                "invalid_record": 0,
+                "duplicate": 0,
+                "feature_unavailable": 0,
+                "other": filtered,
+            },
+        },
         "hot_numbers": hot_numbers,
         "cold_numbers": cold_numbers,
         "recent_repeat_numbers": recent_repeat,
+        "recent_missing_numbers": recent_missing[:30],
+        "recent_missing_status": recent_missing_status,
         "missing_numbers": missing_numbers[:30],
         "big_small_ratio": {"big": big_count, "small": small_count},
         "odd_even_ratio": {"odd": odd_count, "even": even_count},
@@ -147,12 +176,26 @@ def _load_score_weights() -> dict:
         return {"source": "default", **DEFAULT_SCORE_WEIGHTS}
 
 
-def _load_laowanjia_feature() -> dict | None:
+def _load_laowanjia_feature(source_issue: str | None) -> tuple[dict | None, str]:
+    if not source_issue:
+        return None, "missing"
+
     try:
-        return get_latest_laowanjia_feature()
+        feature = get_laowanjia_feature_by_issue(str(source_issue))
+        if feature:
+            return feature, "ok"
     except Exception:
-        logger.exception("failed to load laowanjia feature for simulation")
-        return None
+        logger.exception("failed to load laowanjia feature by issue for simulation")
+        return None, "error"
+
+    try:
+        generated = run_laowanjia_feature_analysis(limit=100, issue=str(source_issue))
+        if generated.get("status") == "ok" and (generated.get("data") or {}).get("issue") == str(source_issue):
+            return generated.get("data"), "generated"
+        return None, "missing"
+    except Exception:
+        logger.exception("failed to generate laowanjia feature for simulation")
+        return None, "error"
 
 
 def _score_laowanjia_feature_candidate(numbers: list[int], feature: dict | None) -> dict:
@@ -382,18 +425,25 @@ def run_simulation(
                 "results": [],
             }
 
-        features = _build_features(draws)
+        seed = source_issue or (draws[0].get("issue") if draws else None)
+        source_issue = str(source_issue or seed) if (source_issue or seed) is not None else None
+
+        features = _build_features(draws, requested_window=window)
         weights = _load_score_weights()
-        laowanjia_feature = _load_laowanjia_feature()
+        laowanjia_feature, laowanjia_feature_status = _load_laowanjia_feature(source_issue)
         if laowanjia_feature:
             features["laowanjia_feature"] = laowanjia_feature
-        seed = source_issue or (draws[0].get("issue") if draws else None)
+            features["laowanjia_feature_status"] = laowanjia_feature_status
+        else:
+            features["laowanjia_feature_status"] = laowanjia_feature_status
+        features["laowanjia_feature_issue"] = laowanjia_feature.get("issue") if laowanjia_feature else None
+
         results = _generate_candidates(features, groups, numbers_per_group, weights, seed=seed)
         payload = {
             "window": window,
             "groups": groups,
             "numbers_per_group": numbers_per_group,
-            "source_issue": source_issue or seed,
+            "source_issue": source_issue,
             "sample_size": len(draws),
             "model_version": MODEL_VERSION,
             "features": {**features, "score_weights": weights},

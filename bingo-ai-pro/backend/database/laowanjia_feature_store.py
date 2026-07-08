@@ -277,6 +277,33 @@ def get_latest_laowanjia_feature() -> dict | None:
     return _row_to_feature(rows[0]) if rows else None
 
 
+def get_laowanjia_feature_by_issue(issue: str) -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select id, issue, numbers, super_number, consecutive_score,
+               twin_score, diagonal_score, gap_score, missing_score,
+               big_small_score, odd_even_score, repeat_score,
+               total_laowanjia_feature_score, feature_json, created_at, updated_at
+        from laowanjia_features
+        where issue = %s
+        order by updated_at desc, id desc
+        limit 1
+        """,
+        (str(issue),),
+        sqlite_sql="""
+        select id, issue, numbers, super_number, consecutive_score,
+               twin_score, diagonal_score, gap_score, missing_score,
+               big_small_score, odd_even_score, repeat_score,
+               total_laowanjia_feature_score, feature_json, created_at, updated_at
+        from laowanjia_features
+        where issue = ?
+        order by updated_at desc, id desc
+        limit 1
+        """,
+    )
+    return _row_to_feature(rows[0]) if rows else None
+
+
 def get_laowanjia_feature_history(limit: int = 50) -> list[dict]:
     rows = _query_with_fallback(
         """
@@ -300,4 +327,3 @@ def get_laowanjia_feature_history(limit: int = 50) -> list[dict]:
         """,
     )
     return [_row_to_feature(row) for row in rows]
-

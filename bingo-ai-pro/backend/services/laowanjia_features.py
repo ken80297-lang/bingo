@@ -26,10 +26,23 @@ def _numbers_from_snapshot(snapshot: dict) -> list[int]:
     parsed = snapshot.get("parsed_json") or {}
     api_data = parsed.get("api_get_data") if isinstance(parsed, dict) else None
     latest = (api_data.get("data") or [{}])[0] if isinstance(api_data, dict) else {}
-    return _as_int_list(latest.get("一般獎號") or snapshot.get("numbers"))
+    return _as_int_list(
+        latest.get("一般獎號")
+        or latest.get("numbers")
+        or latest.get("draw_numbers")
+        or snapshot.get("numbers")
+        or snapshot.get("draw_numbers")
+        or snapshot.get("result")
+    )
 
 
-def _load_recent_draws(limit: int = 100) -> list[dict]:
+def _has_issue(draws: list[dict], issue: str | None) -> bool:
+    if not issue:
+        return bool(draws)
+    return any(str(draw.get("issue")) == str(issue) for draw in draws)
+
+
+def _load_recent_draws(limit: int = 100, issue: str | None = None) -> list[dict]:
     draws = []
     try:
         for item in get_analysis_history(limit):
@@ -45,7 +58,7 @@ def _load_recent_draws(limit: int = 100) -> list[dict]:
     except Exception:
         logger.exception("failed to load analysis history for laowanjia features")
 
-    if draws:
+    if _has_issue(draws, issue):
         return draws[:limit]
 
     try:
@@ -163,9 +176,21 @@ def build_laowanjia_feature_record(draws: list[dict]) -> dict | None:
     }
 
 
-def run_laowanjia_feature_analysis(limit: int = 100) -> dict:
+def _draws_for_issue(draws: list[dict], issue: str | None) -> list[dict]:
+    if not issue:
+        return draws
+
+    target = str(issue)
+    for index, draw in enumerate(draws):
+        if str(draw.get("issue")) == target:
+            return draws[index:]
+    return []
+
+
+def run_laowanjia_feature_analysis(limit: int = 100, issue: str | None = None) -> dict:
     try:
-        draws = _load_recent_draws(limit)
+        draws = _load_recent_draws(limit, issue=issue)
+        draws = _draws_for_issue(draws, issue)
         record = build_laowanjia_feature_record(draws)
         if not record:
             return {"status": "error", "message": "no draw data available", "data": None}
@@ -178,4 +203,3 @@ def run_laowanjia_feature_analysis(limit: int = 100) -> dict:
     except Exception as exc:
         logger.exception("laowanjia feature analysis failed")
         return {"status": "error", "message": str(exc), "data": None}
-
