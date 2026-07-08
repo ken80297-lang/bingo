@@ -437,6 +437,17 @@ def generate_recommendation_center() -> dict:
             "explanation": run_explanation,
         }
         saved = save_recommendation_run(run, results)
+        try:
+            from services.prediction_tracker import register_recommendation_prediction
+
+            run["prediction_tracker"] = register_recommendation_prediction(
+                {**run, "results": results},
+                saved.get("run_id"),
+                simulation.get("id") or simulation.get("run_id"),
+            )
+        except Exception as exc:
+            logger.exception("prediction tracker registration failed")
+            run["prediction_tracker"] = {"status": "error", "message": str(exc)}
 
         return {
             "status": "ok" if saved.get("status") == "ok" else "error",

@@ -182,6 +182,16 @@
       box-shadow: 0 0 0 2px rgba(244, 200, 74, 0.18);
     }
 
+    .hit-low { color: var(--error); font-weight: 800; }
+    .hit-mid { color: var(--warning); font-weight: 800; }
+    .hit-high { color: var(--ok); font-weight: 800; }
+
+    .chart {
+      width: 100%;
+      height: 180px;
+      margin: 12px 0;
+    }
+
     .draw-numbers {
       margin-top: 8px;
     }
@@ -279,6 +289,16 @@
       </article>
 
       <article class="card span-12">
+        <h2>★★★★★ AI 成績 ★★★★★</h2>
+        <div id="predictionScore"></div>
+      </article>
+
+      <article class="card span-12">
+        <h2>AI 歷史績效</h2>
+        <div id="predictionHistory"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>&#21205;&#24907;&#36229;&#29518;&#25512;&#34214;</h2>
         <div id="superRecommendation"></div>
       </article>
@@ -300,7 +320,10 @@
       quality: "/api/data-quality/latest",
       recommendation: "/api/recommendation-center/latest",
       laowanjiaFeatures: "/api/laowanjia-features/latest",
-      kuaishouLatest: "/api/kuaishou/latest"
+      kuaishouLatest: "/api/kuaishou/latest",
+      predictionLatest: "/api/prediction/latest",
+      predictionHistory: "/api/prediction/history?limit=20",
+      predictionStatistics: "/api/prediction/statistics"
     };
 
     const statusText = {
@@ -383,6 +406,9 @@
       const recommendation = (data.recommendation && data.recommendation.data) || {};
       const laowanjiaFeatures = (data.laowanjiaFeatures && data.laowanjiaFeatures.data) || {};
       const latestDraw = (data.kuaishouLatest && data.kuaishouLatest.data) || data.kuaishouLatest || {};
+      const predictionLatest = (data.predictionLatest && data.predictionLatest.data) || {};
+      const predictionHistory = (data.predictionHistory && data.predictionHistory.data) || [];
+      const predictionStatistics = (data.predictionStatistics && data.predictionStatistics.data) || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
@@ -396,6 +422,8 @@
       renderStrategies(strategies);
       renderRecommendation(recommendation);
       renderSyncStatus(recommendation, simulation);
+      renderPredictionScore(predictionLatest, predictionHistory, predictionStatistics);
+      renderPredictionHistory(predictionHistory);
       renderSuperRecommendation(recommendation ? recommendation.super_recommendation : null);
       renderSimulation(simulation);
     }
@@ -749,6 +777,113 @@
         metric("Super Recommendation Issue", text(sync.super_issue)),
         metric("同步狀態", `${badge} ${label}`)
       ].join("");
+    }
+
+    function hitClass(hitCount) {
+      const hits = Number(hitCount || 0);
+      if (hits >= 5) return "hit-high";
+      if (hits >= 3) return "hit-mid";
+      return "hit-low";
+    }
+
+    function predictionChart(history) {
+      const points = history
+        .filter(run => (run.results || []).length)
+        .slice(0, 10)
+        .reverse()
+        .map(run => ({
+          issue: run.actual_issue || run.target_issue,
+          hits: Number(((run.results || [])[0] || {}).hit_count || 0)
+        }));
+      if (!points.length) return `<div class="empty">尚無折線圖資料</div>`;
+      const width = 720;
+      const height = 160;
+      const padding = 24;
+      const step = points.length > 1 ? (width - padding * 2) / (points.length - 1) : 0;
+      const coords = points.map((point, index) => {
+        const x = padding + step * index;
+        const y = height - padding - (Math.min(10, point.hits) / 10) * (height - padding * 2);
+        return { ...point, x, y };
+      });
+      const polyline = coords.map(point => `${point.x},${point.y}`).join(" ");
+      const dots = coords.map(point => `
+        <circle cx="${point.x}" cy="${point.y}" r="5" fill="${point.hits >= 5 ? "#34d399" : point.hits >= 3 ? "#facc15" : "#f87171"}"></circle>
+        <text x="${point.x}" y="${height - 4}" text-anchor="middle" fill="#94a3b8" font-size="10">${text(point.issue).slice(-4)}</text>
+      `).join("");
+      return `
+        <svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="最近10期第一組命中數">
+          <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="rgba(255,255,255,.18)"></line>
+          <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" stroke="rgba(255,255,255,.18)"></line>
+          <polyline points="${polyline}" fill="none" stroke="#60a5fa" stroke-width="3"></polyline>
+          ${dots}
+        </svg>
+      `;
+    }
+
+    function renderPredictionScore(latest, history, statistics) {
+      const target = document.getElementById("predictionScore");
+      if (!latest || !latest.results || !latest.results.length) {
+        target.innerHTML = `<div class="empty">尚無預測績效資料</div>`;
+        return;
+      }
+      const rows = latest.results.slice(0, 3).map((item, index) => `
+        <div class="metric">
+          <span class="label">第 ${index + 1} 組</span>
+          <span class="value ${hitClass(item.hit_count)}">命中：${number(item.hit_count)}</span>
+        </div>
+      `).join("");
+      const first = latest.results[0] || {};
+      const superHit = first.super_hit ? "✓ 命中" : "未命中";
+      target.innerHTML = `
+        <div class="metric">
+          <span class="label">昨日推薦</span>
+          <span class="value">${text(latest.issue)} → ${text(latest.actual_issue || latest.target_issue)}</span>
+        </div>
+        ${rows}
+        <div class="metric">
+          <span class="label">超級獎號</span>
+          <span class="value ${first.super_hit ? "hit-high" : "hit-low"}">${superHit}</span>
+        </div>
+        <div class="metric"><span class="label">最近30期平均命中</span><span class="value">${number(statistics.average_hits)}</span></div>
+        <div class="metric"><span class="label">最佳</span><span class="value">${number(statistics.best_hits)}</span></div>
+        <div class="metric"><span class="label">最差</span><span class="value">${number(statistics.worst_hits)}</span></div>
+        <div class="metric"><span class="label">超級獎號命中率</span><span class="value">${number(Number(statistics.super_hit_rate || 0) * 100)}%</span></div>
+        ${predictionChart(history)}
+      `;
+    }
+
+    function renderPredictionHistory(history) {
+      const target = document.getElementById("predictionHistory");
+      if (!history || !history.length) {
+        target.innerHTML = `<div class="empty">尚無歷史績效</div>`;
+        return;
+      }
+      const rows = history.slice(0, 20).map(run => {
+        const first = (run.results || [])[0] || {};
+        return `
+          <tr>
+            <td>${text(run.actual_issue || run.target_issue)}</td>
+            <td class="${hitClass(first.hit_count)}">${number(first.hit_count)}</td>
+            <td>${first.super_hit ? "✓" : "-"}</td>
+            <td>${text(first.strategy)}</td>
+            <td>${number(first.confidence)}%</td>
+          </tr>
+        `;
+      }).join("");
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Issue</th>
+              <th>Hit</th>
+              <th>Super</th>
+              <th>Strategy</th>
+              <th>Confidence</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
     }
 
     function renderSuperRecommendation(superRecommendation) {
