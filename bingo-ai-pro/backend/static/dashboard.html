@@ -299,6 +299,16 @@
       </article>
 
       <article class="card span-12">
+        <h2>★★★★★ AI Evolution ★★★★★</h2>
+        <div id="strategyEvolution"></div>
+      </article>
+
+      <article class="card span-12">
+        <h2>Version History</h2>
+        <div id="strategyEvolutionHistory"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>&#21205;&#24907;&#36229;&#29518;&#25512;&#34214;</h2>
         <div id="superRecommendation"></div>
       </article>
@@ -323,7 +333,9 @@
       kuaishouLatest: "/api/kuaishou/latest",
       predictionLatest: "/api/prediction/latest",
       predictionHistory: "/api/prediction/history?limit=20",
-      predictionStatistics: "/api/prediction/statistics"
+      predictionStatistics: "/api/prediction/statistics",
+      strategyEvolution: "/api/strategy-evolution/latest",
+      strategyEvolutionHistory: "/api/strategy-evolution/history?limit=20"
     };
 
     const statusText = {
@@ -409,6 +421,8 @@
       const predictionLatest = (data.predictionLatest && data.predictionLatest.data) || {};
       const predictionHistory = (data.predictionHistory && data.predictionHistory.data) || [];
       const predictionStatistics = (data.predictionStatistics && data.predictionStatistics.data) || {};
+      const strategyEvolution = (data.strategyEvolution && data.strategyEvolution.data) || {};
+      const strategyEvolutionHistory = (data.strategyEvolutionHistory && data.strategyEvolutionHistory.data) || [];
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
@@ -424,6 +438,8 @@
       renderSyncStatus(recommendation, simulation);
       renderPredictionScore(predictionLatest, predictionHistory, predictionStatistics);
       renderPredictionHistory(predictionHistory);
+      renderStrategyEvolution(strategyEvolution);
+      renderStrategyEvolutionHistory(strategyEvolutionHistory);
       renderSuperRecommendation(recommendation ? recommendation.super_recommendation : null);
       renderSimulation(simulation);
     }
@@ -879,6 +895,74 @@
               <th>Super</th>
               <th>Strategy</th>
               <th>Confidence</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function weightPercent(value) {
+      return `${number(Number(value || 0) * 100)}%`;
+    }
+
+    function renderStrategyEvolution(evolution) {
+      const target = document.getElementById("strategyEvolution");
+      if (!evolution || !evolution.version) {
+        target.innerHTML = `<div class="empty">尚無 Evolution 資料，請先執行 POST /api/strategy-evolution/run</div>`;
+        return;
+      }
+      const weights = evolution.recommended_weights || {};
+      const weightRows = [
+        ["Hot", "hot"],
+        ["Cold", "cold"],
+        ["Missing", "missing"],
+        ["Gap", "gap"],
+        ["Tail", "tail"],
+        ["Balance", "balance"],
+        ["Laowanjia", "laowanjia"],
+        ["Exploration", "exploration"]
+      ].map(([label, key]) => `
+        <div class="metric">
+          <span class="label">${label}</span>
+          <span class="value">${weightPercent(weights[key])}</span>
+        </div>
+      `).join("");
+      target.innerHTML = `
+        ${[
+          metric("目前版本", `V${text(evolution.version)}`),
+          metric("平均命中", number(evolution.average_hits)),
+          metric("Super Hit", `${number(Number(evolution.super_hit_rate || 0) * 100)}%`),
+          metric("Candidate", evolution.candidate || evolution.is_candidate ? statusBadge("ok") + " YES" : statusBadge("unknown") + " NO")
+        ].join("")}
+        ${weightRows}
+      `;
+    }
+
+    function renderStrategyEvolutionHistory(history) {
+      const target = document.getElementById("strategyEvolutionHistory");
+      if (!history || !history.length) {
+        target.innerHTML = `<div class="empty">尚無版本歷史</div>`;
+        return;
+      }
+      const rows = history.slice(0, 20).map(item => `
+        <tr>
+          <td>V${text(item.version)}</td>
+          <td>${number(item.average_hits)}</td>
+          <td>${number(Number(item.super_hit_rate || 0) * 100)}%</td>
+          <td>${number(item.rank_score)}</td>
+          <td>${item.candidate || item.is_candidate ? "YES" : "NO"}</td>
+        </tr>
+      `).join("");
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Avg Hit</th>
+              <th>Super Hit</th>
+              <th>Rank Score</th>
+              <th>Candidate</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>

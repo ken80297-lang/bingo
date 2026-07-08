@@ -31,6 +31,7 @@ from api.prediction_tracker import router as prediction_tracker_router
 from api.recommendation_center import router as recommendation_center_router
 from api.simulation import router as simulation_router
 from api.simulation_evaluation import router as simulation_evaluation_router
+from api.strategy_evolution import router as strategy_evolution_router
 from api.strategy_ranking import router as strategy_ranking_router
 from api.system_status import router as system_status_router
 from api.today import router as today_router
@@ -47,6 +48,7 @@ from database.prediction_tracker_store import init_prediction_tracker_tables
 from database.recommendation_center_store import init_recommendation_center_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
 from database.simulation_store import init_simulation_tables
+from database.strategy_evolution_store import init_strategy_evolution_tables
 from database.strategy_ranking_store import init_strategy_ranking_tables
 from db import (
     fetch_latest_draws,
@@ -89,6 +91,7 @@ app.include_router(prediction_tracker_router)
 app.include_router(recommendation_center_router)
 app.include_router(simulation_router)
 app.include_router(simulation_evaluation_router)
+app.include_router(strategy_evolution_router)
 app.include_router(strategy_ranking_router)
 app.include_router(system_status_router)
 app.include_router(today_router)
@@ -170,6 +173,7 @@ def startup_event() -> None:
         init_simulation_evaluation_tables()
         init_adaptive_weight_tables()
         init_strategy_ranking_tables()
+        init_strategy_evolution_tables()
         init_recommendation_center_tables()
         init_laowanjia_feature_tables()
         init_prediction_tracker_tables()
