@@ -58,10 +58,17 @@ def init_recommendation_center_tables() -> dict:
                         best_strategy text,
                         confidence double precision,
                         data_quality_status text,
+                        super_recommendation jsonb,
                         explanation text,
                         created_at timestamptz default now(),
                         updated_at timestamptz default now()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table recommendation_runs
+                    add column if not exists super_recommendation jsonb
                     """
                 )
                 cur.execute(
@@ -96,12 +103,14 @@ def init_recommendation_center_tables() -> dict:
                     best_strategy text,
                     confidence real,
                     data_quality_status text,
+                    super_recommendation text,
                     explanation text,
                     created_at text default current_timestamp,
                     updated_at text default current_timestamp
                 )
                 """
             )
+            _ensure_sqlite_column(conn, "super_recommendation", "text")
             conn.execute(
                 """
                 create table if not exists recommendation_results (
@@ -125,6 +134,15 @@ def init_recommendation_center_tables() -> dict:
     return results
 
 
+def _ensure_sqlite_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    existing = {
+        row[1]
+        for row in conn.execute("pragma table_info(recommendation_runs)").fetchall()
+    }
+    if column not in existing:
+        conn.execute(f"alter table recommendation_runs add column {column} {column_type}")
+
+
 def _run_params(run: dict) -> tuple:
     return (
         run.get("issue"),
@@ -132,6 +150,7 @@ def _run_params(run: dict) -> tuple:
         run.get("best_strategy"),
         run.get("confidence"),
         run.get("data_quality_status"),
+        _json_dumps(run.get("super_recommendation", {})),
         run.get("explanation"),
     )
 
@@ -156,9 +175,9 @@ def _save_cloud(run: dict, results: list[dict]) -> int:
                 insert into recommendation_runs
                 (
                     issue, target_issue, best_strategy, confidence,
-                    data_quality_status, explanation, updated_at
+                    data_quality_status, super_recommendation, explanation, updated_at
                 )
-                values (%s, %s, %s, %s, %s, %s, now())
+                values (%s, %s, %s, %s, %s, %s::jsonb, %s, now())
                 returning id
                 """,
                 _run_params(run),
@@ -187,9 +206,9 @@ def _save_sqlite(run: dict, results: list[dict]) -> int:
             insert into recommendation_runs
             (
                 issue, target_issue, best_strategy, confidence,
-                data_quality_status, explanation, updated_at
+                data_quality_status, super_recommendation, explanation, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*_run_params(run), _now()),
         )
@@ -263,9 +282,10 @@ def _row_to_run(row: Any) -> dict:
         "best_strategy": row[3],
         "confidence": row[4],
         "data_quality_status": row[5],
-        "explanation": row[6],
-        "created_at": str(row[7]) if row[7] is not None else None,
-        "updated_at": str(row[8]) if row[8] is not None else None,
+        "super_recommendation": _json_loads(row[6]) or {},
+        "explanation": row[7],
+        "created_at": str(row[8]) if row[8] is not None else None,
+        "updated_at": str(row[9]) if row[9] is not None else None,
     }
 
 
@@ -316,7 +336,7 @@ def get_latest_recommendation_run() -> dict | None:
     rows = _query_with_fallback(
         """
         select id, issue, target_issue, best_strategy, confidence,
-               data_quality_status, explanation, created_at, updated_at
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         order by created_at desc, id desc
         limit 1
@@ -330,7 +350,7 @@ def get_today_recommendation_run() -> dict | None:
     rows = _query_with_fallback(
         """
         select id, issue, target_issue, best_strategy, confidence,
-               data_quality_status, explanation, created_at, updated_at
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         where created_at::date = %s::date
         order by created_at desc, id desc
@@ -339,7 +359,7 @@ def get_today_recommendation_run() -> dict | None:
         (today,),
         sqlite_sql="""
         select id, issue, target_issue, best_strategy, confidence,
-               data_quality_status, explanation, created_at, updated_at
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         where date(created_at) = date(?)
         order by created_at desc, id desc
@@ -353,7 +373,7 @@ def get_recommendation_history(limit: int = 20) -> list[dict]:
     rows = _query_with_fallback(
         """
         select id, issue, target_issue, best_strategy, confidence,
-               data_quality_status, explanation, created_at, updated_at
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         order by created_at desc, id desc
         limit %s
@@ -361,11 +381,10 @@ def get_recommendation_history(limit: int = 20) -> list[dict]:
         (limit,),
         sqlite_sql="""
         select id, issue, target_issue, best_strategy, confidence,
-               data_quality_status, explanation, created_at, updated_at
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         order by created_at desc, id desc
         limit ?
         """,
     )
     return [_attach_results(_row_to_run(row)) for row in rows]
-

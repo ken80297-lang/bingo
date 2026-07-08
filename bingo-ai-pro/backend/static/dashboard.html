@@ -272,6 +272,11 @@
       </article>
 
       <article class="card span-12">
+        <h2>&#36229;&#32026;&#29518;&#34399;&#25512;&#34214;</h2>
+        <div id="superRecommendation"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>Latest Simulation</h2>
         <div id="latestSimulation"></div>
       </article>
@@ -354,6 +359,7 @@
       renderAdaptive(adaptive);
       renderStrategies(strategies);
       renderRecommendation(recommendation);
+      renderSuperRecommendation(recommendation ? recommendation.super_recommendation : null);
       renderSimulation(simulation);
     }
 
@@ -459,6 +465,44 @@
           </thead>
           <tbody>${rows}</tbody>
         </table>
+      `;
+    }
+
+    function renderSuperRecommendation(superRecommendation) {
+      if (!superRecommendation || !superRecommendation.recommended || !superRecommendation.recommended.length) {
+        document.getElementById("superRecommendation").innerHTML = `<div class="empty">No super number recommendation yet.</div>`;
+        return;
+      }
+      const rows = superRecommendation.recommended.slice(0, 3).map((item, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          <td><span class="ball">${text(item.number)}</span></td>
+          <td>${number(item.confidence)}%</td>
+          <td>${text(item.reason)}</td>
+        </tr>
+      `).join("");
+      const hot = (superRecommendation.hot || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
+      const cold = (superRecommendation.cold || []).map(n => `<span class="ball">${text(n)}</span>`).join("");
+      document.getElementById("superRecommendation").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>super number</th>
+              <th>confidence</th>
+              <th>reason</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="metric">
+          <span class="label">hot super numbers</span>
+          <span class="value"><span class="numbers">${hot || "-"}</span></span>
+        </div>
+        <div class="metric">
+          <span class="label">cold super numbers</span>
+          <span class="value"><span class="numbers">${cold || "-"}</span></span>
+        </div>
       `;
     }
 

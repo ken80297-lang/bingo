@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
+from database.analysis_store import get_analysis_history
+from database.collector_store import get_kuaishou_history
 from database.data_quality_store import get_data_quality_status
 from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run
@@ -17,6 +20,15 @@ QUALITY_SCORE = {
     "error": 0.5,
     "unknown": 0.6,
 }
+
+SUPER_KEYS = [
+    "super_number",
+    "superNumber",
+    "super",
+    "超級獎號",
+    "超級號",
+    "超級獎號號碼",
+]
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -60,6 +72,118 @@ def _best_strategy(rankings: list[dict]) -> dict:
 
 def _quality_value(status: str) -> float:
     return QUALITY_SCORE.get((status or "unknown").lower(), QUALITY_SCORE["unknown"])
+
+
+def _as_super_number(value) -> int | None:
+    try:
+        number = int(value)
+    except Exception:
+        return None
+    return number if 1 <= number <= 80 else None
+
+
+def _find_super_in_mapping(value) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    for key in SUPER_KEYS:
+        number = _as_super_number(value.get(key))
+        if number is not None:
+            return number
+    for nested in value.values():
+        if isinstance(nested, dict):
+            number = _find_super_in_mapping(nested)
+            if number is not None:
+                return number
+        elif isinstance(nested, list):
+            for item in nested:
+                number = _find_super_in_mapping(item)
+                if number is not None:
+                    return number
+    return None
+
+
+def _load_super_numbers(window: int = 100) -> list[int]:
+    numbers = []
+    try:
+        for item in get_analysis_history(window):
+            number = _as_super_number(item.get("super_number"))
+            if number is not None:
+                numbers.append(number)
+    except Exception:
+        logger.exception("failed to load analysis super numbers")
+
+    if len(numbers) >= min(window, 20):
+        return numbers[:window]
+
+    try:
+        for item in get_kuaishou_history(window):
+            parsed = item.get("parsed_json") or {}
+            number = _find_super_in_mapping(parsed)
+            if number is not None:
+                numbers.append(number)
+    except Exception:
+        logger.exception("failed to load kuaishou super numbers")
+
+    return numbers[:window]
+
+
+def _simulation_trend_numbers(simulation: dict) -> set[int]:
+    features = simulation.get("features") or {}
+    candidates = []
+    for key in ["hot_numbers", "recent_repeat_numbers", "cold_numbers"]:
+        candidates.extend(features.get(key) or [])
+    result = set()
+    for value in candidates:
+        number = _as_super_number(value)
+        if number is not None:
+            result.add(number)
+    return result
+
+
+def _super_reason(number: int, hot: list[int], cold: list[int], trend: set[int]) -> str:
+    if number in hot and number in trend:
+        return "hot + recent trend"
+    if number in cold:
+        return "cold rebound"
+    if number in trend:
+        return "strategy balance"
+    return "balanced candidate"
+
+
+def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict) -> dict:
+    super_numbers = _load_super_numbers(100)
+    counter = Counter(super_numbers)
+    hot = [number for number, _ in counter.most_common(5)]
+    cold_pool = [number for number in range(1, 81) if number not in counter]
+    cold = (cold_pool + [number for number, _ in counter.most_common()[-5:]])[:5]
+    trend = _simulation_trend_numbers(simulation)
+    adaptive_hit_rate = _safe_float((adaptive or {}).get("hit_rate"))
+    strategy_factor = _normalize_score(_safe_float(best.get("rank_score")), 300)
+    max_count = max(counter.values()) if counter else 1
+
+    scored = []
+    for number in range(1, 81):
+        heat = _normalize_score(counter.get(number, 0), max_count)
+        missing = 1 if number not in counter else 1 - heat
+        strategy_bonus = 0.6
+        if number in trend:
+            strategy_bonus += 0.25
+        strategy_bonus += min(0.15, adaptive_hit_rate * 0.15)
+        score = ((heat * 0.50) + (missing * 0.30) + (strategy_factor * strategy_bonus * 0.20)) * 100
+        scored.append(
+            {
+                "number": number,
+                "confidence": round(max(0, min(100, score)), 2),
+                "reason": _super_reason(number, hot, cold, trend),
+            }
+        )
+
+    scored.sort(key=lambda item: item["confidence"], reverse=True)
+    return {
+        "recommended": scored[:3],
+        "hot": hot,
+        "cold": cold[:5],
+    }
 
 
 def _confidence(total_score: float, max_total_score: float, rank_score: float, hit_rate: float, quality_status: str) -> float:
@@ -106,6 +230,7 @@ def generate_recommendation_center() -> dict:
         rank_score = _safe_float(best.get("rank_score"))
         strategy_hit_rate = _safe_float(best.get("hit_rate") or (adaptive or {}).get("hit_rate"))
         weight_source = "adaptive" if adaptive else "default"
+        super_recommendation = _build_super_recommendation(simulation, adaptive, best)
 
         results = []
         confidences = []
@@ -151,6 +276,7 @@ def generate_recommendation_center() -> dict:
             "best_strategy": best_strategy,
             "confidence": run_confidence,
             "data_quality_status": quality_status,
+            "super_recommendation": super_recommendation,
             "explanation": run_explanation,
         }
         saved = save_recommendation_run(run, results)
@@ -166,4 +292,3 @@ def generate_recommendation_center() -> dict:
     except Exception as exc:
         logger.exception("recommendation center generation failed")
         return {"status": "error", "message": str(exc), "recommendation": None}
-
