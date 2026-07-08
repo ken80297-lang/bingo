@@ -27,6 +27,7 @@ from api.laowanjia import router as laowanjia_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
 from api.simulation import router as simulation_router
 from api.simulation_evaluation import router as simulation_evaluation_router
+from api.strategy_ranking import router as strategy_ranking_router
 from api.system_status import router as system_status_router
 from api.today import router as today_router
 from analysis.engine import analyze_all
@@ -39,6 +40,7 @@ from database.collector_store import init_collector_tables
 from database.data_quality_store import init_data_quality_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
 from database.simulation_store import init_simulation_tables
+from database.strategy_ranking_store import init_strategy_ranking_tables
 from db import (
     fetch_latest_draws,
     get_analysis_by_issue,
@@ -76,6 +78,7 @@ app.include_router(laowanjia_router)
 app.include_router(laowanjia_v2_router)
 app.include_router(simulation_router)
 app.include_router(simulation_evaluation_router)
+app.include_router(strategy_ranking_router)
 app.include_router(system_status_router)
 app.include_router(today_router)
 app.include_router(backtest_router)
@@ -155,6 +158,7 @@ def startup_event() -> None:
         init_simulation_tables()
         init_simulation_evaluation_tables()
         init_adaptive_weight_tables()
+        init_strategy_ranking_tables()
         scheduler.add_job(
             collect_pilio_today,
             "date",
