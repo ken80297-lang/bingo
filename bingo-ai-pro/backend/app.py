@@ -16,6 +16,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.adaptive_weight import router as adaptive_weight_router
 from api.analysis import router as analysis_router
 from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
@@ -32,6 +33,7 @@ from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from collectors import collect_kuaishou_snapshot, collect_pilio_today
 from database import get_connection
+from database.adaptive_weight_store import init_adaptive_weight_tables
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
 from database.data_quality_store import init_data_quality_tables
@@ -64,6 +66,7 @@ except Exception as e:
     print("❌ Supabase 連線失敗")
     print(e)
 
+app.include_router(adaptive_weight_router)
 app.include_router(draws_router)
 app.include_router(analysis_router)
 app.include_router(analysis_history_router)
@@ -151,6 +154,7 @@ def startup_event() -> None:
         init_data_quality_tables()
         init_simulation_tables()
         init_simulation_evaluation_tables()
+        init_adaptive_weight_tables()
         scheduler.add_job(
             collect_pilio_today,
             "date",

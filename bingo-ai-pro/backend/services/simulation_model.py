@@ -5,10 +5,19 @@ import random
 from collections import Counter
 
 from database.analysis_store import get_analysis_history
+from database.adaptive_weight_store import get_active_adaptive_weights
 from database.collector_store import get_kuaishou_history
 from database.simulation_store import save_simulation_run
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCORE_WEIGHTS = {
+    "laowanjia_weight": 0.30,
+    "hot_cold_weight": 0.35,
+    "balance_weight": 0.20,
+    "tail_weight": 0.10,
+    "random_weight": 0.05,
+}
 
 
 def _as_int_list(values) -> list[int]:
@@ -115,12 +124,33 @@ def _candidate_pool(features: dict) -> list[int]:
     return pool
 
 
-def _score_candidate(numbers: list[int], features: dict, rng: random.Random) -> dict:
+def _load_score_weights() -> dict:
+    try:
+        active = get_active_adaptive_weights()
+        if not active:
+            return {"source": "default", **DEFAULT_SCORE_WEIGHTS}
+        return {
+            "source": "adaptive",
+            "adaptive_weight_id": active.get("id"),
+            "adaptive_weight_version": active.get("version"),
+            "laowanjia_weight": float(active.get("laowanjia_weight") or DEFAULT_SCORE_WEIGHTS["laowanjia_weight"]),
+            "hot_cold_weight": float(active.get("hot_cold_weight") or DEFAULT_SCORE_WEIGHTS["hot_cold_weight"]),
+            "balance_weight": float(active.get("balance_weight") or DEFAULT_SCORE_WEIGHTS["balance_weight"]),
+            "tail_weight": float(active.get("tail_weight") or DEFAULT_SCORE_WEIGHTS["tail_weight"]),
+            "random_weight": float(active.get("random_weight") or DEFAULT_SCORE_WEIGHTS["random_weight"]),
+        }
+    except Exception:
+        logger.exception("failed to load adaptive weights for simulation")
+        return {"source": "default", **DEFAULT_SCORE_WEIGHTS}
+
+
+def _score_candidate(numbers: list[int], features: dict, rng: random.Random, weights: dict | None = None) -> dict:
     number_set = set(numbers)
     hot = set(features.get("hot_numbers", []))
     cold = set(features.get("cold_numbers", []))
     repeats = set(features.get("recent_repeat_numbers", []))
     missing = set(features.get("missing_numbers", []))
+    weights = weights or {"source": "default", **DEFAULT_SCORE_WEIGHTS}
 
     hot_cold_score = len(number_set & hot) * 8 + len(number_set & cold) * 3 + len(number_set & missing) * 2
     consecutive_score = len(_find_consecutive(numbers)) * 4
@@ -132,7 +162,13 @@ def _score_candidate(numbers: list[int], features: dict, rng: random.Random) -> 
     random_score = rng.uniform(0, 6)
     laowanjia_score = repeat_score + consecutive_score + len(number_set & hot) * 3
 
-    total_score = hot_cold_score + laowanjia_score + balance_score + tail_score + random_score
+    total_score = (
+        hot_cold_score * weights.get("hot_cold_weight", DEFAULT_SCORE_WEIGHTS["hot_cold_weight"])
+        + laowanjia_score * weights.get("laowanjia_weight", DEFAULT_SCORE_WEIGHTS["laowanjia_weight"])
+        + balance_score * weights.get("balance_weight", DEFAULT_SCORE_WEIGHTS["balance_weight"])
+        + tail_score * weights.get("tail_weight", DEFAULT_SCORE_WEIGHTS["tail_weight"])
+        + random_score * weights.get("random_weight", DEFAULT_SCORE_WEIGHTS["random_weight"])
+    )
 
     return {
         "hot_cold_score": round(hot_cold_score, 2),
@@ -140,12 +176,14 @@ def _score_candidate(numbers: list[int], features: dict, rng: random.Random) -> 
         "balance_score": round(balance_score, 2),
         "tail_score": round(tail_score, 2),
         "random_score": round(random_score, 2),
+        "weights": weights,
         "total_score": round(total_score, 2),
     }
 
 
-def _generate_candidates(features: dict, groups: int, numbers_per_group: int) -> list[dict]:
+def _generate_candidates(features: dict, groups: int, numbers_per_group: int, weights: dict | None = None) -> list[dict]:
     rng = random.Random()
+    weights = weights or {"source": "default", **DEFAULT_SCORE_WEIGHTS}
     pool = _candidate_pool(features)
     attempts = max(groups * 12, 40)
     candidates = []
@@ -164,7 +202,7 @@ def _generate_candidates(features: dict, groups: int, numbers_per_group: int) ->
         if key in seen:
             continue
         seen.add(key)
-        scores = _score_candidate(numbers, features, rng)
+        scores = _score_candidate(numbers, features, rng, weights)
         candidates.append(
             {
                 "numbers": numbers,
@@ -195,12 +233,13 @@ def run_simulation(window: int = 100, groups: int = 5, numbers_per_group: int = 
             }
 
         features = _build_features(draws)
-        results = _generate_candidates(features, groups, numbers_per_group)
+        weights = _load_score_weights()
+        results = _generate_candidates(features, groups, numbers_per_group, weights)
         payload = {
             "window": window,
             "groups": groups,
             "numbers_per_group": numbers_per_group,
-            "features": features,
+            "features": {**features, "score_weights": weights},
             "status": "ok",
         }
         saved = save_simulation_run(payload, results)
