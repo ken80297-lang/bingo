@@ -16,7 +16,7 @@ from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
 from database.strategy_ranking_store import get_latest_strategy_rankings
 from db import get_latest_draw
-from services.simulation_model import ensure_simulation_for_issue
+from services.simulation_model import ensure_simulation_for_issue, get_production_latest_issue
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,10 @@ def _production_issue(item: dict | None, default_source: str | None = None) -> s
 
 def _latest_issue() -> str | None:
     candidates = []
+
+    production_issue = get_production_latest_issue()
+    if production_issue:
+        return production_issue
 
     try:
         kuaishou = get_latest_kuaishou_snapshot()

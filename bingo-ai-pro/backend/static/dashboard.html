@@ -289,6 +289,11 @@
       </article>
 
       <article class="card span-12">
+        <h2>Pipeline 同步狀態</h2>
+        <div id="pipelineSyncStatus"></div>
+      </article>
+
+      <article class="card span-12">
         <h2>★★★★★ AI 成績 ★★★★★</h2>
         <div id="predictionScore"></div>
       </article>
@@ -460,6 +465,7 @@
       renderStrategies(strategies);
       renderRecommendation(recommendation);
       renderSyncStatus(recommendation, simulation);
+      renderPipelineSyncStatus(latestDraw, simulation, recommendation, predictionLatest);
       renderPredictionScore(predictionLatest, predictionHistory, predictionStatistics);
       renderPredictionHistory(predictionHistory);
       renderStrategyEvolution(strategyEvolution);
@@ -816,6 +822,26 @@
         metric("Recommendation Issue", text(sync.recommendation_issue)),
         metric("Super Recommendation Issue", text(sync.super_issue)),
         metric("同步狀態", `${badge} ${label}`)
+      ].join("");
+    }
+
+    function renderPipelineSyncStatus(latestDraw, simulation, recommendation, prediction) {
+      const kuaishouIssue = getLatestIssue(latestDraw);
+      const simulationIssue = simulation ? simulation.source_issue : null;
+      const superRecommendation = recommendation ? recommendation.super_recommendation || {} : {};
+      const recommendationIssue = recommendation ? recommendation.issue : null;
+      const superIssue = superRecommendation.based_on_issue || superRecommendation.source_issue;
+      const predictionIssue = prediction ? prediction.issue : null;
+      const comparable = [simulationIssue, recommendationIssue, superIssue, predictionIssue]
+        .filter(value => value !== null && value !== undefined && value !== "");
+      const ok = Boolean(kuaishouIssue) && comparable.length >= 3 && comparable.every(value => String(value) === String(kuaishouIssue));
+      document.getElementById("pipelineSyncStatus").innerHTML = [
+        metric("Kuaishou Latest Issue", text(kuaishouIssue)),
+        metric("Simulation Issue", text(simulationIssue)),
+        metric("Recommendation Issue", text(recommendationIssue)),
+        metric("Super Issue", text(superIssue)),
+        metric("Prediction Issue", text(predictionIssue)),
+        metric("status", ok ? statusBadge("ok") : statusBadge("warning"))
       ].join("");
     }
 

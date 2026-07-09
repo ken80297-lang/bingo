@@ -1,8 +1,12 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from database.simulation_store import get_latest_simulation_run, get_simulation_history
-from services.simulation_model import run_simulation
+from database.simulation_store import (
+    get_latest_simulation_run,
+    get_simulation_history,
+    get_simulation_run_by_issue,
+)
+from services.simulation_model import get_production_latest_issue, run_simulation
 
 router = APIRouter(prefix="/api/simulation", tags=["Simulation"])
 
@@ -24,6 +28,24 @@ def api_simulation_run(payload: SimulationRequest):
 
 @router.get("/latest")
 def api_simulation_latest():
+    latest_issue = get_production_latest_issue()
+    if latest_issue:
+        production_run = get_simulation_run_by_issue(latest_issue)
+        if production_run:
+            return {
+                "status": "ok",
+                "latest_issue": latest_issue,
+                "data": production_run,
+            }
+
+        fallback = get_latest_simulation_run()
+        return {
+            "status": "outdated",
+            "latest_issue": latest_issue,
+            "simulation_issue": fallback.get("source_issue") if fallback else None,
+            "data": fallback,
+        }
+
     return {
         "status": "ok",
         "data": get_latest_simulation_run(),

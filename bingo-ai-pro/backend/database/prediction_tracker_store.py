@@ -414,25 +414,8 @@ def get_pending_prediction_runs() -> list[dict]:
 
 
 def get_latest_prediction_run() -> dict | None:
-    rows = _query_with_fallback(
-        f"""
-        select id, recommendation_run_id, simulation_run_id, issue, target_issue,
-               actual_issue, status, created_at, updated_at
-        from prediction_runs
-        where {PRODUCTION_PREDICTION_WHERE_P}
-        order by updated_at desc, id desc
-        limit 1
-        """,
-        sqlite_sql=f"""
-        select id, recommendation_run_id, simulation_run_id, issue, target_issue,
-               actual_issue, status, created_at, updated_at
-        from prediction_runs
-        where {SQLITE_PRODUCTION_PREDICTION_WHERE_P}
-        order by updated_at desc, id desc
-        limit 1
-        """,
-    )
-    return _attach_results(_row_to_run(rows[0])) if rows else None
+    history = get_prediction_history(1)
+    return history[0] if history else None
 
 
 def get_prediction_history(limit: int = 30) -> list[dict]:

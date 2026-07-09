@@ -408,6 +408,45 @@ def get_latest_recommendation_run() -> dict | None:
     return None
 
 
+def get_recommendation_run_by_issue(issue: str) -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select id, issue, target_issue, best_strategy, confidence,
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
+        from recommendation_runs
+        where issue = %s
+          and issue not like '99%%'
+          and target_issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+          and upper(target_issue) not like 'TEST%%'
+          and coalesce(explanation, '') not ilike '%%test%%'
+          and coalesce(explanation, '') not ilike '%%phase%%'
+        order by created_at desc, id desc
+        limit 50
+        """,
+        (str(issue),),
+        sqlite_sql="""
+        select id, issue, target_issue, best_strategy, confidence,
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
+        from recommendation_runs
+        where issue = ?
+          and issue not like '99%'
+          and target_issue not like '99%'
+          and upper(issue) not like 'TEST%'
+          and upper(target_issue) not like 'TEST%'
+          and lower(coalesce(explanation, '')) not like '%test%'
+          and lower(coalesce(explanation, '')) not like '%phase%'
+        order by created_at desc, id desc
+        limit 50
+        """,
+    )
+    for row in rows:
+        run = _row_to_run(row)
+        if not _is_test_recommendation(run):
+            return _attach_results(run)
+    return None
+
+
 def get_today_recommendation_run() -> dict | None:
     today = date.today().isoformat()
     rows = _query_with_fallback(

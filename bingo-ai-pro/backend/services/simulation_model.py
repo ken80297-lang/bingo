@@ -6,7 +6,7 @@ from collections import Counter
 
 from database.analysis_store import get_analysis_history
 from database.adaptive_weight_store import get_active_adaptive_weights
-from database.collector_store import get_kuaishou_history
+from database.collector_store import get_kuaishou_history, get_latest_kuaishou_snapshot
 from database.laowanjia_feature_store import get_laowanjia_feature_by_issue
 from database.simulation_store import get_simulation_run_by_issue, save_simulation_run
 from services.laowanjia_features import run_laowanjia_feature_analysis
@@ -41,6 +41,38 @@ def _numbers_from_snapshot(snapshot: dict) -> list[int]:
     api_data = parsed.get("api_get_data") if isinstance(parsed, dict) else None
     latest = (api_data.get("data") or [{}])[0] if isinstance(api_data, dict) else {}
     return _as_int_list(latest.get("\u4e00\u822c\u734e\u865f") or snapshot.get("numbers"))
+
+
+def _is_test_issue(issue: str | None, source: str | None = None) -> bool:
+    if issue is None:
+        return True
+    issue_text = str(issue).strip().upper()
+    source_text = str(source or "").strip().lower()
+    if not issue_text:
+        return True
+    if issue_text.startswith("99") or issue_text.startswith("TEST"):
+        return True
+    if "test" in source_text or "phase" in source_text:
+        return True
+    try:
+        if int(issue_text) >= 900000000 and source_text != "kuaishou":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def get_production_latest_issue() -> str | None:
+    try:
+        latest = get_latest_kuaishou_snapshot()
+        if latest and latest.get("issue") is not None:
+            issue = str(latest.get("issue"))
+            source = latest.get("source") or "kuaishou"
+            if not _is_test_issue(issue, source):
+                return issue
+    except Exception:
+        logger.exception("failed to load production latest issue")
+    return None
 
 
 def _load_recent_draws(window: int) -> list[dict]:
@@ -404,7 +436,7 @@ def run_simulation(
         window = max(1, min(int(window), 1000))
         groups = max(1, min(int(groups), 50))
         numbers_per_group = max(1, min(int(numbers_per_group), 20))
-        source_issue = str(source_issue) if source_issue is not None else None
+        source_issue = str(source_issue) if source_issue is not None else get_production_latest_issue()
 
         if source_issue and not force:
             existing = get_simulation_run_by_issue(source_issue)
