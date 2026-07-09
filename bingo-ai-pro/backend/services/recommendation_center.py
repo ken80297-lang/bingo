@@ -68,20 +68,62 @@ def _issue_sort_key(issue: str) -> tuple[int, str]:
         return (1, issue)
 
 
+def _is_test_issue(issue: str | None, source: str | None = None) -> bool:
+    if issue is None:
+        return True
+
+    issue_text = str(issue).strip().upper()
+    source_text = str(source or "").strip().lower()
+
+    if not issue_text:
+        return True
+    if issue_text.startswith("99") or issue_text.startswith("TEST"):
+        return True
+    if "test" in source_text or "phase" in source_text:
+        return True
+
+    try:
+        if int(issue_text) >= 900000000 and source_text != "kuaishou":
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _production_issue(item: dict | None, default_source: str | None = None) -> str | None:
+    if not item or item.get("issue") is None:
+        return None
+    issue = str(item.get("issue"))
+    source = item.get("source") or default_source
+    return None if _is_test_issue(issue, source) else issue
+
+
 def _latest_issue() -> str | None:
     candidates = []
-    for loader in [get_latest_analysis_history, get_latest_kuaishou_snapshot, get_latest_draw_history]:
+
+    try:
+        kuaishou = get_latest_kuaishou_snapshot()
+        issue = _production_issue(kuaishou, "kuaishou")
+        if issue:
+            return issue
+    except Exception:
+        logger.exception("failed to load kuaishou issue for recommendation center")
+
+    for loader in [get_latest_analysis_history, get_latest_draw_history]:
         try:
             item = loader()
-            if item and item.get("issue") is not None:
-                candidates.append(str(item.get("issue")))
+            issue = _production_issue(item)
+            if issue:
+                candidates.append(issue)
         except Exception:
             logger.exception("failed to load latest collector issue for recommendation center")
 
     try:
         latest = get_latest_draw()
-        if latest and latest.get("issue") is not None:
-            candidates.append(str(latest.get("issue")))
+        issue = _production_issue(latest)
+        if issue:
+            candidates.append(issue)
     except Exception:
         logger.exception("failed to load latest issue for recommendation center")
 

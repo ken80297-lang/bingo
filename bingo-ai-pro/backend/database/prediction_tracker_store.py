@@ -380,6 +380,26 @@ def _attach_results(run: dict | None) -> dict | None:
     return run
 
 
+def _production_prediction_where(prefix: str = "", like_escape: str = "%%") -> str:
+    issue = f"{prefix}issue"
+    target_issue = f"{prefix}target_issue"
+    actual_issue = f"{prefix}actual_issue"
+    return f"""
+    coalesce({issue}, '') not like '99{like_escape}'
+    and coalesce({target_issue}, '') not like '99{like_escape}'
+    and coalesce({actual_issue}, '') not like '99{like_escape}'
+    and upper(coalesce({issue}, '')) not like 'TEST{like_escape}'
+    and upper(coalesce({target_issue}, '')) not like 'TEST{like_escape}'
+    and upper(coalesce({actual_issue}, '')) not like 'TEST{like_escape}'
+    """
+
+
+PRODUCTION_PREDICTION_WHERE = _production_prediction_where()
+SQLITE_PRODUCTION_PREDICTION_WHERE = _production_prediction_where(like_escape="%")
+PRODUCTION_PREDICTION_WHERE_P = _production_prediction_where("p.")
+SQLITE_PRODUCTION_PREDICTION_WHERE_P = _production_prediction_where("p.", "%")
+
+
 def get_pending_prediction_runs() -> list[dict]:
     rows = _query_with_fallback(
         """
@@ -395,10 +415,19 @@ def get_pending_prediction_runs() -> list[dict]:
 
 def get_latest_prediction_run() -> dict | None:
     rows = _query_with_fallback(
-        """
+        f"""
         select id, recommendation_run_id, simulation_run_id, issue, target_issue,
                actual_issue, status, created_at, updated_at
         from prediction_runs
+        where {PRODUCTION_PREDICTION_WHERE_P}
+        order by updated_at desc, id desc
+        limit 1
+        """,
+        sqlite_sql=f"""
+        select id, recommendation_run_id, simulation_run_id, issue, target_issue,
+               actual_issue, status, created_at, updated_at
+        from prediction_runs
+        where {SQLITE_PRODUCTION_PREDICTION_WHERE_P}
         order by updated_at desc, id desc
         limit 1
         """,
@@ -408,18 +437,20 @@ def get_latest_prediction_run() -> dict | None:
 
 def get_prediction_history(limit: int = 30) -> list[dict]:
     rows = _query_with_fallback(
-        """
+        f"""
         select id, recommendation_run_id, simulation_run_id, issue, target_issue,
                actual_issue, status, created_at, updated_at
         from prediction_runs
+        where {PRODUCTION_PREDICTION_WHERE}
         order by updated_at desc, id desc
         limit %s
         """,
         (limit,),
-        sqlite_sql="""
+        sqlite_sql=f"""
         select id, recommendation_run_id, simulation_run_id, issue, target_issue,
                actual_issue, status, created_at, updated_at
         from prediction_runs
+        where {SQLITE_PRODUCTION_PREDICTION_WHERE}
         order by updated_at desc, id desc
         limit ?
         """,
@@ -429,10 +460,19 @@ def get_prediction_history(limit: int = 30) -> list[dict]:
 
 def get_prediction_statistics() -> dict:
     rows = _query_with_fallback(
-        """
-        select hit_count, super_hit, confidence
-        from prediction_results
-        order by created_at desc, id desc
+        f"""
+        select pr.hit_count, pr.super_hit, pr.confidence
+        from prediction_results pr
+        join prediction_runs p on p.id = pr.prediction_run_id
+        where {PRODUCTION_PREDICTION_WHERE}
+        order by pr.created_at desc, pr.id desc
+        """,
+        sqlite_sql=f"""
+        select pr.hit_count, pr.super_hit, pr.confidence
+        from prediction_results pr
+        join prediction_runs p on p.id = pr.prediction_run_id
+        where {SQLITE_PRODUCTION_PREDICTION_WHERE}
+        order by pr.created_at desc, pr.id desc
         """,
     )
     if not rows:

@@ -360,6 +360,28 @@
       return String(value);
     };
 
+    function isSampleIssue(value) {
+      const issue = text(value, "").trim().toUpperCase();
+      const blockedPrefix = ["TE", "ST"].join("");
+      return issue.startsWith("99") || issue.startsWith(blockedPrefix);
+    }
+
+    function isProductionRecommendation(recommendation) {
+      if (!recommendation) return false;
+      const superRecommendation = recommendation.super_recommendation || {};
+      return ![
+        recommendation.issue,
+        recommendation.target_issue,
+        superRecommendation.based_on_issue,
+        superRecommendation.source_issue
+      ].some(isSampleIssue);
+    }
+
+    function isProductionPrediction(run) {
+      if (!run) return false;
+      return ![run.issue, run.target_issue, run.actual_issue].some(isSampleIssue);
+    }
+
     const number = (value) => {
       if (value === null || value === undefined || value === "") return "-";
       const n = Number(value);
@@ -415,11 +437,13 @@
       const adaptive = (data.adaptive && data.adaptive.data) || dashboard.adaptive_weight || {};
       const strategies = (data.strategy && data.strategy.data) || dashboard.strategy_ranking || [];
       const simulation = (data.simulation && data.simulation.data) || dashboard.latest_simulation || {};
-      const recommendation = (data.recommendation && data.recommendation.data) || {};
+      const rawRecommendation = (data.recommendation && data.recommendation.data) || {};
+      const recommendation = isProductionRecommendation(rawRecommendation) ? rawRecommendation : {};
       const laowanjiaFeatures = (data.laowanjiaFeatures && data.laowanjiaFeatures.data) || {};
       const latestDraw = (data.kuaishouLatest && data.kuaishouLatest.data) || data.kuaishouLatest || {};
-      const predictionLatest = (data.predictionLatest && data.predictionLatest.data) || {};
-      const predictionHistory = (data.predictionHistory && data.predictionHistory.data) || [];
+      const rawPredictionLatest = (data.predictionLatest && data.predictionLatest.data) || {};
+      const predictionLatest = isProductionPrediction(rawPredictionLatest) ? rawPredictionLatest : {};
+      const predictionHistory = ((data.predictionHistory && data.predictionHistory.data) || []).filter(isProductionPrediction);
       const predictionStatistics = (data.predictionStatistics && data.predictionStatistics.data) || {};
       const strategyEvolution = (data.strategyEvolution && data.strategyEvolution.data) || {};
       const strategyEvolutionHistory = (data.strategyEvolutionHistory && data.strategyEvolutionHistory.data) || [];

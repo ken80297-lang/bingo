@@ -309,6 +309,26 @@ def _recommendation_sync(run: dict) -> dict:
     }
 
 
+def _is_test_issue(issue: str | None) -> bool:
+    if issue is None:
+        return False
+    value = str(issue).strip().upper()
+    return value.startswith("99") or value.startswith("TEST")
+
+
+def _is_test_recommendation(run: dict) -> bool:
+    if _is_test_issue(run.get("issue")) or _is_test_issue(run.get("target_issue")):
+        return True
+    text = str(run.get("explanation") or "").lower()
+    if "phase-test" in text or "phase" in text or "test" in text:
+        return True
+    super_recommendation = run.get("super_recommendation") or {}
+    for key in ["based_on_issue", "source_issue"]:
+        if _is_test_issue(super_recommendation.get(key)):
+            return True
+    return False
+
+
 def _row_to_result(row: Any) -> dict:
     return {
         "id": row[0],
@@ -358,11 +378,34 @@ def get_latest_recommendation_run() -> dict | None:
         select id, issue, target_issue, best_strategy, confidence,
                data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
+        where issue not like '99%%'
+          and target_issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+          and upper(target_issue) not like 'TEST%%'
+          and coalesce(explanation, '') not ilike '%%test%%'
+          and coalesce(explanation, '') not ilike '%%phase%%'
         order by created_at desc, id desc
-        limit 1
+        limit 50
+        """,
+        sqlite_sql="""
+        select id, issue, target_issue, best_strategy, confidence,
+               data_quality_status, super_recommendation, explanation, created_at, updated_at
+        from recommendation_runs
+        where issue not like '99%'
+          and target_issue not like '99%'
+          and upper(issue) not like 'TEST%'
+          and upper(target_issue) not like 'TEST%'
+          and lower(coalesce(explanation, '')) not like '%test%'
+          and lower(coalesce(explanation, '')) not like '%phase%'
+        order by created_at desc, id desc
+        limit 50
         """,
     )
-    return _attach_results(_row_to_run(rows[0])) if rows else None
+    for row in rows:
+        run = _row_to_run(row)
+        if not _is_test_recommendation(run):
+            return _attach_results(run)
+    return None
 
 
 def get_today_recommendation_run() -> dict | None:
@@ -373,8 +416,14 @@ def get_today_recommendation_run() -> dict | None:
                data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         where created_at::date = %s::date
+          and issue not like '99%%'
+          and target_issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+          and upper(target_issue) not like 'TEST%%'
+          and coalesce(explanation, '') not ilike '%%test%%'
+          and coalesce(explanation, '') not ilike '%%phase%%'
         order by created_at desc, id desc
-        limit 1
+        limit 50
         """,
         (today,),
         sqlite_sql="""
@@ -382,11 +431,21 @@ def get_today_recommendation_run() -> dict | None:
                data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
         where date(created_at) = date(?)
+          and issue not like '99%'
+          and target_issue not like '99%'
+          and upper(issue) not like 'TEST%'
+          and upper(target_issue) not like 'TEST%'
+          and lower(coalesce(explanation, '')) not like '%test%'
+          and lower(coalesce(explanation, '')) not like '%phase%'
         order by created_at desc, id desc
-        limit 1
+        limit 50
         """,
     )
-    return _attach_results(_row_to_run(rows[0])) if rows else None
+    for row in rows:
+        run = _row_to_run(row)
+        if not _is_test_recommendation(run):
+            return _attach_results(run)
+    return None
 
 
 def get_recommendation_history(limit: int = 20) -> list[dict]:
@@ -395,6 +454,12 @@ def get_recommendation_history(limit: int = 20) -> list[dict]:
         select id, issue, target_issue, best_strategy, confidence,
                data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
+        where issue not like '99%%'
+          and target_issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+          and upper(target_issue) not like 'TEST%%'
+          and coalesce(explanation, '') not ilike '%%test%%'
+          and coalesce(explanation, '') not ilike '%%phase%%'
         order by created_at desc, id desc
         limit %s
         """,
@@ -403,8 +468,19 @@ def get_recommendation_history(limit: int = 20) -> list[dict]:
         select id, issue, target_issue, best_strategy, confidence,
                data_quality_status, super_recommendation, explanation, created_at, updated_at
         from recommendation_runs
+        where issue not like '99%'
+          and target_issue not like '99%'
+          and upper(issue) not like 'TEST%'
+          and upper(target_issue) not like 'TEST%'
+          and lower(coalesce(explanation, '')) not like '%test%'
+          and lower(coalesce(explanation, '')) not like '%phase%'
         order by created_at desc, id desc
         limit ?
         """,
     )
-    return [_attach_results(_row_to_run(row)) for row in rows]
+    runs = []
+    for row in rows:
+        run = _row_to_run(row)
+        if not _is_test_recommendation(run):
+            runs.append(_attach_results(run))
+    return runs
