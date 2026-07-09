@@ -258,6 +258,11 @@
         <div id="systemHealth"></div>
       </article>
 
+      <article class="card span-12">
+        <h2>★★★★★ AI Operations Center ★★★★★</h2>
+        <div id="operationsCenter"></div>
+      </article>
+
       <article class="card span-6">
         <h2>&#26368;&#26032;&#38283;&#29518;&#36039;&#35338;</h2>
         <div id="latestDrawInfo"></div>
@@ -346,7 +351,8 @@
       predictionStatistics: "/api/prediction/statistics",
       strategyEvolution: "/api/strategy-evolution/latest",
       strategyEvolutionHistory: "/api/strategy-evolution/history?limit=20",
-      systemHealth: "/api/system-health"
+      systemHealth: "/api/system-health",
+      operationsSummary: "/api/operations/summary"
     };
 
     const statusText = {
@@ -417,6 +423,13 @@
       </div>
     `;
 
+    const escapeHtml = (value) => text(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+
     async function loadJson(url) {
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
@@ -459,6 +472,7 @@
       const strategyEvolution = (data.strategyEvolution && data.strategyEvolution.data) || {};
       const strategyEvolutionHistory = (data.strategyEvolutionHistory && data.strategyEvolutionHistory.data) || [];
       const systemHealth = data.systemHealth || {};
+      const operationsSummary = data.operationsSummary || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
@@ -466,6 +480,7 @@
 
       renderSystem(system, collector);
       renderSystemHealth(systemHealth);
+      renderOperationsCenter(operationsSummary);
       renderLatestDrawInfo(latestDraw);
       renderQuality(quality);
       renderAdaptive(adaptive);
@@ -537,6 +552,127 @@
           metric("Simulation → Recommendation", secondsText(delays.simulation_to_recommendation)),
           metric("Recommendation → Prediction", secondsText(delays.recommendation_to_prediction))
         ].join("")}
+      `;
+    }
+
+    function renderOperationsCenter(summary) {
+      const target = document.getElementById("operationsCenter");
+      if (!summary || !summary.status) {
+        target.innerHTML = `<div class="empty">尚無營運中心資料</div>`;
+        return;
+      }
+
+      const timeline = summary.timeline || [];
+      const errors = summary.errors || [];
+      const metrics = (summary.metrics && summary.metrics.components) || [];
+      const tables = (summary.database_health && summary.database_health.tables) || {};
+      const unresolvedErrors = errors.filter(item => !item.resolved);
+      const timelineRows = timeline.slice(0, 8).map(item => `
+        <tr>
+          <td>${escapeHtml(item.created_at)}</td>
+          <td>${escapeHtml(item.component)}</td>
+          <td>${statusBadge(item.status)}</td>
+          <td>${escapeHtml(item.issue)}</td>
+          <td>${number(item.duration_ms)} ms</td>
+          <td>${escapeHtml(item.message)}</td>
+        </tr>
+      `).join("");
+      const errorRows = errors.slice(0, 5).map(item => `
+        <tr>
+          <td>${escapeHtml(item.component)}</td>
+          <td>${escapeHtml(item.issue)}</td>
+          <td>${item.resolved ? statusBadge("ok") : statusBadge("error")}</td>
+          <td>${escapeHtml(item.error_message)}</td>
+        </tr>
+      `).join("");
+      const metricRows = metrics.slice(0, 8).map(item => `
+        <tr>
+          <td>${escapeHtml(item.component)}</td>
+          <td>${number(item.total_runs)}</td>
+          <td>${number(item.success_count)}</td>
+          <td>${number(item.error_count)}</td>
+          <td>${number(item.average_duration_ms)} ms</td>
+          <td>${escapeHtml(item.latest_issue)}</td>
+        </tr>
+      `).join("");
+      const tableRows = Object.entries(tables).map(([name, info]) => `
+        <tr>
+          <td>${escapeHtml(name)}</td>
+          <td>${statusBadge(info.status)}</td>
+          <td>${number(info.count)}</td>
+          <td>${escapeHtml(info.latest_issue)}</td>
+          <td>${escapeHtml(info.latest_update)}</td>
+        </tr>
+      `).join("");
+
+      target.innerHTML = `
+        ${[
+          metric("營運狀態", statusBadge(summary.status)),
+          metric("最新期數", escapeHtml(summary.latest_issue)),
+          metric("未解錯誤", number(unresolvedErrors.length)),
+          metric("資料庫狀態", statusBadge((summary.database_health || {}).status))
+        ].join("")}
+        <h2>最新事件時間軸</h2>
+        ${timelineRows ? `
+          <table>
+            <thead>
+              <tr>
+                <th>時間</th>
+                <th>元件</th>
+                <th>狀態</th>
+                <th>期數</th>
+                <th>耗時</th>
+                <th>訊息</th>
+              </tr>
+            </thead>
+            <tbody>${timelineRows}</tbody>
+          </table>
+        ` : `<div class="empty">尚無事件資料</div>`}
+        <h2>錯誤中心</h2>
+        ${errorRows ? `
+          <table>
+            <thead>
+              <tr>
+                <th>元件</th>
+                <th>期數</th>
+                <th>狀態</th>
+                <th>錯誤</th>
+              </tr>
+            </thead>
+            <tbody>${errorRows}</tbody>
+          </table>
+        ` : `<div class="empty">目前沒有錯誤</div>`}
+        <h2>Pipeline 平均耗時</h2>
+        ${metricRows ? `
+          <table>
+            <thead>
+              <tr>
+                <th>元件</th>
+                <th>總次數</th>
+                <th>成功</th>
+                <th>錯誤</th>
+                <th>平均耗時</th>
+                <th>最新期數</th>
+              </tr>
+            </thead>
+            <tbody>${metricRows}</tbody>
+          </table>
+        ` : `<div class="empty">尚無效能資料</div>`}
+        <h2>Database Health</h2>
+        ${tableRows ? `
+          <table>
+            <thead>
+              <tr>
+                <th>資料表</th>
+                <th>狀態</th>
+                <th>筆數</th>
+                <th>最新期數</th>
+                <th>最後更新</th>
+              </tr>
+            </thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        ` : `<div class="empty">尚無資料庫健康資料</div>`}
       `;
     }
 
