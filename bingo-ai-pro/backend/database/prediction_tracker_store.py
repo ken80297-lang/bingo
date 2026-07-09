@@ -447,14 +447,14 @@ def get_prediction_statistics() -> dict:
         select pr.hit_count, pr.super_hit, pr.confidence
         from prediction_results pr
         join prediction_runs p on p.id = pr.prediction_run_id
-        where {PRODUCTION_PREDICTION_WHERE}
+        where {PRODUCTION_PREDICTION_WHERE_P}
         order by pr.created_at desc, pr.id desc
         """,
         sqlite_sql=f"""
         select pr.hit_count, pr.super_hit, pr.confidence
         from prediction_results pr
         join prediction_runs p on p.id = pr.prediction_run_id
-        where {SQLITE_PRODUCTION_PREDICTION_WHERE}
+        where {SQLITE_PRODUCTION_PREDICTION_WHERE_P}
         order by pr.created_at desc, pr.id desc
         """,
     )

@@ -254,6 +254,11 @@
       </article>
 
       <article class="card span-6">
+        <h2>★★★★★ 系統健康度 ★★★★★</h2>
+        <div id="systemHealth"></div>
+      </article>
+
+      <article class="card span-6">
         <h2>&#26368;&#26032;&#38283;&#29518;&#36039;&#35338;</h2>
         <div id="latestDrawInfo"></div>
       </article>
@@ -340,7 +345,8 @@
       predictionHistory: "/api/prediction/history?limit=20",
       predictionStatistics: "/api/prediction/statistics",
       strategyEvolution: "/api/strategy-evolution/latest",
-      strategyEvolutionHistory: "/api/strategy-evolution/history?limit=20"
+      strategyEvolutionHistory: "/api/strategy-evolution/history?limit=20",
+      systemHealth: "/api/system-health"
     };
 
     const statusText = {
@@ -452,12 +458,14 @@
       const predictionStatistics = (data.predictionStatistics && data.predictionStatistics.data) || {};
       const strategyEvolution = (data.strategyEvolution && data.strategyEvolution.data) || {};
       const strategyEvolutionHistory = (data.strategyEvolutionHistory && data.strategyEvolutionHistory.data) || [];
+      const systemHealth = data.systemHealth || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
       document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
 
       renderSystem(system, collector);
+      renderSystemHealth(systemHealth);
       renderLatestDrawInfo(latestDraw);
       renderQuality(quality);
       renderAdaptive(adaptive);
@@ -484,6 +492,52 @@
         metric("最新期數", text(system.latest_issue)),
         metric("最後更新", text(system.last_update))
       ].join("");
+    }
+
+    function healthDot(status) {
+      const value = text(status, "unknown").toLowerCase();
+      if (value === "ok" || value === "pending") return `<span class="hit-high">●</span>`;
+      if (value === "warning") return `<span class="hit-mid">●</span>`;
+      return `<span class="hit-low">●</span>`;
+    }
+
+    function secondsText(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return `${number(value)} sec`;
+    }
+
+    function renderSystemHealth(health) {
+      const target = document.getElementById("systemHealth");
+      if (!health || !health.latest_issue) {
+        target.innerHTML = `<div class="empty">尚無健康監控資料</div>`;
+        return;
+      }
+
+      const collector = health.collector || {};
+      const simulation = health.simulation || {};
+      const recommendation = health.recommendation || {};
+      const prediction = health.prediction || {};
+      const evolution = health.evolution || {};
+      const pipeline = health.pipeline || {};
+      const delays = pipeline.delay_seconds || {};
+
+      target.innerHTML = `
+        ${[
+          metric("Collector", `${healthDot(collector.status)} ${translateStatus(collector.status)} / lag ${number(collector.lag)}`),
+          metric("Simulation", `${healthDot(simulation.status)} ${translateStatus(simulation.status)} / lag ${number(simulation.lag)}`),
+          metric("Recommendation", `${healthDot(recommendation.status)} ${translateStatus(recommendation.status)} / lag ${number(recommendation.lag)}`),
+          metric("Prediction", `${healthDot(prediction.status)} ${translateStatus(prediction.status)} / lag ${number(prediction.lag)}`),
+          metric("Evolution", `${healthDot(evolution.status)} ${translateStatus(evolution.status)} / V${text(evolution.last_version)}`),
+          metric("Pipeline", `${healthDot(pipeline.status)} ${translateStatus(pipeline.status)}`),
+          metric("Collector 最後更新", text(collector.last_update)),
+          metric("Simulation 最後更新", text(simulation.generated_at)),
+          metric("Recommendation 最後更新", text(recommendation.created_at)),
+          metric("Prediction 最後更新", text(prediction.created_at)),
+          metric("Collector → Simulation", secondsText(delays.collector_to_simulation)),
+          metric("Simulation → Recommendation", secondsText(delays.simulation_to_recommendation)),
+          metric("Recommendation → Prediction", secondsText(delays.recommendation_to_prediction))
+        ].join("")}
+      `;
     }
 
     function latestParsedRow(snapshot) {
