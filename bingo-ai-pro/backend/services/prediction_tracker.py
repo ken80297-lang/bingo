@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from database.collector_store import get_draw_history, get_kuaishou_history
+from database.official_draw_store import get_official_draw_by_issue
 from database.prediction_tracker_store import (
     get_latest_prediction_run,
     get_pending_prediction_runs,
@@ -87,22 +87,15 @@ def _actual_draw_from_record(record: dict) -> dict | None:
 def _load_actual_draw(issue: str) -> dict | None:
     target = str(issue)
     try:
-        for item in get_draw_history(300):
-            if str(item.get("issue")) == target:
-                draw = _actual_draw_from_record(item)
-                if draw:
-                    return draw
+        official = get_official_draw_by_issue(target, verified_only=True)
+        if official:
+            draw = _actual_draw_from_record(official)
+            if draw:
+                draw["source"] = "official"
+                draw["verified"] = True
+                return draw
     except Exception:
-        logger.exception("failed to load draw_history for prediction tracker")
-
-    try:
-        for item in get_kuaishou_history(300):
-            if str(item.get("issue")) == target:
-                draw = _actual_draw_from_record(item)
-                if draw:
-                    return draw
-    except Exception:
-        logger.exception("failed to load kuaishou history for prediction tracker")
+        logger.exception("failed to load official verified draw for prediction tracker")
 
     return None
 
@@ -203,6 +196,10 @@ def evaluate_pending_predictions(actual_draw: dict | None = None) -> dict:
                 continue
             candidate_actual = actual_draw
             if candidate_actual and str(candidate_actual.get("issue")) != str(run.get("target_issue")):
+                candidate_actual = None
+            if candidate_actual and not (
+                candidate_actual.get("source") == "official" and candidate_actual.get("verified") is True
+            ):
                 candidate_actual = None
             result = evaluate_prediction_run(run, recommendation, candidate_actual)
             evaluated.append(result)

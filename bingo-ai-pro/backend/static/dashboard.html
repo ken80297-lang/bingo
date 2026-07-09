@@ -263,6 +263,11 @@
         <div id="operationsCenter"></div>
       </article>
 
+      <article class="card span-12">
+        <h2>★★★★★ 官方驗證中心 ★★★★★</h2>
+        <div id="officialVerification"></div>
+      </article>
+
       <article class="card span-6">
         <h2>&#26368;&#26032;&#38283;&#29518;&#36039;&#35338;</h2>
         <div id="latestDrawInfo"></div>
@@ -352,7 +357,9 @@
       strategyEvolution: "/api/strategy-evolution/latest",
       strategyEvolutionHistory: "/api/strategy-evolution/history?limit=20",
       systemHealth: "/api/system-health",
-      operationsSummary: "/api/operations/summary"
+      operationsSummary: "/api/operations/summary",
+      officialStatistics: "/api/official/statistics",
+      officialVerification: "/api/official/verification/latest"
     };
 
     const statusText = {
@@ -362,7 +369,11 @@
       warning: "警告",
       error: "錯誤",
       unknown: "未知",
-      stopped: "停止"
+      stopped: "停止",
+      verified: "已驗證",
+      waiting_official: "等待官方",
+      mismatch: "驗證失敗",
+      waiting_kuaishou: "等待快手"
     };
 
     const reasonText = {
@@ -414,6 +425,18 @@
       const value = text(status, "unknown").toLowerCase();
       const type = ["ok", "running", "available", "warning", "error", "unknown"].includes(value) ? value : "unknown";
       return `<span class="badge ${type}">${translateStatus(value)}</span>`;
+    };
+
+    const officialStatusBadge = (status) => {
+      const value = text(status, "unknown").toLowerCase();
+      const typeMap = {
+        verified: "ok",
+        waiting_official: "warning",
+        waiting_kuaishou: "warning",
+        mismatch: "error"
+      };
+      const type = typeMap[value] || value;
+      return `<span class="badge ${["ok", "warning", "error", "unknown"].includes(type) ? type : "unknown"}">${translateStatus(value)}</span>`;
     };
 
     const metric = (label, value) => `
@@ -473,6 +496,8 @@
       const strategyEvolutionHistory = (data.strategyEvolutionHistory && data.strategyEvolutionHistory.data) || [];
       const systemHealth = data.systemHealth || {};
       const operationsSummary = data.operationsSummary || {};
+      const officialStatistics = data.officialStatistics || {};
+      const officialVerification = (data.officialVerification && data.officialVerification.data) || {};
 
       document.getElementById("errorBox").style.display = errors.length ? "block" : "none";
       document.getElementById("errorBox").textContent = errors.length ? `API 錯誤：${errors.join("；")}` : "";
@@ -481,6 +506,7 @@
       renderSystem(system, collector);
       renderSystemHealth(systemHealth);
       renderOperationsCenter(operationsSummary);
+      renderOfficialVerification(officialStatistics, officialVerification);
       renderLatestDrawInfo(latestDraw);
       renderQuality(quality);
       renderAdaptive(adaptive);
@@ -533,6 +559,7 @@
       const recommendation = health.recommendation || {};
       const prediction = health.prediction || {};
       const evolution = health.evolution || {};
+      const official = health.official_verification || {};
       const pipeline = health.pipeline || {};
       const delays = pipeline.delay_seconds || {};
 
@@ -543,6 +570,8 @@
           metric("Recommendation", `${healthDot(recommendation.status)} ${translateStatus(recommendation.status)} / lag ${number(recommendation.lag)}`),
           metric("Prediction", `${healthDot(prediction.status)} ${translateStatus(prediction.status)} / lag ${number(prediction.lag)}`),
           metric("Evolution", `${healthDot(evolution.status)} ${translateStatus(evolution.status)} / V${text(evolution.last_version)}`),
+          metric("Official Verification", `${healthDot(official.status)} ${translateStatus(official.status)} / lag ${number(official.lag)}`),
+          metric("Official mismatch", number(official.mismatch_count)),
           metric("Pipeline", `${healthDot(pipeline.status)} ${translateStatus(pipeline.status)}`),
           metric("Collector 最後更新", text(collector.last_update)),
           metric("Simulation 最後更新", text(simulation.generated_at)),
@@ -674,6 +703,26 @@
           </table>
         ` : `<div class="empty">尚無資料庫健康資料</div>`}
       `;
+    }
+
+    function renderOfficialVerification(statistics, verification) {
+      const target = document.getElementById("officialVerification");
+      if (!statistics || statistics.status !== "ok") {
+        target.innerHTML = `<div class="empty">尚無官方驗證資料</div>`;
+        return;
+      }
+
+      const verificationStatus = verification && verification.status ? verification.status : "unknown";
+      target.innerHTML = [
+        metric("最新官方期數", escapeHtml(statistics.latest_official_issue)),
+        metric("最新快手期數", escapeHtml(statistics.latest_kuaishou_issue)),
+        metric("驗證狀態", officialStatusBadge(verificationStatus)),
+        metric("一致率", `${number(statistics.verified_rate)}%`),
+        metric("驗證成功數", number(statistics.verified_count)),
+        metric("驗證失敗數", number(statistics.mismatch_count)),
+        metric("等待官方數", number(statistics.waiting_count)),
+        metric("最後驗證時間", escapeHtml(verification ? verification.verified_at || verification.updated_at : null))
+      ].join("");
     }
 
     function latestParsedRow(snapshot) {

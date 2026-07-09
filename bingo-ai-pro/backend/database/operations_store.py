@@ -21,6 +21,8 @@ DATABASE_TABLES = {
     "prediction_runs": {"issue": "issue", "updated": "created_at"},
     "prediction_results": {"issue": None, "updated": "created_at"},
     "strategy_versions": {"issue": None, "updated": "created_at"},
+    "official_draw_history": {"issue": "issue", "updated": "updated_at"},
+    "draw_verification": {"issue": "issue", "updated": "updated_at"},
 }
 
 
