@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from database.official_draw_store import get_official_draw_by_issue
+from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
 from database.prediction_tracker_store import (
     get_latest_prediction_run,
     get_pending_prediction_runs,
@@ -180,14 +180,48 @@ def evaluate_prediction_run(prediction_run: dict, recommendation: dict, actual_d
         return {"status": "error", "message": str(exc), "prediction_run_id": prediction_run.get("id")}
 
 
-def evaluate_pending_predictions(actual_draw: dict | None = None) -> dict:
+def _issue_lte(left: str | None, right: str | None) -> bool:
+    try:
+        return int(left) <= int(right)
+    except Exception:
+        return False
+
+
+def evaluate_pending_predictions(actual_draw: dict | None = None, max_runs: int = 3) -> dict:
     try:
         from database.recommendation_center_store import get_recommendation_history
 
-        pending = get_pending_prediction_runs()
+        max_runs = max(1, min(int(max_runs or 3), 3))
+        latest_official = get_latest_official_draw()
+        latest_official_issue = str(latest_official.get("issue")) if latest_official else None
+        if not latest_official_issue and not actual_draw:
+            return {
+                "status": "ok",
+                "checked": 0,
+                "evaluated": [],
+                "skipped": "official_actual_not_available",
+            }
+
+        pending = get_pending_prediction_runs(limit=20)
+        pending = [
+            run
+            for run in pending
+            if actual_draw or _issue_lte(run.get("target_issue"), latest_official_issue)
+        ][:max_runs]
+        if not pending:
+            return {
+                "status": "ok",
+                "checked": 0,
+                "evaluated": [],
+                "skipped": "no_ready_pending_predictions",
+                "latest_official_issue": latest_official_issue,
+            }
+
+        needed_recommendation_ids = {run.get("recommendation_run_id") for run in pending}
         recommendations = {
             item.get("id"): item
-            for item in get_recommendation_history(200)
+            for item in get_recommendation_history(50)
+            if item.get("id") in needed_recommendation_ids
         }
         evaluated = []
         for run in pending:
@@ -203,7 +237,13 @@ def evaluate_pending_predictions(actual_draw: dict | None = None) -> dict:
                 candidate_actual = None
             result = evaluate_prediction_run(run, recommendation, candidate_actual)
             evaluated.append(result)
-        return {"status": "ok", "checked": len(pending), "evaluated": evaluated}
+        return {
+            "status": "ok",
+            "checked": len(pending),
+            "evaluated": evaluated,
+            "latest_official_issue": latest_official_issue,
+            "max_runs": max_runs,
+        }
     except Exception as exc:
         logger.exception("failed to evaluate pending predictions")
         return {"status": "error", "message": str(exc), "checked": 0, "evaluated": []}

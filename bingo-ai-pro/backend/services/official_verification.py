@@ -149,7 +149,7 @@ def _load_local_draw(issue: str) -> dict | None:
     return None
 
 
-def _load_local_draw_map(limit: int = 300) -> dict[str, dict]:
+def _load_local_draw_map(limit: int = 50) -> dict[str, dict]:
     draws: dict[str, dict] = {}
     try:
         for item in get_draw_history(limit):
@@ -212,11 +212,12 @@ def _verification_payload(issue: str, local_draw: dict | None, official_draw: di
     }
 
 
-def run_official_verification(limit: int = 50) -> dict:
+def run_official_verification(limit: int = 10) -> dict:
     start = time.perf_counter()
     try:
         saved = []
-        local_draws = _load_local_draw_map()
+        limit = max(1, min(int(limit or 10), 10))
+        local_draws = _load_local_draw_map(30)
         for official in get_official_draw_history(limit):
             local_draw = local_draws.get(str(official.get("issue")))
             payload = _verification_payload(official.get("issue"), local_draw, official)
@@ -250,7 +251,7 @@ def run_official_verification(limit: int = 50) -> dict:
 def collect_official_today() -> dict:
     start = time.perf_counter()
     try:
-        draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=20)
+        draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=10)
         saved = save_official_draws(draws)
         latest_issue = draws[0].get("issue") if draws else None
         _record_event(
@@ -260,12 +261,12 @@ def collect_official_today() -> dict:
             start,
             f"official collector saved {saved.get('saved', 0)} draws",
         )
-        verification = run_official_verification(limit=80)
+        verification = run_official_verification(limit=10)
         prediction = {"status": "unknown"}
         try:
             from services.prediction_tracker import evaluate_pending_predictions
 
-            prediction = evaluate_pending_predictions()
+            prediction = evaluate_pending_predictions(max_runs=3)
         except Exception as exc:
             logger.exception("official prediction evaluation failed")
             prediction = {"status": "error", "message": str(exc)}

@@ -214,7 +214,7 @@ def startup_event() -> None:
         scheduler.add_job(
             collect_official_today,
             "interval",
-            minutes=1,
+            minutes=2,
             id="collector_official_today",
             replace_existing=True,
         )

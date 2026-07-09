@@ -65,7 +65,7 @@ def fetch_official_bingo_results(
                 OFFICIAL_BINGO_URL,
                 params=params,
                 headers=headers,
-                timeout=15,
+                timeout=8,
             )
         except SSLError:
             logger.warning("official bingo api ssl verification failed; retrying without certificate verification")
@@ -74,7 +74,7 @@ def fetch_official_bingo_results(
                 OFFICIAL_BINGO_URL,
                 params=params,
                 headers=headers,
-                timeout=15,
+                timeout=8,
                 verify=False,
             )
         response.raise_for_status()

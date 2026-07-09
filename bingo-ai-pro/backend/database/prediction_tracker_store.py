@@ -400,7 +400,8 @@ PRODUCTION_PREDICTION_WHERE_P = _production_prediction_where("p.")
 SQLITE_PRODUCTION_PREDICTION_WHERE_P = _production_prediction_where("p.", "%")
 
 
-def get_pending_prediction_runs() -> list[dict]:
+def get_pending_prediction_runs(limit: int = 20) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 100))
     rows = _query_with_fallback(
         """
         select id, recommendation_run_id, simulation_run_id, issue, target_issue,
@@ -408,6 +409,16 @@ def get_pending_prediction_runs() -> list[dict]:
         from prediction_runs
         where status = 'pending'
         order by created_at asc, id asc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select id, recommendation_run_id, simulation_run_id, issue, target_issue,
+               actual_issue, status, created_at, updated_at
+        from prediction_runs
+        where status = 'pending'
+        order by created_at asc, id asc
+        limit ?
         """,
     )
     return [_row_to_run(row) for row in rows]

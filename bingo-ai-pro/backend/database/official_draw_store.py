@@ -179,9 +179,9 @@ def _save_official_cloud(draws: list[dict]) -> None:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
             for draw in draws:
-                cur.execute(
-                    """
-                    insert into official_draw_history
+                    cur.execute(
+                        """
+                        insert into official_draw_history
                     (
                         issue, draw_date, draw_time, numbers, open_order_numbers,
                         super_number, win_no_only, source, verified, raw_json, updated_at
@@ -199,6 +199,7 @@ def _save_official_cloud(draws: list[dict]) -> None:
                         updated_at = now()
                     """,
                     _draw_params(draw),
+                    prepare=False,
                 )
         conn.commit()
 
@@ -256,7 +257,7 @@ def save_official_draws(draws: list[dict]) -> dict:
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
+            cur.execute(sql, params, prepare=False)
             return cur.fetchall()
 
 
@@ -402,12 +403,14 @@ def save_draw_verification(item: dict) -> dict:
                         returning id
                         """,
                         _verification_params(item),
+                        prepare=False,
                     )
                     verification_id = int(cur.fetchone()[0])
                     if item.get("verified"):
                         cur.execute(
                             "update official_draw_history set verified = true, updated_at = now() where issue = %s",
                             (item.get("issue"),),
+                            prepare=False,
                         )
                 conn.commit()
             return {"status": "ok", "storage": "cloud", "id": verification_id}
@@ -499,7 +502,7 @@ def get_official_statistics_counts() -> dict:
         select
             sum(case when status = 'verified' then 1 else 0 end),
             sum(case when status = 'mismatch' then 1 else 0 end),
-            sum(case when status like 'waiting_%' then 1 else 0 end),
+            sum(case when status like 'waiting_%%' then 1 else 0 end),
             count(*)
         from draw_verification
         """,
