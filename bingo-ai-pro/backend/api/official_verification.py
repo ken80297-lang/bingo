@@ -7,6 +7,7 @@ from services.official_verification import (
     official_statistics,
     official_verification_history,
     official_verification_latest,
+    reverify_recent_draws,
 )
 
 router = APIRouter(prefix="/api/official", tags=["Official Verification"])
@@ -35,6 +36,11 @@ def api_official_verification_latest():
 @router.get("/verification/history")
 def api_official_verification_history(limit: int = 30):
     return official_verification_history(limit)
+
+
+@router.post("/reverify")
+def api_official_reverify(limit: int = 200):
+    return reverify_recent_draws(limit)
 
 
 @router.get("/statistics")

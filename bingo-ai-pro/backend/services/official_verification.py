@@ -19,6 +19,7 @@ from database.official_draw_store import (
     get_official_statistics_counts,
     get_verification_history,
     save_draw_verification,
+    save_draw_verifications,
     save_official_draws,
 )
 from services.operations_center import record_operation_event
@@ -51,7 +52,7 @@ def _as_int_list(values: Any) -> list[int]:
         number = _as_int(value)
         if number is not None and number not in numbers:
             numbers.append(number)
-    return numbers
+    return sorted(numbers)
 
 
 def _find_numbers(value: Any) -> list[int]:
@@ -77,8 +78,13 @@ def _find_numbers(value: Any) -> list[int]:
 
 def _find_super(value: Any) -> int | None:
     if isinstance(value, dict):
-        for key in ("super_number", "super", "bullEyeTop", "bullEye"):
+        for key in ("super_number", "super", "bullEyeTop", "bullEye", "超級獎號"):
             number = _as_int(value.get(key))
+            if number is not None:
+                return number
+        api_data = (((value.get("parsed_json") or {}).get("api_get_data") or {}).get("data") or [])
+        if api_data:
+            number = _find_super(api_data[0])
             if number is not None:
                 return number
         for item in value.values():
@@ -172,9 +178,10 @@ def _load_local_draw_map(limit: int = 50) -> dict[str, dict]:
 
 def _verification_payload(issue: str, local_draw: dict | None, official_draw: dict | None) -> dict:
     if not official_draw:
+        local_numbers = _as_int_list((local_draw or {}).get("numbers", []))
         return {
             "issue": str(issue),
-            "kuaishou_numbers": (local_draw or {}).get("numbers", []),
+            "kuaishou_numbers": local_numbers,
             "official_numbers": [],
             "kuaishou_super": (local_draw or {}).get("super_number"),
             "official_super": None,
@@ -186,25 +193,30 @@ def _verification_payload(issue: str, local_draw: dict | None, official_draw: di
         }
 
     official_numbers = _as_int_list(official_draw.get("numbers"))
-    kuaishou_numbers = (local_draw or {}).get("numbers", [])
-    numbers_match = bool(local_draw and sorted(kuaishou_numbers) == sorted(official_numbers))
-    super_match = bool(
-        local_draw
-        and local_draw.get("super_number") is not None
-        and official_draw.get("super_number") is not None
-        and int(local_draw.get("super_number")) == int(official_draw.get("super_number"))
-    )
-    verified = numbers_match and super_match
-    status = "verified" if verified else "mismatch"
-    if not local_draw:
+    kuaishou_numbers = _as_int_list((local_draw or {}).get("numbers", []))
+    kuaishou_super = _as_int((local_draw or {}).get("super_number"))
+    official_super = _as_int(official_draw.get("super_number"))
+    numbers_match = bool(len(kuaishou_numbers) == 20 and len(official_numbers) == 20 and kuaishou_numbers == official_numbers)
+    super_match = bool(kuaishou_super is not None and official_super is not None and kuaishou_super == official_super)
+    verified = False
+    if len(official_numbers) != 20:
+        status = "waiting_official"
+    elif len(kuaishou_numbers) != 20:
         status = "waiting_kuaishou"
+    elif kuaishou_super is None or official_super is None:
+        status = "waiting_super_number"
+    elif numbers_match and super_match:
+        status = "verified"
+        verified = True
+    else:
+        status = "mismatch"
 
     return {
         "issue": str(issue),
         "kuaishou_numbers": kuaishou_numbers,
         "official_numbers": official_numbers,
-        "kuaishou_super": (local_draw or {}).get("super_number"),
-        "official_super": official_draw.get("super_number"),
+        "kuaishou_super": kuaishou_super,
+        "official_super": official_super,
         "numbers_match": numbers_match,
         "super_match": super_match,
         "verified": verified,
@@ -267,6 +279,41 @@ def run_official_verification(limit: int = 10) -> dict:
         return {"status": "error", "count": 0, "error": str(exc), "data": []}
 
 
+def reverify_recent_draws(limit: int = 200) -> dict:
+    start = time.perf_counter()
+    try:
+        limit = max(1, min(int(limit or 200), 200))
+        local_draws = _load_local_draw_map(limit)
+        saved = []
+        status_counts: dict[str, int] = {}
+        for official in get_official_draw_history(limit):
+            local_draw = local_draws.get(str(official.get("issue")))
+            payload = _verification_payload(official.get("issue"), local_draw, official)
+            saved.append(payload)
+            status = payload.get("status") or "unknown"
+            status_counts[status] = status_counts.get(status, 0) + 1
+        batch_saved = save_draw_verifications(saved)
+        _record_event(
+            "official_verification",
+            "ok",
+            saved[0].get("issue") if saved else None,
+            start,
+            f"reverified {len(saved)} official draws",
+        )
+        return {
+            "status": "ok",
+            "count": len(saved),
+            "status_counts": status_counts,
+            "saved": batch_saved,
+            "elapsed_seconds": round(time.perf_counter() - start, 3),
+            "data": saved[:20],
+        }
+    except Exception as exc:
+        logger.exception("official reverify failed")
+        _record_event("official_verification", "error", None, start, "official reverify failed", exc)
+        return {"status": "error", "count": 0, "error": str(exc), "data": []}
+
+
 def collect_official_today() -> dict:
     start = time.perf_counter()
     try:
@@ -281,6 +328,7 @@ def collect_official_today() -> dict:
             f"official collector saved {saved.get('saved', 0)} draws",
         )
         verification = run_official_verification(limit=10)
+        reverify = reverify_recent_draws(limit=20)
         prediction = {"status": "unknown"}
         try:
             from services.prediction_tracker import evaluate_pending_predictions
@@ -294,6 +342,7 @@ def collect_official_today() -> dict:
             "count": len(draws),
             "saved": saved,
             "verification": verification,
+            "reverify": reverify,
             "prediction": prediction,
         }
     except Exception as exc:
@@ -330,6 +379,10 @@ def official_statistics() -> dict:
         "latest_kuaishou_issue": latest_kuaishou.get("issue") if latest_kuaishou else None,
         "verified_count": counts.get("verified_count", 0),
         "mismatch_count": counts.get("mismatch_count", 0),
+        "waiting_kuaishou_count": counts.get("waiting_kuaishou_count", 0),
+        "waiting_official_count": counts.get("waiting_official_count", 0),
+        "waiting_super_number_count": counts.get("waiting_super_number_count", 0),
         "waiting_count": counts.get("waiting_count", 0),
+        "total_count": counts.get("total_count", 0),
         "verified_rate": verified_rate,
     }

@@ -458,6 +458,92 @@ def save_draw_verification(item: dict) -> dict:
         return {"status": "error", "storage": None, "error": str(exc)}
 
 
+def save_draw_verifications(items: list[dict]) -> dict:
+    if not items:
+        return {"status": "ok", "saved": 0, "storage": None}
+
+    cloud_error = None
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    for item in items:
+                        cur.execute(
+                            """
+                            insert into draw_verification
+                            (
+                                issue, kuaishou_numbers, official_numbers, kuaishou_super,
+                                official_super, numbers_match, super_match, verified,
+                                status, verified_at, updated_at
+                            )
+                            values (%s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, now())
+                            on conflict (issue) do update set
+                                kuaishou_numbers = excluded.kuaishou_numbers,
+                                official_numbers = excluded.official_numbers,
+                                kuaishou_super = excluded.kuaishou_super,
+                                official_super = excluded.official_super,
+                                numbers_match = excluded.numbers_match,
+                                super_match = excluded.super_match,
+                                verified = excluded.verified,
+                                status = excluded.status,
+                                verified_at = excluded.verified_at,
+                                updated_at = now()
+                            """,
+                            _verification_params(item),
+                            prepare=False,
+                        )
+                        if item.get("verified"):
+                            cur.execute(
+                                "update official_draw_history set verified = true, updated_at = now() where issue = %s",
+                                (item.get("issue"),),
+                                prepare=False,
+                            )
+                conn.commit()
+            return {"status": "ok", "storage": "cloud", "saved": len(items)}
+        except Exception as exc:
+            logger.exception("cloud draw verification batch save failed")
+            cloud_error = str(exc)
+
+    try:
+        with _sqlite_connection() as conn:
+            for item in items:
+                params = list(_verification_params(item))
+                for index in (5, 6, 7):
+                    params[index] = 1 if params[index] else 0
+                conn.execute(
+                    """
+                    insert into draw_verification
+                    (
+                        issue, kuaishou_numbers, official_numbers, kuaishou_super,
+                        official_super, numbers_match, super_match, verified,
+                        status, verified_at, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    on conflict(issue) do update set
+                        kuaishou_numbers = excluded.kuaishou_numbers,
+                        official_numbers = excluded.official_numbers,
+                        kuaishou_super = excluded.kuaishou_super,
+                        official_super = excluded.official_super,
+                        numbers_match = excluded.numbers_match,
+                        super_match = excluded.super_match,
+                        verified = excluded.verified,
+                        status = excluded.status,
+                        verified_at = excluded.verified_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (*params, _now()),
+                )
+                if item.get("verified"):
+                    conn.execute(
+                        "update official_draw_history set verified = 1, updated_at = ? where issue = ?",
+                        (_now(), item.get("issue")),
+                    )
+        return {"status": "ok", "storage": "sqlite", "saved": len(items), "cloud_error": cloud_error}
+    except Exception as exc:
+        logger.exception("sqlite draw verification batch save failed")
+        return {"status": "error", "storage": None, "saved": 0, "error": str(exc)}
+
+
 def get_latest_verification() -> dict | None:
     rows = _query_with_fallback(
         """
@@ -500,25 +586,47 @@ def get_official_statistics_counts() -> dict:
     rows = _query_with_fallback(
         """
         select
-            sum(case when status = 'verified' then 1 else 0 end),
-            sum(case when status = 'mismatch' then 1 else 0 end),
-            sum(case when status like 'waiting_%%' then 1 else 0 end),
+            sum(case when v.status = 'verified' then 1 else 0 end),
+            sum(case when v.status = 'mismatch' then 1 else 0 end),
+            sum(case when v.status = 'waiting_kuaishou' then 1 else 0 end),
+            sum(case when v.status = 'waiting_official' then 1 else 0 end),
+            sum(case when v.status = 'waiting_super_number' then 1 else 0 end),
             count(*)
-        from draw_verification
+        from draw_verification v
+        left join official_draw_history o on o.issue = v.issue
+        where v.issue is not null
+          and v.issue not like '99%%'
+          and upper(v.issue) not like 'TEST%%'
+          and coalesce(lower(o.source), '') not like '%%test%%'
+          and coalesce(lower(o.source), '') not like '%%phase%%'
         """,
         sqlite_sql="""
         select
-            sum(case when status = 'verified' then 1 else 0 end),
-            sum(case when status = 'mismatch' then 1 else 0 end),
-            sum(case when status like 'waiting_%' then 1 else 0 end),
+            sum(case when v.status = 'verified' then 1 else 0 end),
+            sum(case when v.status = 'mismatch' then 1 else 0 end),
+            sum(case when v.status = 'waiting_kuaishou' then 1 else 0 end),
+            sum(case when v.status = 'waiting_official' then 1 else 0 end),
+            sum(case when v.status = 'waiting_super_number' then 1 else 0 end),
             count(*)
-        from draw_verification
+        from draw_verification v
+        left join official_draw_history o on o.issue = v.issue
+        where v.issue is not null
+          and v.issue not like '99%'
+          and upper(v.issue) not like 'TEST%'
+          and coalesce(lower(o.source), '') not like '%test%'
+          and coalesce(lower(o.source), '') not like '%phase%'
         """,
     )
-    row = rows[0] if rows else (0, 0, 0, 0)
+    row = rows[0] if rows else (0, 0, 0, 0, 0, 0)
+    waiting_kuaishou = int(row[2] or 0)
+    waiting_official = int(row[3] or 0)
+    waiting_super = int(row[4] or 0)
     return {
         "verified_count": int(row[0] or 0),
         "mismatch_count": int(row[1] or 0),
-        "waiting_count": int(row[2] or 0),
-        "total_count": int(row[3] or 0),
+        "waiting_kuaishou_count": waiting_kuaishou,
+        "waiting_official_count": waiting_official,
+        "waiting_super_number_count": waiting_super,
+        "waiting_count": waiting_kuaishou + waiting_official + waiting_super,
+        "total_count": int(row[5] or 0),
     }

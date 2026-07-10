@@ -285,6 +285,10 @@
       <article class="card" id="cardReasons"></article>
       <article class="card" id="cardAlerts"></article>
       <article class="card" id="cardHistory"></article>
+      <article class="card" id="cardPipeline"></article>
+      <article class="card" id="cardOfficial"></article>
+      <article class="card" id="cardOperations"></article>
+      <article class="card" id="cardEvolution"></article>
     </section>
 
     <details>
@@ -299,7 +303,9 @@
       system: "/api/system/status",
       official: "/api/official/statistics",
       health: "/api/system-health",
-      operations: "/api/operations/summary"
+      operations: "/api/operations/summary",
+      evolution: "/api/strategy-evolution/latest",
+      evolutionHistory: "/api/strategy-evolution/history"
     };
 
     const safe = (value, fallback = "尚無資料") => {
@@ -393,12 +399,94 @@
       renderReasons(reasons, payload.confidence || next.confidence);
       renderAlerts(alerts);
       renderHistory(history);
+      renderPipeline(data.health || {}, data.recommendation || {});
+      renderOfficial(data.official || {});
+      renderOperations(data.operations || {});
+      renderEvolution(data.evolution || {}, data.evolutionHistory || {});
       document.getElementById("developerInfo").textContent = JSON.stringify({
         system: data.system,
         official: data.official,
         health: data.health,
         operations_status: data.operations && data.operations.status
       }, null, 2);
+    }
+
+    function renderPipeline(health) {
+      const collector = health.collector || {};
+      const simulation = health.simulation || {};
+      const recommendation = health.recommendation || {};
+      const prediction = health.prediction || {};
+      document.getElementById("cardPipeline").innerHTML = `
+        <h2>Pipeline 同步狀態</h2>
+        <div class="hero-row">
+          ${metric("Kuaishou Issue", safe(collector.issue))}
+          ${metric("Simulation Issue", safe(simulation.issue))}
+          ${metric("Recommendation Issue", safe(recommendation.issue))}
+          ${metric("Super Issue", safe(recommendation.super_issue))}
+          ${metric("Prediction Issue", safe(prediction.issue))}
+          ${metric("同步狀態", statusText((health.pipeline || {}).status || health.status), `status-${(health.pipeline || {}).status || health.status}`)}
+        </div>
+      `;
+    }
+
+    function renderOfficial(official) {
+      const status = Number(official.mismatch_count || 0) > 0
+        ? "error"
+        : Number(official.waiting_count || 0) > 0 ? "warning" : "ok";
+      document.getElementById("cardOfficial").innerHTML = `
+        <h2>官方驗證中心</h2>
+        <div class="hero-row">
+          ${metric("官方最新期數", safe(official.latest_official_issue))}
+          ${metric("快手最新期數", safe(official.latest_kuaishou_issue))}
+          ${metric("已驗證", number(official.verified_count))}
+          ${metric("Mismatch", number(official.mismatch_count), Number(official.mismatch_count || 0) ? "status-error" : "")}
+          ${metric("等待超獎", number(official.waiting_super_number_count))}
+          ${metric("等待快手", number(official.waiting_kuaishou_count))}
+          ${metric("等待官方", number(official.waiting_official_count))}
+          ${metric("一致率", `${number(official.verified_rate)}%`)}
+          ${metric("狀態", statusText(status), `status-${status}`)}
+        </div>
+      `;
+    }
+
+    function renderOperations(operations) {
+      const metrics = operations.metrics || {};
+      const database = operations.database_health || {};
+      const errors = list(operations.errors);
+      const timeline = list(operations.timeline);
+      const unresolved = errors.filter(item => !item.resolved).length;
+      const componentRows = Object.entries(metrics.components || metrics || {}).slice(0, 4).map(([key, value]) => {
+        const item = typeof value === "object" ? value : {};
+        return `<div class="status-row"><strong>${safe(item.component || key)}</strong><span>${number(item.average_duration_ms)} ms</span></div>`;
+      }).join("");
+      document.getElementById("cardOperations").innerHTML = `
+        <h2>AI Operations Center</h2>
+        <div class="hero-row">
+          ${metric("營運狀態", statusText(operations.status), `status-${operations.status}`)}
+          ${metric("最新事件", number(timeline.length))}
+          ${metric("未解決錯誤", number(unresolved), unresolved ? "status-error" : "status-ok")}
+          ${metric("資料表數", number(Object.keys(database.tables || database || {}).length))}
+        </div>
+        <div class="summary-list">${componentRows || `<div class="empty">尚無 component duration</div>`}</div>
+      `;
+    }
+
+    function renderEvolution(evolution, history) {
+      const data = evolution.data || evolution;
+      const weights = data.recommended_weights || data.weights || {};
+      const weightRows = Object.entries(weights).map(([key, value]) => `
+        <div class="status-row"><strong>${safe(key)}</strong><span>${number(Number(value) * 100)}%</span></div>
+      `).join("");
+      document.getElementById("cardEvolution").innerHTML = `
+        <h2>AI Evolution</h2>
+        <div class="hero-row">
+          ${metric("版本", safe(data.version))}
+          ${metric("平均命中", number(data.average_hits))}
+          ${metric("Super Hit", `${number((data.super_hit_rate || 0) * 100)}%`)}
+          ${metric("Candidate", data.candidate ? "YES" : "NO")}
+        </div>
+        <div class="summary-list">${weightRows || `<div class="empty">尚無 evolution weights</div>`}</div>
+      `;
     }
 
     function renderSync(system) {

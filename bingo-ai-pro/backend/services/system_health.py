@@ -92,6 +92,14 @@ def build_system_health(save: bool = True) -> dict:
         official_issue = str(official.get("issue")) if official and official.get("issue") is not None else None
         official_lag = _issue_lag(collector_issue, official_issue)
         official_counts = get_official_statistics_counts()
+        mismatch_count = official_counts.get("mismatch_count", 0)
+        waiting_count = official_counts.get("waiting_count", 0)
+        if mismatch_count:
+            official_status = "error"
+        elif waiting_count:
+            official_status = "warning"
+        else:
+            official_status = _status_from_lag(official_lag)
 
         collector_time = collector.get("updated_at") if collector else None
         simulation_time = simulation.get("generated_at") or simulation.get("created_at") if simulation else None
@@ -136,9 +144,13 @@ def build_system_health(save: bool = True) -> dict:
             "official_verification": {
                 "latest_official_issue": official_issue,
                 "latest_kuaishou_issue": collector_issue,
-                "status": "error" if official_counts.get("mismatch_count", 0) else _status_from_lag(official_lag),
+                "status": official_status,
                 "lag": official_lag,
-                "mismatch_count": official_counts.get("mismatch_count", 0),
+                "mismatch_count": mismatch_count,
+                "waiting_count": waiting_count,
+                "waiting_kuaishou_count": official_counts.get("waiting_kuaishou_count", 0),
+                "waiting_official_count": official_counts.get("waiting_official_count", 0),
+                "waiting_super_number_count": official_counts.get("waiting_super_number_count", 0),
             },
             "pipeline": {
                 "status": "unknown",

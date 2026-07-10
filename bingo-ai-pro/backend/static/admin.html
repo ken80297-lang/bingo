@@ -190,6 +190,7 @@
       <article class="card" id="historyCard"></article>
       <article class="card" id="analysisCard"></article>
       <article class="card" id="modelCard"></article>
+      <article class="card" id="systemHealthCard"></article>
       <article class="card" id="hitRateCard"></article>
       <article class="card" id="collectorCard"></article>
       <article class="card" id="actionsCard"></article>
@@ -258,6 +259,7 @@
       const history = payload.prediction_history || {};
       const analysis = payload.analysis_engine || {};
       const models = payload.model_engine || {};
+      const systemHealth = payload.system_health || {};
       const hit = payload.hit_rate || {};
       const collector = payload.collector || {};
       const recentError = collector.recent_error || {};
@@ -269,6 +271,7 @@
       renderHistory(history);
       renderAnalysis(analysis);
       renderModels(models);
+      renderSystemHealth(systemHealth);
       renderHitRate(hit);
       renderCollector(collector, recentError);
       renderActions();
@@ -348,6 +351,27 @@
         </div>
         <div class="notice">模型排名</div>
         <div class="status-list">${rows}</div>
+      `;
+    }
+
+    function renderSystemHealth(health) {
+      const collector = health.collector || {};
+      const simulation = health.simulation || {};
+      const recommendation = health.recommendation || {};
+      const prediction = health.prediction || {};
+      const official = health.official_verification || {};
+      document.getElementById("systemHealthCard").innerHTML = `
+        <h2>System Health</h2>
+        <div class="grid">
+          ${metric("Overall", statusLabel(health.status), statusClass(health.status))}
+          ${metric("Collector Lag", num(collector.lag))}
+          ${metric("Simulation Lag", num(simulation.lag))}
+          ${metric("Recommendation Lag", num(recommendation.lag))}
+          ${metric("Prediction Lag", num(prediction.lag))}
+          ${metric("Official Status", statusLabel(official.status), statusClass(official.status))}
+          ${metric("Mismatch", num(official.mismatch_count), Number(official.mismatch_count || 0) ? "status-error" : "status-ok")}
+          ${metric("Waiting", num(official.waiting_count))}
+        </div>
       `;
     }
 
