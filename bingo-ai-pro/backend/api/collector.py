@@ -7,6 +7,7 @@ from database.collector_store import (
     get_latest_draw_history,
     get_latest_kuaishou_snapshot,
 )
+from services.catch_up_service import catch_up_missing_issues
 
 router = APIRouter(prefix="/api", tags=["Collectors"])
 
@@ -17,6 +18,11 @@ def api_collector_status():
         "status": "ok",
         "collector": get_collector_status(),
     }
+
+
+@router.get("/collector/catch-up")
+def api_collector_catch_up():
+    return catch_up_missing_issues()
 
 
 @router.get("/kuaishou/latest")

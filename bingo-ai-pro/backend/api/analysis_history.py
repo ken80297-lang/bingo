@@ -1,6 +1,10 @@
 from fastapi import APIRouter
 
-from database.analysis_store import get_analysis_history, get_latest_analysis_history
+from database.analysis_store import (
+    get_analysis_history,
+    get_analysis_statistics,
+    get_latest_analysis_history,
+)
 
 router = APIRouter(prefix="/api/analysis", tags=["Analysis History"])
 
@@ -18,4 +22,12 @@ def api_analysis_history(limit: int = 100):
     return {
         "status": "ok",
         "data": get_analysis_history(limit),
+    }
+
+
+@router.get("/statistics")
+def api_analysis_statistics(limit: int = 100):
+    return {
+        "status": "ok",
+        "data": get_analysis_statistics(limit),
     }

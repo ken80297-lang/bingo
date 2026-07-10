@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bingo AI Pro Admin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111c;
+      --card: #101c29;
+      --card2: #17283a;
+      --text: #f5f8ff;
+      --muted: #9eb2c8;
+      --line: #293d52;
+      --ok: #31d17d;
+      --warn: #f5c34b;
+      --bad: #ff6578;
+      --accent: #5ac8ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(90, 200, 255, .18), transparent 32%),
+        linear-gradient(180deg, #07111c 0%, #0b1623 100%);
+      color: var(--text);
+      font-family: Arial, "Microsoft JhengHei", sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(760px, 100%);
+      margin: 0 auto;
+      padding: 18px 12px 42px;
+    }
+
+    header {
+      padding: 12px 4px 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .card {
+      background: rgba(16, 28, 41, .95);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 14px;
+      box-shadow: 0 16px 34px rgba(0, 0, 0, .24);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .metric {
+      background: var(--card2);
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 5px;
+    }
+
+    .value {
+      font-size: 19px;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+
+    .status-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--card2);
+    }
+
+    .status-ok { color: var(--ok); }
+    .status-warning, .status-unknown { color: var(--warn); }
+    .status-error { color: var(--bad); }
+
+    .notice {
+      padding: 13px;
+      border-radius: 8px;
+      background: #152638;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    .actions {
+      display: grid;
+      gap: 10px;
+    }
+
+    button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #1c3449;
+      color: var(--text);
+      padding: 13px 14px;
+      font-size: 16px;
+      font-weight: 900;
+      text-align: left;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, #23668a, #264d74);
+      border-color: rgba(90, 200, 255, .45);
+    }
+
+    .error-box {
+      display: none;
+      margin-bottom: 14px;
+      padding: 14px;
+      border-radius: 8px;
+      background: rgba(255, 101, 120, .12);
+      color: var(--bad);
+      border: 1px solid rgba(255, 101, 120, .35);
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (min-width: 720px) {
+      main { padding-top: 28px; }
+      h1 { font-size: 34px; }
+      .card { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Bingo AI Pro 管理中心</h1>
+      <div class="subtitle">手機查看 Collector、同步、Prediction History 與 AI 命中率。</div>
+      <div class="toolbar">
+        <span id="lastRefresh">載入中</span>
+        <span id="topStatus">狀態檢查中</span>
+      </div>
+    </header>
+
+    <div id="errorBox" class="error-box"></div>
+
+    <section>
+      <article class="card" id="systemCard"></article>
+      <article class="card" id="syncCard"></article>
+      <article class="card" id="historyCard"></article>
+      <article class="card" id="analysisCard"></article>
+      <article class="card" id="modelCard"></article>
+      <article class="card" id="hitRateCard"></article>
+      <article class="card" id="collectorCard"></article>
+      <article class="card" id="actionsCard"></article>
+    </section>
+  </main>
+
+  <script>
+    const adminApi = "/api/admin/status";
+
+    const safe = (value, fallback = "尚無資料") => {
+      if (value === null || value === undefined || value === "" || Number.isNaN(value)) return fallback;
+      return String(value);
+    };
+
+    const num = (value, fallback = "0") => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      return n.toFixed(2).replace(/\.?0+$/, "");
+    };
+
+    const statusLabel = (status) => {
+      if (status === "ok") return "🟢 正常";
+      if (status === "warning") return "🟡 Warning";
+      if (status === "error") return "🔴 Error";
+      return "🟡 Warning";
+    };
+
+    const statusClass = (status) => `status-${status || "unknown"}`;
+
+    const metric = (label, value, klass = "") => `
+      <div class="metric">
+        <div class="label">${label}</div>
+        <div class="value ${klass}">${value}</div>
+      </div>
+    `;
+
+    const row = (label, status) => `
+      <div class="status-row">
+        <strong>${label}</strong>
+        <span class="${statusClass(status)}">${statusLabel(status)}</span>
+      </div>
+    `;
+
+    async function getJson(url, options = {}) {
+      const response = await fetch(url, { cache: "no-store", ...options });
+      if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
+      return response.json();
+    }
+
+    async function loadAdmin() {
+      try {
+        const payload = await getJson(adminApi);
+        render(payload);
+        document.getElementById("errorBox").style.display = "none";
+      } catch (error) {
+        const box = document.getElementById("errorBox");
+        box.style.display = "block";
+        box.textContent = `API 錯誤：${error.message}`;
+      }
+      document.getElementById("lastRefresh").textContent = `最後刷新：${new Date().toLocaleString()}`;
+    }
+
+    function render(payload) {
+      const system = payload.system || {};
+      const sync = payload.sync || {};
+      const history = payload.prediction_history || {};
+      const analysis = payload.analysis_engine || {};
+      const models = payload.model_engine || {};
+      const hit = payload.hit_rate || {};
+      const collector = payload.collector || {};
+      const recentError = collector.recent_error || {};
+      const overall = Object.values(system).includes("error") ? "error" : Object.values(system).includes("warning") ? "warning" : "ok";
+
+      document.getElementById("topStatus").innerHTML = `<span class="${statusClass(overall)}">${statusLabel(overall)}</span>`;
+      renderSystem(system);
+      renderSync(sync);
+      renderHistory(history);
+      renderAnalysis(analysis);
+      renderModels(models);
+      renderHitRate(hit);
+      renderCollector(collector, recentError);
+      renderActions();
+    }
+
+    function renderSystem(system) {
+      document.getElementById("systemCard").innerHTML = `
+        <h2>1. 系統狀態</h2>
+        <div class="status-list">
+          ${row("服務狀態", system.service)}
+          ${row("Collector", system.collector)}
+          ${row("Scheduler", system.scheduler)}
+          ${row("Database", system.database)}
+          ${row("Prediction History", system.prediction_history)}
+          ${row("AI Engine", system.ai_engine)}
+        </div>
+      `;
+    }
+
+    function renderSync(sync) {
+      const lag = Number(sync.lag || 0);
+      const summary = lag === 0 ? "★★★★★ 已同步" : `⚠ 落後 ${num(lag)} 期`;
+      const klass = lag === 0 ? "status-ok" : "status-warning";
+      document.getElementById("syncCard").innerHTML = `
+        <h2>2. 資料同步</h2>
+        <div class="grid">
+          ${metric("Database 最新期", safe(sync.database_latest_issue))}
+          ${metric("Source 最新期", safe(sync.source_latest_issue))}
+          ${metric("Lag", `${num(lag)} 期`)}
+          ${metric("同步狀態", summary, klass)}
+          ${metric("最後同步時間", safe(sync.last_successful_collect_time))}
+          ${metric("同步耗時", `${num(sync.last_collect_duration)} 秒`)}
+        </div>
+      `;
+    }
+
+    function renderHistory(history) {
+      document.getElementById("historyCard").innerHTML = `
+        <h2>3. Prediction History</h2>
+        <div class="grid">
+          ${metric("總筆數", num(history.total_count))}
+          ${metric("今日新增", num(history.today_count))}
+          ${metric("最後一筆 Prediction", safe(history.last_prediction_issue))}
+          ${metric("最後驗證時間", safe(history.last_verified_at))}
+        </div>
+      `;
+    }
+
+    function renderAnalysis(analysis) {
+      const status = analysis.status || "warning";
+      document.getElementById("analysisCard").innerHTML = `
+        <h2>4. Analysis Engine</h2>
+        <div class="grid">
+          ${metric("最新分析期數", safe(analysis.latest_issue))}
+          ${metric("Analysis Count", num(analysis.analysis_count))}
+          ${metric("Engine Status", statusLabel(status), statusClass(status))}
+          ${metric("最後分析時間", safe(analysis.last_analysis_time))}
+        </div>
+      `;
+    }
+
+    function renderModels(models) {
+      const ranking = models.ranking || [];
+      const rows = ranking.length
+        ? ranking.map((item, index) => `
+          <div class="status-row">
+            <strong>${index + 1}. ${safe(item.label)}</strong>
+            <span>${safe(item.stars)} ${num(item.confidence)}% / 命中 ${num(item.recent_hit_rate)}%</span>
+          </div>
+        `).join("")
+        : `<div class="notice">尚無模型資料</div>`;
+      document.getElementById("modelCard").innerHTML = `
+        <h2>5. Model Engine</h2>
+        <div class="grid">
+          ${metric("最新分析期數", safe(models.latest_issue))}
+          ${metric("最終信心", `${num(models.confidence)}%`)}
+        </div>
+        <div class="notice">模型排名</div>
+        <div class="status-list">${rows}</div>
+      `;
+    }
+
+    function renderHitRate(hit) {
+      if (hit.status === "empty") {
+        document.getElementById("hitRateCard").innerHTML = `<h2>6. AI 命中率</h2><div class="notice">${safe(hit.message, "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。")}</div>`;
+        return;
+      }
+      document.getElementById("hitRateCard").innerHTML = `
+        <h2>6. AI 命中率</h2>
+        <div class="grid">
+          ${metric("近100期三星", `${num(hit.three_star_rate)}%`)}
+          ${metric("四星", `${num(hit.four_star_rate)}%`)}
+          ${metric("五星", `${num(hit.five_star_rate)}%`)}
+          ${metric("超獎", `${num(hit.super_hit_rate)}%`)}
+          ${metric("平均命中", num(hit.average_hits))}
+          ${metric("統計樣本", `${num(hit.sample_size)} 期`)}
+        </div>
+      `;
+    }
+
+    function renderCollector(collector, recentError) {
+      const errorText = recentError.error_message || recentError.message || "目前沒有未解決錯誤";
+      document.getElementById("collectorCard").innerHTML = `
+        <h2>7. Collector</h2>
+        <div class="grid">
+          ${metric("官方來源", safe(collector.official_source))}
+          ${metric("最後抓取", safe(collector.last_fetch))}
+          ${metric("抓取成功率", `${num(collector.success_rate)}%`)}
+          ${metric("最近錯誤", safe(errorText))}
+        </div>
+      `;
+    }
+
+    function renderActions() {
+      document.getElementById("actionsCard").innerHTML = `
+        <h2>8. 快速操作</h2>
+        <div class="actions">
+          <button class="primary" type="button" onclick="runCatchUp()">立即 Catch-up</button>
+          <button type="button" onclick="loadAdmin()">重新整理</button>
+          <button type="button" onclick="recalculateStats()">重新計算統計</button>
+          <button type="button" onclick="syncPredictionHistory()">同步 Prediction History</button>
+        </div>
+        <div class="notice" id="actionResult">等待操作</div>
+      `;
+    }
+
+    async function runCatchUp() {
+      await action("Catch-up", () => getJson("/api/collector/catch-up"));
+      await loadAdmin();
+    }
+
+    async function recalculateStats() {
+      await action("重新計算統計", () => getJson("/api/prediction-history/statistics?limit=100"));
+      await loadAdmin();
+    }
+
+    async function syncPredictionHistory() {
+      await action("同步 Prediction History", () => getJson("/api/official/collect-today", { method: "POST" }));
+      await loadAdmin();
+    }
+
+    async function action(label, fn) {
+      const box = document.getElementById("actionResult");
+      box.textContent = `${label} 執行中...`;
+      try {
+        const result = await fn();
+        box.textContent = `${label} 完成：${safe(result.status, "ok")}`;
+      } catch (error) {
+        box.textContent = `${label} 失敗：${error.message}`;
+      }
+    }
+
+    loadAdmin();
+    setInterval(loadAdmin, 30000);
+  </script>
+</body>
+</html>

@@ -17,6 +17,7 @@ from database.simulation_store import get_latest_simulation_run, get_simulation_
 from database.strategy_ranking_store import get_latest_strategy_rankings
 from db import get_latest_draw
 from services.simulation_model import ensure_simulation_for_issue, get_production_latest_issue
+from services.voting_engine import build_voting_result
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +421,8 @@ def generate_recommendation_center() -> dict:
         target_issue = _target_issue(issue)
 
         candidates = simulation.get("results", [])[:5]
+        voting = build_voting_result(100)
+        voting_candidates = voting.get("final_candidates") or []
         max_total_score = max(_safe_float(item.get("total_score")) for item in candidates) or 1
         best_strategy = best.get("strategy", "Adaptive")
         rank_score = _safe_float(best.get("rank_score"))
@@ -434,6 +437,19 @@ def generate_recommendation_center() -> dict:
 
         results = []
         confidences = []
+        if voting_candidates:
+            candidates = [
+                {
+                    "numbers": voting_candidates,
+                    "total_score": voting.get("confidence", 0),
+                    "scores": {
+                        "model_scores": voting.get("model_scores", {}),
+                        "winning_model": voting.get("winning_model"),
+                    },
+                }
+            ] + candidates[:4]
+            max_total_score = max(_safe_float(item.get("total_score")) for item in candidates) or 1
+
         for index, item in enumerate(candidates, start=1):
             total_score = _safe_float(item.get("total_score"))
             confidence = _confidence(
@@ -460,6 +476,8 @@ def generate_recommendation_center() -> dict:
                     "total_score": total_score,
                     "strategy": best_strategy,
                     "explanation": explanation,
+                    "model_scores": voting.get("model_scores", {}),
+                    "winning_model": voting.get("winning_model"),
                 }
             )
 
@@ -480,9 +498,20 @@ def generate_recommendation_center() -> dict:
             "data_quality_status": quality_status,
             "super_recommendation": super_recommendation,
             "sync": sync,
+            "model_scores": voting.get("model_scores", {}),
+            "winning_model": voting.get("winning_model"),
+            "model_voting": voting,
             "explanation": run_explanation,
         }
         saved = save_recommendation_run(run, results)
+        try:
+            from services.next_prediction_center import save_recommendation_prediction_history
+
+            run["prediction_history"] = save_recommendation_prediction_history({**run, "results": results})
+        except Exception as exc:
+            logger.exception("prediction history save failed")
+            run["prediction_history"] = {"status": "error", "message": str(exc)}
+
         try:
             from services.prediction_tracker import register_recommendation_prediction
 

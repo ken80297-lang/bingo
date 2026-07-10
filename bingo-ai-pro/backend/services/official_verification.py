@@ -22,6 +22,7 @@ from database.official_draw_store import (
     save_official_draws,
 )
 from services.operations_center import record_operation_event
+from database.prediction_history_store import update_prediction_history_result
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,24 @@ def run_official_verification(limit: int = 10) -> dict:
             local_draw = local_draws.get(str(official.get("issue")))
             payload = _verification_payload(official.get("issue"), local_draw, official)
             payload["saved"] = save_draw_verification(payload)
+            try:
+                payload["prediction_history"] = update_prediction_history_result(
+                    {
+                        "issue": official.get("issue"),
+                        "numbers": official.get("numbers"),
+                        "super_number": official.get("super_number"),
+                    }
+                )
+            except Exception as exc:
+                logger.exception("prediction_history update failed during official verification")
+                payload["prediction_history"] = {"status": "error", "message": str(exc)}
+            try:
+                from services.analysis_engine import analyze_official_draw
+
+                payload["analysis_engine"] = analyze_official_draw(official)
+            except Exception as exc:
+                logger.exception("analysis engine update failed during official verification")
+                payload["analysis_engine"] = {"status": "error", "message": str(exc)}
             saved.append(payload)
 
         latest_kuaishou = get_latest_kuaishou_snapshot()

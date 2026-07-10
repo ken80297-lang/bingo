@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.adaptive_weight import router as adaptive_weight_router
+from api.admin import router as admin_router
 from api.analysis import router as analysis_router
 from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
@@ -27,6 +28,8 @@ from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_features import router as laowanjia_features_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
+from api.models import router as models_router
+from api.next_prediction import router as next_prediction_router
 from api.operations_center import router as operations_center_router
 from api.official_verification import router as official_verification_router
 from api.prediction_tracker import router as prediction_tracker_router
@@ -49,6 +52,7 @@ from database.data_quality_store import init_data_quality_tables
 from database.laowanjia_feature_store import init_laowanjia_feature_tables
 from database.operations_store import init_operations_tables
 from database.official_draw_store import init_official_draw_tables
+from database.prediction_history_store import init_prediction_history_tables
 from database.prediction_tracker_store import init_prediction_tracker_tables
 from database.recommendation_center_store import init_recommendation_center_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
@@ -70,6 +74,7 @@ from db import (
     save_statistics,
 )
 from services.data_quality import run_kuaishou_data_quality_check
+from services.catch_up_service import catch_up_missing_issues
 from services.official_verification import collect_official_today
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
@@ -86,6 +91,7 @@ except Exception as e:
     print(e)
 
 app.include_router(adaptive_weight_router)
+app.include_router(admin_router)
 app.include_router(draws_router)
 app.include_router(analysis_router)
 app.include_router(analysis_history_router)
@@ -94,6 +100,8 @@ app.include_router(data_quality_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_features_router)
 app.include_router(laowanjia_v2_router)
+app.include_router(models_router)
+app.include_router(next_prediction_router)
 app.include_router(operations_center_router)
 app.include_router(official_verification_router)
 app.include_router(prediction_tracker_router)
@@ -187,9 +195,14 @@ def startup_event() -> None:
         init_system_health_tables()
         init_operations_tables()
         init_official_draw_tables()
+        init_prediction_history_tables()
         init_recommendation_center_tables()
         init_laowanjia_feature_tables()
         init_prediction_tracker_tables()
+        try:
+            catch_up_missing_issues()
+        except Exception as exc:
+            print(f"Official catch-up startup check failed: {exc}")
         scheduler.add_job(
             collect_pilio_today,
             "date",
@@ -209,6 +222,13 @@ def startup_event() -> None:
             "interval",
             hours=1,
             id="collector_pilio_today",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            catch_up_missing_issues,
+            "interval",
+            minutes=2,
+            id="collector_official_catch_up",
             replace_existing=True,
         )
         scheduler.add_job(
@@ -338,6 +358,11 @@ def api_health() -> dict[str, str]:
 @app.get("/dashboard")
 def dashboard_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/admin")
+def admin_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "admin.html")
 
 
 if DIST_DIR.exists():
