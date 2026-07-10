@@ -5,9 +5,11 @@ from typing import Any
 
 from database.operations_store import (
     get_database_health,
+    get_operation_error_summary,
     get_operation_errors,
     get_operation_metrics,
     get_operation_timeline,
+    resolve_stale_operation_errors,
     save_operation_event,
 )
 
@@ -58,6 +60,22 @@ def operation_errors(limit: int = 50) -> dict:
         return {"status": "error", "data": [], "error": str(exc)}
 
 
+def operation_error_summary() -> dict:
+    try:
+        return get_operation_error_summary()
+    except Exception as exc:
+        logger.exception("operation error summary failed")
+        return {"total": 0, "unresolved": 0, "resolved": 0, "unresolved_by_component": {}, "error": str(exc)}
+
+
+def resolve_stale_errors() -> dict:
+    try:
+        return resolve_stale_operation_errors()
+    except Exception as exc:
+        logger.exception("resolve stale operation errors failed")
+        return {"status": "error", "checked": 0, "resolved": 0, "remaining_unresolved": 0, "error": str(exc)}
+
+
 def operation_metrics() -> dict:
     try:
         return get_operation_metrics()
@@ -85,6 +103,7 @@ def operation_summary(limit: int = 20) -> dict:
     errors_payload = operation_errors(limit)
     metrics_payload = operation_metrics()
     database_health = operation_database_health()
+    error_summary = operation_error_summary()
 
     timeline = timeline_payload.get("data") or []
     errors = errors_payload.get("data") or []
@@ -92,15 +111,28 @@ def operation_summary(limit: int = 20) -> dict:
     suggestions: list[str] = []
 
     status = "ok"
-    if unresolved_errors:
+    if error_summary.get("unresolved", 0) > 0:
         status = "error"
         suggestions.append("Resolve outstanding pipeline errors before trusting production output.")
     elif database_health.get("status") != "ok":
         status = "warning"
         suggestions.append("Check database table health and fallback storage status.")
-    elif any(item.get("status") == "warning" for item in timeline[:10]):
-        status = "warning"
-        suggestions.append("Review recent warning events in the pipeline timeline.")
+    else:
+        try:
+            from services.system_health import build_system_health
+
+            health = build_system_health(save=False)
+            if health.get("status") == "warning" or (health.get("pipeline") or {}).get("status") == "warning":
+                status = "warning"
+                suggestions.append("System health currently reports warning.")
+            elif health.get("status") == "error" or (health.get("pipeline") or {}).get("status") == "error":
+                status = "error"
+                suggestions.append("System health currently reports error.")
+        except Exception:
+            logger.exception("operation summary system health check failed")
+            if any(item.get("status") == "warning" for item in timeline[:10]):
+                status = "warning"
+                suggestions.append("Review recent warning events in the pipeline timeline.")
 
     latest_issue = _latest_issue_from_health(database_health)
 
@@ -109,6 +141,7 @@ def operation_summary(limit: int = 20) -> dict:
         "latest_issue": latest_issue,
         "timeline": timeline,
         "errors": errors,
+        "error_summary": error_summary,
         "metrics": metrics_payload,
         "database_health": database_health,
         "suggestions": suggestions,

@@ -15,9 +15,9 @@ def api_system_health():
     record_operation_event(
         component="system_health",
         event_type="api_check",
-        status=payload.get("status", "unknown"),
+        status="ok" if payload.get("status") != "error" else "error",
         issue=payload.get("latest_issue"),
-        message="system health checked",
+        message=f"system health checked: {payload.get('status', 'unknown')}",
         duration_ms=round((time.perf_counter() - start) * 1000, 2),
     )
     return payload

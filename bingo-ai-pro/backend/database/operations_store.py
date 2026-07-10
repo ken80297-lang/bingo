@@ -246,15 +246,28 @@ def _update_error_state_cloud(cur: Any, event: dict) -> None:
         )
         return
 
-    if status == "ok":
-        cur.execute(
-            """
-            update operation_errors
-            set resolved = true, updated_at = now()
-            where component = %s and resolved = false
-            """,
-            (component,),
-        )
+    if status in ("ok", "warning"):
+        issue = event.get("issue")
+        if issue:
+            cur.execute(
+                """
+                update operation_errors
+                set resolved = true, updated_at = now()
+                where component = %s
+                  and resolved = false
+                  and (issue is null or issue <= %s)
+                """,
+                (component, str(issue)),
+            )
+        else:
+            cur.execute(
+                """
+                update operation_errors
+                set resolved = true, updated_at = now()
+                where component = %s and resolved = false
+                """,
+                (component,),
+            )
 
 
 def _update_error_state_sqlite(conn: sqlite3.Connection, event: dict) -> None:
@@ -281,15 +294,28 @@ def _update_error_state_sqlite(conn: sqlite3.Connection, event: dict) -> None:
         )
         return
 
-    if status == "ok":
-        conn.execute(
-            """
-            update operation_errors
-            set resolved = 1, updated_at = ?
-            where component = ? and resolved = 0
-            """,
-            (_now(), component),
-        )
+    if status in ("ok", "warning"):
+        issue = event.get("issue")
+        if issue:
+            conn.execute(
+                """
+                update operation_errors
+                set resolved = 1, updated_at = ?
+                where component = ?
+                  and resolved = 0
+                  and (issue is null or issue <= ?)
+                """,
+                (_now(), component, str(issue)),
+            )
+        else:
+            conn.execute(
+                """
+                update operation_errors
+                set resolved = 1, updated_at = ?
+                where component = ? and resolved = 0
+                """,
+                (_now(), component),
+            )
 
 
 def _update_metrics_cloud(cur: Any, event: dict) -> None:
@@ -481,6 +507,188 @@ def get_operation_errors(limit: int = 50, unresolved_only: bool = False) -> list
     except Exception:
         logger.exception("sqlite operation errors query failed")
         return []
+
+
+def get_operation_error_summary() -> dict:
+    sql = """
+        select
+            count(*),
+            sum(case when resolved = false then 1 else 0 end),
+            sum(case when resolved = true then 1 else 0 end)
+        from operation_errors
+    """
+    by_component_sql = """
+        select component, count(*)
+        from operation_errors
+        where resolved = false
+        group by component
+        order by count(*) desc, component
+    """
+    if _cloud_enabled():
+        try:
+            row = _query_cloud(sql)[0]
+            component_rows = _query_cloud(by_component_sql)
+            return {
+                "total": int(row[0] or 0),
+                "unresolved": int(row[1] or 0),
+                "resolved": int(row[2] or 0),
+                "unresolved_by_component": {str(item[0]): int(item[1] or 0) for item in component_rows},
+            }
+        except Exception:
+            logger.exception("cloud operation error summary query failed")
+
+    try:
+        sqlite_sql = sql.replace("resolved = false", "resolved = 0").replace("resolved = true", "resolved = 1")
+        row = _query_sqlite(sqlite_sql)[0]
+        component_rows = _query_sqlite(by_component_sql.replace("resolved = false", "resolved = 0"))
+        return {
+            "total": int(row[0] or 0),
+            "unresolved": int(row[1] or 0),
+            "resolved": int(row[2] or 0),
+            "unresolved_by_component": {str(item[0]): int(item[1] or 0) for item in component_rows},
+        }
+    except Exception:
+        logger.exception("sqlite operation error summary query failed")
+        return {"total": 0, "unresolved": 0, "resolved": 0, "unresolved_by_component": {}}
+
+
+def resolve_component_errors(component: str, issue: str | None = None) -> dict:
+    if not component:
+        return {"status": "error", "resolved": 0, "error": "missing component"}
+
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    if issue:
+                        cur.execute(
+                            """
+                            update operation_errors
+                            set resolved = true, updated_at = now()
+                            where component = %s
+                              and resolved = false
+                              and (issue is null or issue <= %s)
+                            """,
+                            (component, str(issue)),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            update operation_errors
+                            set resolved = true, updated_at = now()
+                            where component = %s and resolved = false
+                            """,
+                            (component,),
+                        )
+                    resolved = int(cur.rowcount or 0)
+                conn.commit()
+            return {"status": "ok", "storage": "cloud", "resolved": resolved}
+        except Exception:
+            logger.exception("cloud resolve component errors failed")
+
+    try:
+        with _sqlite_connection() as conn:
+            if issue:
+                cursor = conn.execute(
+                    """
+                    update operation_errors
+                    set resolved = 1, updated_at = ?
+                    where component = ?
+                      and resolved = 0
+                      and (issue is null or issue <= ?)
+                    """,
+                    (_now(), component, str(issue)),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    update operation_errors
+                    set resolved = 1, updated_at = ?
+                    where component = ? and resolved = 0
+                    """,
+                    (_now(), component),
+                )
+            return {"status": "ok", "storage": "sqlite", "resolved": int(cursor.rowcount or 0)}
+    except Exception as exc:
+        logger.exception("sqlite resolve component errors failed")
+        return {"status": "error", "storage": None, "resolved": 0, "error": str(exc)}
+
+
+def resolve_stale_operation_errors() -> dict:
+    before = get_operation_error_summary()
+    checked = before.get("unresolved", 0)
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update operation_errors e
+                        set resolved = true, updated_at = now()
+                        where e.resolved = false
+                          and exists (
+                              select 1
+                              from operation_events ev
+                              where ev.component = e.component
+                                and ev.status in ('ok', 'warning')
+                                and ev.created_at > e.created_at
+                                and (
+                                    e.issue is null
+                                    or ev.issue is null
+                                    or ev.issue >= e.issue
+                                )
+                          )
+                        """
+                    )
+                    resolved = int(cur.rowcount or 0)
+                conn.commit()
+            after = get_operation_error_summary()
+            return {
+                "status": "ok",
+                "storage": "cloud",
+                "checked": checked,
+                "resolved": resolved,
+                "remaining_unresolved": after.get("unresolved", 0),
+                "error_summary": after,
+            }
+        except Exception:
+            logger.exception("cloud resolve stale operation errors failed")
+
+    try:
+        with _sqlite_connection() as conn:
+            cursor = conn.execute(
+                """
+                update operation_errors
+                set resolved = 1, updated_at = ?
+                where resolved = 0
+                  and exists (
+                      select 1
+                      from operation_events ev
+                      where ev.component = operation_errors.component
+                        and ev.status in ('ok', 'warning')
+                        and ev.created_at > operation_errors.created_at
+                        and (
+                            operation_errors.issue is null
+                            or ev.issue is null
+                            or ev.issue >= operation_errors.issue
+                        )
+                  )
+                """,
+                (_now(),),
+            )
+            resolved = int(cursor.rowcount or 0)
+        after = get_operation_error_summary()
+        return {
+            "status": "ok",
+            "storage": "sqlite",
+            "checked": checked,
+            "resolved": resolved,
+            "remaining_unresolved": after.get("unresolved", 0),
+            "error_summary": after,
+        }
+    except Exception as exc:
+        logger.exception("sqlite resolve stale operation errors failed")
+        return {"status": "error", "checked": checked, "resolved": 0, "remaining_unresolved": checked, "error": str(exc)}
 
 
 def get_operation_metrics() -> dict:

@@ -191,6 +191,7 @@
       <article class="card" id="analysisCard"></article>
       <article class="card" id="modelCard"></article>
       <article class="card" id="systemHealthCard"></article>
+      <article class="card" id="operationsCard"></article>
       <article class="card" id="hitRateCard"></article>
       <article class="card" id="collectorCard"></article>
       <article class="card" id="actionsCard"></article>
@@ -260,6 +261,7 @@
       const analysis = payload.analysis_engine || {};
       const models = payload.model_engine || {};
       const systemHealth = payload.system_health || {};
+      const operations = payload.operations || {};
       const hit = payload.hit_rate || {};
       const collector = payload.collector || {};
       const recentError = collector.recent_error || {};
@@ -272,6 +274,7 @@
       renderAnalysis(analysis);
       renderModels(models);
       renderSystemHealth(systemHealth);
+      renderOperations(operations);
       renderHitRate(hit);
       renderCollector(collector, recentError);
       renderActions();
@@ -371,6 +374,25 @@
           ${metric("Official Status", statusLabel(official.status), statusClass(official.status))}
           ${metric("Mismatch", num(official.mismatch_count), Number(official.mismatch_count || 0) ? "status-error" : "status-ok")}
           ${metric("Waiting", num(official.waiting_count))}
+        </div>
+      `;
+    }
+
+    function renderOperations(operations) {
+      const summary = operations.error_summary || {};
+      const errors = operations.errors || [];
+      const latest = errors[0] || {};
+      const timeline = operations.timeline || [];
+      const lastOk = timeline.find(item => item.status === "ok") || {};
+      document.getElementById("operationsCard").innerHTML = `
+        <h2>Operations</h2>
+        <div class="grid">
+          ${metric("Operations Status", statusLabel(operations.status), statusClass(operations.status))}
+          ${metric("Unresolved Errors", num(summary.unresolved), Number(summary.unresolved || 0) ? "status-error" : "status-ok")}
+          ${metric("Resolved Errors", num(summary.resolved))}
+          ${metric("Total Errors", num(summary.total))}
+          ${metric("最後錯誤 Component", safe(latest.component))}
+          ${metric("最後成功時間", safe(lastOk.created_at))}
         </div>
       `;
     }

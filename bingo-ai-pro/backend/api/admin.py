@@ -14,7 +14,7 @@ from database.prediction_history_store import (
 from services.catch_up_service import get_catch_up_status
 from services.analysis_engine import analysis_engine_status
 from services.next_prediction_center import build_next_prediction_dashboard
-from services.operations_center import operation_errors, operation_metrics
+from services.operations_center import operation_error_summary, operation_errors, operation_metrics, operation_timeline
 from services.system_health import build_system_health
 from services.voting_engine import model_status
 
@@ -92,6 +92,15 @@ def api_admin_status(request: Request):
     latest_error = _latest_error()
     lag_count = catch_up.get("lag_count")
     system_health = build_system_health(save=False)
+    error_summary = operation_error_summary()
+    timeline = operation_timeline(10).get("data") or []
+    operations_status = "error" if error_summary.get("unresolved", 0) else system_health.get("status", "unknown")
+    operations = {
+        "status": operations_status,
+        "error_summary": error_summary,
+        "errors": operation_errors(10).get("data") or [],
+        "timeline": timeline,
+    }
 
     database_status = "ok" if catch_up.get("database_latest_issue") else "warning"
     prediction_history_status = "ok" if history_count > 0 else "warning"
@@ -127,6 +136,7 @@ def api_admin_status(request: Request):
         "analysis_engine": analysis_status,
         "model_engine": models,
         "system_health": system_health,
+        "operations": operations,
         "hit_rate": history_stats,
         "collector": {
             "official_source": "Taiwan Lottery Official API",

@@ -6,6 +6,7 @@ from services.operations_center import (
     operation_metrics,
     operation_summary,
     operation_timeline,
+    resolve_stale_errors,
 )
 
 router = APIRouter(prefix="/api/operations", tags=["Operations Center"])
@@ -34,3 +35,8 @@ def api_operations_database_health():
 @router.get("/summary")
 def api_operations_summary():
     return operation_summary()
+
+
+@router.post("/resolve-stale-errors")
+def api_operations_resolve_stale_errors():
+    return resolve_stale_errors()
