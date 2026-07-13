@@ -19,3 +19,5 @@ yarn-error.log*
 
 backend/err.txt
 backend/out.txt
+backend/health_cache.json
+backend/health_cache.json.tmp

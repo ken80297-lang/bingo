@@ -327,7 +327,11 @@
       error: "錯誤",
       unknown: "未知",
       running: "執行中",
-      available: "可用"
+      available: "可用",
+      live: "即時",
+      recent: "近期",
+      stale: "過期",
+      unavailable: "無法取得"
     }[status] || safe(status));
 
     const balls = (values, type = "") => {
@@ -361,6 +365,41 @@
     `;
 
     const FETCH_TIMEOUT_MS = 10000;
+    const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
+    const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
+
+    function saveHealthBrowserCache(payload) {
+      try {
+        localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify({
+          saved_at: Date.now(),
+          payload
+        }));
+      } catch (error) {
+        console.warn("[dashboard] health browser cache save failed", error);
+      }
+    }
+
+    function loadHealthBrowserCache() {
+      try {
+        const raw = localStorage.getItem(HEALTH_STORAGE_KEY);
+        if (!raw) return null;
+        const cached = JSON.parse(raw);
+        if (!cached || !cached.payload || (Date.now() - Number(cached.saved_at || 0)) > HEALTH_STORAGE_MAX_AGE_MS) {
+          return null;
+        }
+        return {
+          ...cached.payload,
+          cached: true,
+          source: "browser",
+          stale: true,
+          cache_state: cached.payload.cache_state || "stale",
+          browser_cache_saved_at: new Date(cached.saved_at).toISOString()
+        };
+      } catch (error) {
+        console.warn("[dashboard] health browser cache load failed", error);
+        return null;
+      }
+    }
 
     async function loadJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
       const controller = new AbortController();
@@ -368,12 +407,18 @@
       try {
         const response = await fetch(url, { cache: "no-store", signal: controller.signal });
         if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
-        return response.json();
+        const payload = await response.json();
+        if (url === apis.health) saveHealthBrowserCache(payload);
+        return payload;
       } catch (error) {
         const message = error && error.name === "AbortError"
           ? `${url} timeout after ${timeoutMs / 1000}s`
           : `${url} ${error && error.message ? error.message : error}`;
         console.warn("[dashboard] API failed", { endpoint: url, error: message });
+        if (url === apis.health) {
+          const cachedHealth = loadHealthBrowserCache();
+          if (cachedHealth) return cachedHealth;
+        }
         throw new Error(message);
       } finally {
         clearTimeout(timer);
@@ -452,6 +497,10 @@
       const simulation = health.simulation || {};
       const recommendation = health.recommendation || {};
       const prediction = health.prediction || {};
+      const cacheAge = Number(health.cache_age_seconds);
+      const cacheAgeLabel = Number.isFinite(cacheAge)
+        ? `${number(cacheAge / 60)} 分鐘`
+        : "尚無資料";
       document.getElementById("cardPipeline").innerHTML = `
         <h2>Pipeline 同步狀態</h2>
         <div class="hero-row">
@@ -461,6 +510,10 @@
           ${metric("Super Issue", safe(recommendation.super_issue))}
           ${metric("Prediction Issue", safe(prediction.issue))}
           ${metric("同步狀態", statusText((health.pipeline || {}).status || health.status), `status-${(health.pipeline || {}).status || health.status}`)}
+          ${metric("Health 快取", statusText(health.cache_state), health.stale ? "status-warning" : "status-ok")}
+          ${metric("快取年齡", cacheAgeLabel)}
+          ${metric("資料來源", safe(health.source))}
+          ${metric("最後檢查", safe(health.last_checked))}
         </div>
       `;
     }

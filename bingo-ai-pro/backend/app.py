@@ -77,6 +77,7 @@ from db import (
 )
 from services.data_quality import run_kuaishou_data_quality_check
 from services.catch_up_service import catch_up_missing_issues
+from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.official_verification import collect_official_today
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
@@ -204,9 +205,29 @@ def startup_event() -> None:
         init_laowanjia_feature_tables()
         init_prediction_tracker_tables()
         try:
+            warm_health_cache()
+        except Exception as exc:
+            print(f"Health cache warm-up failed: {exc}")
+        try:
             catch_up_missing_issues()
         except Exception as exc:
             print(f"Official catch-up startup check failed: {exc}")
+        scheduler.add_job(
+            refresh_health_cache,
+            "date",
+            run_date=datetime.utcnow() + timedelta(seconds=5),
+            id="system_health_cache_startup",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            refresh_health_cache,
+            "interval",
+            minutes=5,
+            id="system_health_cache_refresh",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         scheduler.add_job(
             collect_pilio_today,
             "date",

@@ -60,6 +60,23 @@ def init_system_health_tables() -> dict:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    create table if not exists health_cache (
+                        cache_key text primary key,
+                        payload_json jsonb,
+                        health_status text,
+                        generated_at timestamptz,
+                        last_checked timestamptz,
+                        last_refresh_attempt timestamptz,
+                        last_refresh_success timestamptz,
+                        last_refresh_error text,
+                        refresh_duration_ms double precision,
+                        created_at timestamptz default now(),
+                        updated_at timestamptz default now()
+                    )
+                    """
+                )
             conn.commit()
         results["cloud"] = "available"
     except Exception:
@@ -75,6 +92,23 @@ def init_system_health_tables() -> dict:
                     status text,
                     payload text,
                     created_at text default current_timestamp
+                )
+                """
+            )
+            conn.execute(
+                """
+                create table if not exists health_cache (
+                    cache_key text primary key,
+                    payload_json text,
+                    health_status text,
+                    generated_at text,
+                    last_checked text,
+                    last_refresh_attempt text,
+                    last_refresh_success text,
+                    last_refresh_error text,
+                    refresh_duration_ms real,
+                    created_at text default current_timestamp,
+                    updated_at text default current_timestamp
                 )
                 """
             )
@@ -161,4 +195,129 @@ def get_latest_system_health_report() -> dict | None:
             return _json_loads(row[0]) if row else None
     except Exception:
         logger.exception("sqlite system health query failed")
+        return None
+
+
+def upsert_health_cache(cache_key: str, payload: dict) -> dict:
+    health_status = payload.get("health_status") or payload.get("status")
+    generated_at = payload.get("generated_at")
+    last_checked = payload.get("last_checked") or generated_at
+    last_refresh_attempt = payload.get("last_refresh_attempt")
+    last_refresh_success = payload.get("last_refresh_success")
+    last_refresh_error = payload.get("last_refresh_error")
+    refresh_duration_ms = payload.get("refresh_duration_ms")
+
+    try:
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into health_cache (
+                        cache_key, payload_json, health_status, generated_at,
+                        last_checked, last_refresh_attempt, last_refresh_success,
+                        last_refresh_error, refresh_duration_ms, updated_at
+                    )
+                    values (%s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, now())
+                    on conflict (cache_key) do update set
+                        payload_json = excluded.payload_json,
+                        health_status = excluded.health_status,
+                        generated_at = excluded.generated_at,
+                        last_checked = excluded.last_checked,
+                        last_refresh_attempt = excluded.last_refresh_attempt,
+                        last_refresh_success = excluded.last_refresh_success,
+                        last_refresh_error = excluded.last_refresh_error,
+                        refresh_duration_ms = excluded.refresh_duration_ms,
+                        updated_at = now()
+                    """,
+                    (
+                        cache_key,
+                        _json_dumps(payload),
+                        health_status,
+                        generated_at,
+                        last_checked,
+                        last_refresh_attempt,
+                        last_refresh_success,
+                        last_refresh_error,
+                        refresh_duration_ms,
+                    ),
+                )
+            conn.commit()
+        return {"status": "ok", "storage": "cloud"}
+    except Exception as exc:
+        logger.exception("cloud health cache upsert failed")
+        cloud_error = str(exc)
+
+    try:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """
+                insert into health_cache (
+                    cache_key, payload_json, health_status, generated_at,
+                    last_checked, last_refresh_attempt, last_refresh_success,
+                    last_refresh_error, refresh_duration_ms, created_at, updated_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(cache_key) do update set
+                    payload_json = excluded.payload_json,
+                    health_status = excluded.health_status,
+                    generated_at = excluded.generated_at,
+                    last_checked = excluded.last_checked,
+                    last_refresh_attempt = excluded.last_refresh_attempt,
+                    last_refresh_success = excluded.last_refresh_success,
+                    last_refresh_error = excluded.last_refresh_error,
+                    refresh_duration_ms = excluded.refresh_duration_ms,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cache_key,
+                    _json_dumps(payload),
+                    health_status,
+                    generated_at,
+                    last_checked,
+                    last_refresh_attempt,
+                    last_refresh_success,
+                    last_refresh_error,
+                    refresh_duration_ms,
+                    _now(),
+                    _now(),
+                ),
+            )
+        return {"status": "ok", "storage": "sqlite", "cloud_error": cloud_error}
+    except Exception as exc:
+        logger.exception("sqlite health cache upsert failed")
+        return {"status": "error", "storage": None, "error": str(exc)}
+
+
+def get_health_cache(cache_key: str) -> dict | None:
+    try:
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select payload_json
+                    from health_cache
+                    where cache_key = %s
+                    limit 1
+                    """,
+                    (cache_key,),
+                )
+                row = cur.fetchone()
+                return _json_loads(row[0]) if row else None
+    except Exception:
+        logger.exception("cloud health cache query failed")
+
+    try:
+        with _sqlite_connection() as conn:
+            row = conn.execute(
+                """
+                select payload_json
+                from health_cache
+                where cache_key = ?
+                limit 1
+                """,
+                (cache_key,),
+            ).fetchone()
+            return _json_loads(row[0]) if row else None
+    except Exception:
+        logger.exception("sqlite health cache query failed")
         return None

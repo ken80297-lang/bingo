@@ -107,11 +107,14 @@ def _latest_issue_from_health(database_health: dict[str, Any]) -> str | None:
 
 
 def operation_summary(limit: int = 20) -> dict:
-    timeline_payload = operation_timeline(limit)
-    errors_payload = operation_errors(limit)
-    metrics_payload = operation_metrics()
+    from services.health_cache_engine import get_cached_health
+
+    timeline_payload = {"status": "deferred", "data": []}
+    errors_payload = {"status": "deferred", "data": []}
+    metrics_payload = {"status": "deferred", "components": []}
     database_health = _deferred_database_health()
     error_summary = operation_error_summary()
+    health = get_cached_health()
 
     timeline = timeline_payload.get("data") or []
     errors = errors_payload.get("data") or []
@@ -130,8 +133,13 @@ def operation_summary(limit: int = 20) -> dict:
         if "warning" in recent_statuses:
             status = "warning"
             suggestions.append("Review recent warning events in the pipeline timeline.")
+        if health.get("stale"):
+            status = "warning" if status == "ok" else status
+            suggestions.append("System health cache is stale; review background refresh status.")
 
     latest_issue = _latest_issue_from_health(database_health)
+    if not latest_issue:
+        latest_issue = health.get("latest_issue")
     if not latest_issue and timeline:
         latest_issue = timeline[0].get("issue")
 
@@ -143,5 +151,12 @@ def operation_summary(limit: int = 20) -> dict:
         "error_summary": error_summary,
         "metrics": metrics_payload,
         "database_health": database_health,
+        "health_cache": {
+            "source": health.get("source"),
+            "cache_state": health.get("cache_state"),
+            "cache_age_seconds": health.get("cache_age_seconds"),
+            "stale": health.get("stale"),
+            "last_checked": health.get("last_checked"),
+        },
         "suggestions": suggestions,
     }
