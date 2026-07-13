@@ -28,6 +28,7 @@ from api.draws import router as draws_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_features import router as laowanjia_features_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
+from api.learning import router as learning_router
 from api.models import router as models_router
 from api.next_prediction import router as next_prediction_router
 from api.operations_center import router as operations_center_router
@@ -50,6 +51,7 @@ from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
 from database.data_quality_store import init_data_quality_tables
 from database.laowanjia_feature_store import init_laowanjia_feature_tables
+from database.learning_store import init_learning_tables
 from database.operations_store import init_operations_tables
 from database.official_draw_store import init_official_draw_tables
 from database.prediction_history_store import init_prediction_history_tables
@@ -100,6 +102,7 @@ app.include_router(data_quality_router)
 app.include_router(laowanjia_router)
 app.include_router(laowanjia_features_router)
 app.include_router(laowanjia_v2_router)
+app.include_router(learning_router)
 app.include_router(models_router)
 app.include_router(next_prediction_router)
 app.include_router(operations_center_router)
@@ -196,6 +199,7 @@ def startup_event() -> None:
         init_operations_tables()
         init_official_draw_tables()
         init_prediction_history_tables()
+        init_learning_tables()
         init_recommendation_center_tables()
         init_laowanjia_feature_tables()
         init_prediction_tracker_tables()

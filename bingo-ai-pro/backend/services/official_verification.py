@@ -247,6 +247,13 @@ def run_official_verification(limit: int = 10) -> dict:
                 logger.exception("prediction_history update failed during official verification")
                 payload["prediction_history"] = {"status": "error", "message": str(exc)}
             try:
+                from services.learning_engine import evaluate_verified_issue
+
+                payload["learning"] = evaluate_verified_issue(str(official.get("issue")))
+            except Exception as exc:
+                logger.exception("learning evaluation failed during official verification")
+                payload["learning"] = {"status": "error", "message": str(exc)}
+            try:
                 from services.analysis_engine import analyze_official_draw
 
                 payload["analysis_engine"] = analyze_official_draw(official)

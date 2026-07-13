@@ -8,6 +8,7 @@ from database.data_quality_store import get_data_quality_status
 from database.prediction_history_store import get_prediction_history_count
 from db import get_latest_draw, get_statistics
 from services.catch_up_service import get_catch_up_status
+from services.learning_engine import get_learning_status
 
 router = APIRouter(
     prefix="/api/system",
@@ -80,6 +81,17 @@ def _collector_health(catch_up: dict) -> dict:
     return {"status": "ok", "reason": "已同步"}
 
 
+def _learning_status() -> dict:
+    try:
+        return get_learning_status()
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "engine_version": "22.1",
+            "error": str(exc),
+        }
+
+
 @router.get("/status")
 def api_system_status(request: Request):
     try:
@@ -111,4 +123,5 @@ def api_system_status(request: Request):
         },
         "collector": get_collector_status(),
         "data_quality": get_data_quality_status(),
+        "learning": _learning_status(),
     }

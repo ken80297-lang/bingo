@@ -142,7 +142,18 @@ def _latest_issue() -> str | None:
 
 def _target_issue(issue: str | None) -> str | None:
     try:
-        return str(int(issue) + 1) if issue is not None else None
+        if issue is None:
+            return None
+        current = int(issue)
+        recent = [
+            int(item.get("issue"))
+            for item in get_kuaishou_history(5)
+            if str(item.get("issue") or "").isdigit()
+        ]
+        if len(recent) >= 2 and recent[0] == current and recent[0] - recent[1] == 1:
+            return str(current + 1)
+        logger.warning("target issue cannot be confirmed from collector metadata: %s", issue)
+        return None
     except Exception:
         return None
 
@@ -511,6 +522,14 @@ def generate_recommendation_center() -> dict:
         except Exception as exc:
             logger.exception("prediction history save failed")
             run["prediction_history"] = {"status": "error", "message": str(exc)}
+
+        try:
+            from services.learning_engine import save_live_prediction_snapshot
+
+            run["learning_snapshot"] = save_live_prediction_snapshot({**run, "results": results})
+        except Exception as exc:
+            logger.exception("learning live snapshot save failed")
+            run["learning_snapshot"] = {"status": "error", "message": str(exc)}
 
         try:
             from services.prediction_tracker import register_recommendation_prediction
