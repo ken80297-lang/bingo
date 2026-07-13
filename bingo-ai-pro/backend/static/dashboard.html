@@ -464,7 +464,7 @@
 
       const errorBox = document.getElementById("errorBox");
       errorBox.style.display = errors.length ? "block" : "none";
-      errorBox.textContent = errors.length ? `API 錯誤：${errors.join("，")}` : "";
+      errorBox.textContent = errors.length ? "部分資料暫時無法取得，系統已顯示可用快取資料。" : "";
       document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
 
       renderSync(data.system || {});
