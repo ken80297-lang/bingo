@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from database.collector_store import get_latest_kuaishou_snapshot
@@ -13,6 +15,26 @@ from database.system_health_store import save_system_health_report
 from services.simulation_model import get_production_latest_issue
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_HEALTH_CACHE_TTL_SECONDS = 10
+_SYSTEM_HEALTH_CACHE: dict[str, object] = {"payload": None, "expires_at": 0.0}
+
+
+def _cached_payload() -> dict | None:
+    payload = _SYSTEM_HEALTH_CACHE.get("payload")
+    expires_at = float(_SYSTEM_HEALTH_CACHE.get("expires_at") or 0)
+    if isinstance(payload, dict) and time.monotonic() < expires_at:
+        cached = deepcopy(payload)
+        cached["cached"] = True
+        return cached
+    return None
+
+
+def _store_cache(payload: dict) -> None:
+    if payload.get("status") == "error":
+        return
+    _SYSTEM_HEALTH_CACHE["payload"] = deepcopy(payload)
+    _SYSTEM_HEALTH_CACHE["expires_at"] = time.monotonic() + SYSTEM_HEALTH_CACHE_TTL_SECONDS
 
 
 def _issue_lag(latest_issue: str | None, issue: str | None) -> int | None:
@@ -64,7 +86,12 @@ def _overall_status(parts: list[dict]) -> str:
     return "unknown"
 
 
-def build_system_health(save: bool = True) -> dict:
+def build_system_health(save: bool = True, use_cache: bool = True) -> dict:
+    if use_cache:
+        cached = _cached_payload()
+        if cached:
+            return cached
+
     try:
         latest_issue = get_production_latest_issue()
         collector = get_latest_kuaishou_snapshot()
@@ -173,6 +200,9 @@ def build_system_health(save: bool = True) -> dict:
             ]
         )
         payload["status"] = payload["pipeline"]["status"]
+
+        payload["cached"] = False
+        _store_cache(payload)
 
         if save:
             try:

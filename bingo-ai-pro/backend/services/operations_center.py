@@ -92,6 +92,14 @@ def operation_database_health() -> dict:
         return {"status": "error", "tables": {}, "error": str(exc)}
 
 
+def _deferred_database_health() -> dict:
+    return {
+        "status": "deferred",
+        "tables": {},
+        "message": "Use /api/operations/database-health for a full table scan.",
+    }
+
+
 def _latest_issue_from_health(database_health: dict[str, Any]) -> str | None:
     tables = database_health.get("tables") or {}
     kuaishou = tables.get("kuaishou_snapshots") or {}
@@ -102,7 +110,7 @@ def operation_summary(limit: int = 20) -> dict:
     timeline_payload = operation_timeline(limit)
     errors_payload = operation_errors(limit)
     metrics_payload = operation_metrics()
-    database_health = operation_database_health()
+    database_health = _deferred_database_health()
     error_summary = operation_error_summary()
 
     timeline = timeline_payload.get("data") or []
@@ -114,27 +122,18 @@ def operation_summary(limit: int = 20) -> dict:
     if error_summary.get("unresolved", 0) > 0:
         status = "error"
         suggestions.append("Resolve outstanding pipeline errors before trusting production output.")
-    elif database_health.get("status") != "ok":
+    elif database_health.get("status") == "error":
         status = "warning"
         suggestions.append("Check database table health and fallback storage status.")
     else:
-        try:
-            from services.system_health import build_system_health
-
-            health = build_system_health(save=False)
-            if health.get("status") == "warning" or (health.get("pipeline") or {}).get("status") == "warning":
-                status = "warning"
-                suggestions.append("System health currently reports warning.")
-            elif health.get("status") == "error" or (health.get("pipeline") or {}).get("status") == "error":
-                status = "error"
-                suggestions.append("System health currently reports error.")
-        except Exception:
-            logger.exception("operation summary system health check failed")
-            if any(item.get("status") == "warning" for item in timeline[:10]):
-                status = "warning"
-                suggestions.append("Review recent warning events in the pipeline timeline.")
+        recent_statuses = {str(item.get("status") or "").lower() for item in timeline[:10]}
+        if "warning" in recent_statuses:
+            status = "warning"
+            suggestions.append("Review recent warning events in the pipeline timeline.")
 
     latest_issue = _latest_issue_from_health(database_health)
+    if not latest_issue and timeline:
+        latest_issue = timeline[0].get("issue")
 
     return {
         "status": status,

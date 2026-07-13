@@ -719,8 +719,16 @@ def get_operation_metrics() -> dict:
 def _table_health_cloud(table: str, issue_column: str | None, updated_column: str) -> dict:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"select count(*) from {table}")
-            total = int(cur.fetchone()[0])
+            cur.execute(
+                """
+                select coalesce(
+                    (select reltuples::bigint from pg_class where oid = to_regclass(%s)),
+                    0
+                )
+                """,
+                (table,),
+            )
+            total = int(cur.fetchone()[0] or 0)
             latest_issue = None
             latest_update = None
             if issue_column:
