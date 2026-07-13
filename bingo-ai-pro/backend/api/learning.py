@@ -7,6 +7,7 @@ from services.learning_engine import (
     backfill_learning_records,
     get_learning_history,
     get_learning_models_summary,
+    get_learning_observation,
     get_learning_status,
     get_model_performance,
     recalculate_issue,
@@ -27,6 +28,11 @@ def api_learning_status():
 @router.get("/models")
 def api_learning_models():
     return get_learning_models_summary()
+
+
+@router.get("/observation")
+def api_learning_observation():
+    return get_learning_observation()
 
 
 @router.get("/history")

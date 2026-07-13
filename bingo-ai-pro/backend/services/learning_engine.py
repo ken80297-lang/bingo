@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import copy
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -16,13 +18,32 @@ from database.official_draw_store import get_official_draw_by_issue
 from database.prediction_history_store import (
     get_prediction_history_records,
 )
+from services.analysis_engine import analysis_engine_status
+from services.catch_up_service import get_catch_up_status
 from services.operations_center import record_operation_event
+from services.official_verification import official_statistics
 
 logger = logging.getLogger(__name__)
 
 ENGINE_VERSION = "22.1"
+OBSERVATION_VERSION = "22.1.5"
+OBSERVATION_CACHE_TTL_SECONDS = 30
 DEFAULT_MODEL_VERSION = "v7"
 TOP_N_VALUES = (5, 10, 20)
+EXPECTED_LIVE_MODELS = {"laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"}
+EXPECTED_TOP_N = {5, 10, 20}
+EXPECTED_RECORDS_PER_TARGET = len(EXPECTED_LIVE_MODELS) * len(EXPECTED_TOP_N)
+LEARNING_READINESS_THRESHOLDS = {
+    "minimum_learned_targets": 100,
+    "minimum_model_samples": 100,
+    "minimum_complete_rate": 0.99,
+    "maximum_missing_rate": 0.01,
+    "maximum_evaluation_errors": 0,
+    "maximum_duplicate_risk": 0,
+    "maximum_official_lag": 3,
+}
+_OBSERVATION_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
+_OBSERVATION_CACHE_LOCK = threading.Lock()
 
 
 def _duration_ms(start: float) -> float:
@@ -152,6 +173,150 @@ def _rank_score(hit_count: int, top_n: int) -> float:
     coverage = hit_count / max(1, top_n)
     bonus = 1 / max(1, top_n)
     return round((coverage * 100) + (hit_count * bonus), 4)
+
+
+def _issue_int(value: Any) -> int | None:
+    try:
+        text = str(value or "")
+        if text.startswith("pending:"):
+            text = text.split(":", 1)[1]
+        if text.upper().startswith("TEST"):
+            return None
+        return int(text)
+    except Exception:
+        return None
+
+
+def _safe_lag(newer: Any, older: Any) -> int | None:
+    newer_int = _issue_int(newer)
+    older_int = _issue_int(older)
+    if newer_int is None or older_int is None:
+        return None
+    return max(0, newer_int - older_int)
+
+
+def _learning_scope_records(limit: int = 500) -> list[dict]:
+    return get_learning_records(limit=limit, prediction_type="live_prediction")
+
+
+def _target_key(record: dict) -> str:
+    issue = str(record.get("issue") or "")
+    if issue:
+        return issue
+    target = record.get("target_issue")
+    if target:
+        return str(target)
+    source = record.get("source_issue")
+    return f"pending:{source}" if source else "unknown"
+
+
+def _group_live_targets(records: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        if record.get("prediction_type") != "live_prediction":
+            continue
+        model_name = str(record.get("model_name") or "")
+        if model_name == "unknown":
+            continue
+        grouped.setdefault(_target_key(record), []).append(record)
+    return grouped
+
+
+def _target_quality(target_issue: str, records: list[dict]) -> dict:
+    combos: dict[tuple[str, int], int] = {}
+    models = set()
+    top_n_values = set()
+    duplicate_count = 0
+    prediction_created_at_missing = False
+    source_missing = False
+    target_missing = False
+    error_status = False
+    for record in records:
+        model_name = str(record.get("model_name") or "")
+        top_n = int(record.get("top_n") or 0)
+        combo = (model_name, top_n)
+        combos[combo] = combos.get(combo, 0) + 1
+        if combos[combo] > 1:
+            duplicate_count += 1
+        if model_name:
+            models.add(model_name)
+        if top_n:
+            top_n_values.add(top_n)
+        if not record.get("prediction_created_at"):
+            prediction_created_at_missing = True
+        if not record.get("source_issue"):
+            source_missing = True
+        if not record.get("target_issue") and not str(target_issue).startswith("pending:"):
+            target_missing = True
+        if record.get("learned_status") == "error":
+            error_status = True
+
+    missing_models = sorted(EXPECTED_LIVE_MODELS - models)
+    missing_top_n = sorted(EXPECTED_TOP_N - top_n_values)
+    is_complete = (
+        len(records) == EXPECTED_RECORDS_PER_TARGET
+        and not missing_models
+        and not missing_top_n
+        and duplicate_count == 0
+        and not prediction_created_at_missing
+        and not source_missing
+        and not target_missing
+        and not error_status
+    )
+    reasons = []
+    if len(records) != EXPECTED_RECORDS_PER_TARGET:
+        reasons.append(f"record_count is {len(records)}, expected {EXPECTED_RECORDS_PER_TARGET}")
+    if missing_models:
+        reasons.append("missing models: " + ", ".join(missing_models))
+    if missing_top_n:
+        reasons.append("missing top_n: " + ", ".join(map(str, missing_top_n)))
+    if duplicate_count:
+        reasons.append(f"duplicate combinations: {duplicate_count}")
+    if prediction_created_at_missing:
+        reasons.append("missing prediction_created_at")
+    if source_missing:
+        reasons.append("missing source_issue")
+    if target_missing:
+        reasons.append("missing target_issue")
+    if error_status:
+        reasons.append("learned_status contains error")
+    return {
+        "target_issue": target_issue,
+        "record_count": len(records),
+        "model_count": len(models),
+        "missing_models": missing_models,
+        "missing_top_n": missing_top_n,
+        "duplicate_count": duplicate_count,
+        "status": "complete" if is_complete else "incomplete",
+        "reason": "; ".join(reasons) if reasons else "complete live target",
+    }
+
+
+def _trend(recent_10: float, recent_50: float, sample_size: int) -> tuple[str, float]:
+    if sample_size < 20:
+        return "insufficient_data", 0
+    delta = round((recent_10 or 0) - (recent_50 or 0), 2)
+    if delta > 0.25:
+        return "improving", delta
+    if delta < -0.25:
+        return "declining", delta
+    return "stable", delta
+
+
+def _cached_observation() -> dict | None:
+    now = time.monotonic()
+    with _OBSERVATION_CACHE_LOCK:
+        cached = _OBSERVATION_CACHE.get("payload")
+        expires_at = float(_OBSERVATION_CACHE.get("expires_at") or 0)
+        if cached is None or expires_at <= now:
+            return None
+        payload = copy.deepcopy(cached)
+        payload["cache"] = {
+            "status": "hit",
+            "ttl_seconds": OBSERVATION_CACHE_TTL_SECONDS,
+            "expires_in_seconds": round(expires_at - now, 3),
+        }
+        return payload
 
 
 def capture_prediction_snapshot(issue: str | None = None) -> dict:
@@ -497,15 +662,57 @@ def evaluate_historical_backtest_issue(issue: str, prediction: dict | None = Non
 
 
 def get_learning_status() -> dict:
-    counts = get_learning_status_counts()
-    status = "ok"
-    if counts.get("failed_records", 0) > 0:
-        status = "warning"
-    return {
-        "status": status,
-        "engine_version": ENGINE_VERSION,
-        **counts,
-    }
+    try:
+        counts = get_learning_status_counts()
+        observation = _cached_observation()
+        records = (observation or {}).get("records") or {}
+        targets = (observation or {}).get("targets") or {}
+        quality = (observation or {}).get("quality") or {}
+        readiness = (observation or {}).get("readiness") or {}
+        status = "ok"
+        if int(counts.get("failed_records") or 0) > 0:
+            status = "warning"
+        return {
+            "status": (observation or {}).get("status", status),
+            "engine_version": ENGINE_VERSION,
+            "observation_version": OBSERVATION_VERSION,
+            "total_records": int(counts.get("total_records") or records.get("total") or 0),
+            "live_prediction_count": int(counts.get("live_prediction_count") or records.get("live") or 0),
+            "historical_backtest_count": int(counts.get("historical_backtest_count") or records.get("historical") or 0),
+            "learned_records": int(counts.get("learned_records") or records.get("learned") or 0),
+            "pending_records": int(counts.get("pending_records") or records.get("pending") or 0),
+            "pending_official_records": records.get("pending_official", 0),
+            "pending_target_records": records.get("pending_target", 0),
+            "resolved_pending_records": records.get("resolved_pending", 0),
+            "missing_snapshot_records": int(counts.get("missing_snapshot_records") or records.get("missing_snapshot") or 0),
+            "failed_records": int(counts.get("failed_records") or records.get("failed") or 0),
+            "evaluation_error_records": quality.get("evaluation_error_count", 0),
+            "latest_snapshot_issue": records.get("latest_snapshot_issue"),
+            "latest_snapshot_at": records.get("latest_snapshot_at"),
+            "latest_learned_issue": records.get("latest_learned_issue") or counts.get("latest_learned_issue"),
+            "latest_learned_at": records.get("latest_learned_at") or counts.get("latest_learned_at"),
+            "latest_official_issue": (observation or {}).get("pipeline", {}).get("official_latest_issue"),
+            "official_lag_issues": (observation or {}).get("pipeline", {}).get("official_lag_issues"),
+            "model_count": int(counts.get("model_count") or records.get("model_count") or 0),
+            "live_target_count": targets.get("live_target_count", 0),
+            "complete_live_target_count": targets.get("complete_live_target_count", 0),
+            "incomplete_live_target_count": targets.get("incomplete_live_target_count", 0),
+            "duplicate_risk_count": quality.get("duplicate_risk_count", 0),
+            "snapshot_success_rate": quality.get("snapshot_success_rate", 0),
+            "learning_success_rate": quality.get("learning_success_rate", 0),
+            "readiness_status": readiness.get("status", "unknown"),
+            "ready_for_phase_22_2": bool(readiness.get("ready")),
+            "readiness_reasons": readiness.get("reasons", []),
+            "observation_cache": (observation or {}).get("cache", {"status": "miss_not_computed"}),
+        }
+    except Exception as exc:
+        logger.exception("learning status failed")
+        return {
+            "status": "error",
+            "engine_version": ENGINE_VERSION,
+            "observation_version": OBSERVATION_VERSION,
+            "error": str(exc),
+        }
 
 
 def get_model_performance(
@@ -523,8 +730,11 @@ def get_model_performance(
     return {
         "status": "ok",
         "engine_version": ENGINE_VERSION,
+        "observation_version": OBSERVATION_VERSION,
         "window": window,
         "top_n": top_n,
+        "sample_unit": "learning_history_records",
+        "target_sample_note": "Use /api/learning/models for target_sample_count by model.",
         "models": rows,
     }
 
@@ -551,6 +761,38 @@ def get_learning_models_summary() -> dict:
         item["model_name"]: item
         for item in get_learning_model_performance(window="all", top_n=20)
     }
+    recent_20 = {
+        item["model_name"]: item
+        for item in get_learning_model_performance(window=20)
+    }
+    recent_100 = {
+        item["model_name"]: item
+        for item in get_learning_model_performance(window=100)
+    }
+    live_records = _learning_scope_records(500)
+    learned_records = [item for item in live_records if item.get("learned_status") == "learned"]
+    target_samples_by_model: dict[str, set[str]] = {}
+    learned_targets_by_model: dict[str, set[str]] = {}
+    pending_targets_by_model: dict[str, set[str]] = {}
+    top_counts_by_model: dict[str, dict[int, int]] = {}
+    error_counts_by_model: dict[str, int] = {}
+    latest_by_model: dict[str, dict] = {}
+    for item in live_records:
+        model_name = str(item.get("model_name") or "")
+        if not model_name or model_name == "unknown":
+            continue
+        target = _target_key(item)
+        target_samples_by_model.setdefault(model_name, set()).add(target)
+        if item.get("learned_status") == "learned":
+            learned_targets_by_model.setdefault(model_name, set()).add(target)
+        else:
+            pending_targets_by_model.setdefault(model_name, set()).add(target)
+        top_n = int(item.get("top_n") or 0)
+        top_counts_by_model.setdefault(model_name, {})
+        top_counts_by_model[model_name][top_n] = top_counts_by_model[model_name].get(top_n, 0) + 1
+        if item.get("learned_status") in ("failed", "error") or item.get("verification_status") in ("error", "evaluation_error"):
+            error_counts_by_model[model_name] = error_counts_by_model.get(model_name, 0) + 1
+        latest_by_model.setdefault(model_name, item)
 
     model_names = sorted(
         {
@@ -562,25 +804,53 @@ def get_learning_models_summary() -> dict:
     models = []
     for name in model_names:
         base = next((item for item in all_rows if item["model_name"] == name), {})
+        recent_10_hits = recent_10.get(name, {}).get("average_hits", 0)
+        recent_50_hits = recent_50.get(name, {}).get("average_hits", 0)
+        trend_status, trend_delta = _trend(
+            float(recent_10_hits or 0),
+            float(recent_50_hits or 0),
+            int(base.get("sample_size", 0) or 0),
+        )
         models.append(
             {
                 "model_name": name,
                 "model_version": base.get("model_version"),
+                "record_count": sum(top_counts_by_model.get(name, {}).values()),
                 "sample_size": base.get("sample_size", 0),
+                "target_sample_count": len(target_samples_by_model.get(name, set())),
+                "learned_target_count": len(learned_targets_by_model.get(name, set())),
+                "pending_target_count": len(pending_targets_by_model.get(name, set())),
+                "top_5_sample_count": top_counts_by_model.get(name, {}).get(5, 0),
+                "top_10_sample_count": top_counts_by_model.get(name, {}).get(10, 0),
+                "top_20_sample_count": top_counts_by_model.get(name, {}).get(20, 0),
                 "top_5_average_hits": top_5.get(name, {}).get("average_hits", 0),
                 "top_10_average_hits": top_10.get(name, {}).get("average_hits", 0),
                 "top_20_average_hits": top_20.get(name, {}).get("average_hits", 0),
-                "recent_10_average_hits": recent_10.get(name, {}).get("average_hits", 0),
-                "recent_50_average_hits": recent_50.get(name, {}).get("average_hits", 0),
+                "top_5_precision": top_5.get(name, {}).get("precision_score", 0),
+                "top_10_precision": top_10.get(name, {}).get("precision_score", 0),
+                "top_20_precision": top_20.get(name, {}).get("precision_score", 0),
+                "top_5_rank_score": top_5.get(name, {}).get("rank_score", 0),
+                "top_10_rank_score": top_10.get(name, {}).get("rank_score", 0),
+                "top_20_rank_score": top_20.get(name, {}).get("rank_score", 0),
+                "recent_10_average_hits": recent_10_hits,
+                "recent_20_average_hits": recent_20.get(name, {}).get("average_hits", 0),
+                "recent_50_average_hits": recent_50_hits,
+                "recent_100_average_hits": recent_100.get(name, {}).get("average_hits", 0),
+                "all_time_average_hits": base.get("average_hits", 0),
                 "precision_score": base.get("precision_score", 0),
                 "rank_score": base.get("rank_score", 0),
-                "latest_issue": base.get("latest_issue"),
+                "evaluation_error_count": error_counts_by_model.get(name, 0),
+                "latest_issue": base.get("latest_issue") or (latest_by_model.get(name) or {}).get("issue"),
                 "latest_learned_at": base.get("latest_learned_at"),
+                "trend": trend_status,
+                "trend_delta": trend_delta,
             }
         )
     return {
         "status": "ok",
         "engine_version": ENGINE_VERSION,
+        "observation_version": OBSERVATION_VERSION,
+        "sample_unit": "target_sample_count counts distinct live target issues; record_count counts Top N rows.",
         "models": models,
     }
 
@@ -591,3 +861,196 @@ def get_learning_history(**filters: Any) -> dict:
         "engine_version": ENGINE_VERSION,
         "data": get_learning_records(**filters),
     }
+
+
+def _build_learning_observation() -> dict:
+    try:
+        base_counts = get_learning_status_counts()
+        records = _learning_scope_records(500)
+        all_records = get_learning_records(limit=500)
+        grouped_targets = _group_live_targets(records)
+        target_rows = [_target_quality(target, items) for target, items in grouped_targets.items()]
+        complete_targets = [item for item in target_rows if item["status"] == "complete"]
+        incomplete_targets = [item for item in target_rows if item["status"] != "complete"]
+        duplicate_risk_count = sum(item["duplicate_count"] for item in target_rows)
+        evaluation_error_count = sum(
+            1
+            for item in all_records
+            if item.get("learned_status") in ("failed", "error")
+            or item.get("verification_status") in ("error", "evaluation_error")
+        )
+        learned_target_count = len(
+            {
+                _target_key(item)
+                for item in records
+                if item.get("learned_status") == "learned" and str(item.get("model_name") or "") != "unknown"
+            }
+        )
+        missing_snapshot_records = [
+            item for item in all_records if item.get("learned_status") == "missing_snapshot"
+        ]
+        live_count = int(base_counts.get("live_prediction_count") or 0)
+        learned_records = int(base_counts.get("learned_records") or 0)
+        pending_official = sum(1 for item in all_records if item.get("verification_status") == "pending_official")
+        pending_target = sum(1 for item in all_records if item.get("verification_status") == "pending_target_issue")
+        resolved_pending = sum(1 for item in all_records if item.get("learned_status") == "resolved_to_target")
+        failed_records = sum(1 for item in all_records if item.get("learned_status") in ("failed", "error"))
+        historical = sum(1 for item in all_records if item.get("prediction_type") == "historical_backtest")
+        latest_snapshot = next((item for item in records if str(item.get("model_name") or "") != "unknown"), None)
+        learned_items = [item for item in records if item.get("learned_status") == "learned" and str(item.get("model_name") or "") != "unknown"]
+        latest_learned = learned_items[0] if learned_items else None
+        model_names = {
+            str(item.get("model_name"))
+            for item in records
+            if item.get("model_name") and str(item.get("model_name")) != "unknown"
+        }
+
+        official = official_statistics()
+        catch_up = get_catch_up_status(fetch_source=False)
+        analysis = analysis_engine_status()
+        collector_latest = catch_up.get("database_latest_issue") or official.get("latest_kuaishou_issue")
+        official_latest = official.get("latest_official_issue")
+        official_lag = _safe_lag(collector_latest, official_latest)
+        complete_rate = round(len(complete_targets) / len(grouped_targets), 4) if grouped_targets else 0
+        missing_rate = round(len(missing_snapshot_records) / max(1, live_count), 4) if live_count else 0
+        snapshot_success_rate = round(complete_rate * 100, 2)
+        learning_success_rate = round((learned_target_count / len(grouped_targets)) * 100, 2) if grouped_targets else 0
+
+        readiness_reasons = []
+        ready = True
+        readiness_status = "ready_for_phase_22_2"
+        if evaluation_error_count > LEARNING_READINESS_THRESHOLDS["maximum_evaluation_errors"]:
+            readiness_status = "error"
+            readiness_reasons.append(f"evaluation errors detected: {evaluation_error_count}")
+            ready = False
+        if duplicate_risk_count > LEARNING_READINESS_THRESHOLDS["maximum_duplicate_risk"]:
+            readiness_status = "warning" if readiness_status != "error" else readiness_status
+            readiness_reasons.append(f"duplicate risk detected: {duplicate_risk_count}")
+            ready = False
+        if official_lag is not None and official_lag > LEARNING_READINESS_THRESHOLDS["maximum_official_lag"]:
+            readiness_status = "waiting_official" if readiness_status not in ("error", "warning") else readiness_status
+            readiness_reasons.append(f"official data is {official_lag} issues behind collector")
+            ready = False
+        if len(grouped_targets) == 0:
+            readiness_status = "collecting"
+            readiness_reasons.append("waiting for live prediction snapshots")
+            ready = False
+        if complete_rate < LEARNING_READINESS_THRESHOLDS["minimum_complete_rate"]:
+            readiness_status = "warning" if readiness_status == "ready_for_phase_22_2" else readiness_status
+            readiness_reasons.append(f"complete live target rate is {complete_rate:.2%}")
+            ready = False
+        if missing_rate > LEARNING_READINESS_THRESHOLDS["maximum_missing_rate"]:
+            readiness_status = "warning" if readiness_status == "ready_for_phase_22_2" else readiness_status
+            readiness_reasons.append(f"missing snapshot rate is {missing_rate:.2%}")
+            ready = False
+        if learned_target_count < LEARNING_READINESS_THRESHOLDS["minimum_learned_targets"]:
+            readiness_status = "insufficient_samples" if readiness_status == "ready_for_phase_22_2" else readiness_status
+            readiness_reasons.append(
+                f"learned live target count {learned_target_count} is below {LEARNING_READINESS_THRESHOLDS['minimum_learned_targets']}"
+            )
+            ready = False
+        model_summary = get_learning_models_summary().get("models", [])
+        under_sampled = [
+            item.get("model_name")
+            for item in model_summary
+            if int(item.get("learned_target_count") or 0) < LEARNING_READINESS_THRESHOLDS["minimum_model_samples"]
+        ]
+        if under_sampled:
+            readiness_status = "insufficient_samples" if readiness_status == "ready_for_phase_22_2" else readiness_status
+            readiness_reasons.append("models below learned sample threshold: " + ", ".join(map(str, under_sampled)))
+            ready = False
+        if not readiness_reasons:
+            readiness_reasons.append("all readiness checks passed")
+
+        return {
+            "status": "ok",
+            "engine_version": OBSERVATION_VERSION,
+            "pipeline": {
+                "collector_latest_issue": collector_latest,
+                "official_latest_issue": official_latest,
+                "analysis_latest_issue": analysis.get("latest_issue"),
+                "learning_latest_snapshot_issue": (latest_snapshot or {}).get("issue"),
+                "learning_latest_learned_issue": (latest_learned or {}).get("issue"),
+                "official_lag_issues": official_lag,
+            },
+            "records": {
+                "total": int(base_counts.get("total_records") or len(all_records)),
+                "live": live_count,
+                "historical": int(base_counts.get("historical_backtest_count") or historical),
+                "learned": learned_records,
+                "pending": int(base_counts.get("pending_records") or sum(1 for item in all_records if item.get("learned_status") == "pending")),
+                "pending_official": pending_official,
+                "pending_target": pending_target,
+                "resolved_pending": resolved_pending,
+                "missing_snapshot": len(missing_snapshot_records),
+                "failed": failed_records,
+                "model_count": len(model_names),
+                "latest_snapshot_issue": (latest_snapshot or {}).get("issue"),
+                "latest_snapshot_at": (latest_snapshot or {}).get("prediction_created_at"),
+                "latest_learned_issue": (latest_learned or {}).get("issue"),
+                "latest_learned_at": (latest_learned or {}).get("learned_at"),
+            },
+            "targets": {
+                "live_target_count": len(grouped_targets),
+                "complete_live_target_count": len(complete_targets),
+                "incomplete_live_target_count": len(incomplete_targets),
+                "incomplete_targets": incomplete_targets[:20],
+            },
+            "quality": {
+                "snapshot_success_rate": snapshot_success_rate,
+                "learning_success_rate": learning_success_rate,
+                "duplicate_risk_count": duplicate_risk_count,
+                "evaluation_error_count": evaluation_error_count,
+                "missing_snapshot_rate": round(missing_rate * 100, 2),
+                "complete_live_target_rate": round(complete_rate * 100, 2),
+            },
+            "readiness": {
+                "status": readiness_status,
+                "ready": bool(ready),
+                "thresholds": LEARNING_READINESS_THRESHOLDS,
+                "reasons": readiness_reasons,
+            },
+            "models": model_summary,
+        }
+    except Exception as exc:
+        logger.exception("learning observation failed")
+        return {
+            "status": "error",
+            "engine_version": OBSERVATION_VERSION,
+            "error": str(exc),
+            "pipeline": {},
+            "records": {},
+            "targets": {},
+            "quality": {},
+            "readiness": {
+                "status": "error",
+                "ready": False,
+                "reasons": [str(exc)],
+            },
+            "models": [],
+        }
+
+
+def get_learning_observation(force_refresh: bool = False) -> dict:
+    if not force_refresh:
+        cached_payload = _cached_observation()
+        if cached_payload is not None:
+            return cached_payload
+
+    payload = _build_learning_observation()
+    if payload.get("status") != "error":
+        with _OBSERVATION_CACHE_LOCK:
+            _OBSERVATION_CACHE["payload"] = copy.deepcopy(payload)
+            _OBSERVATION_CACHE["expires_at"] = time.monotonic() + OBSERVATION_CACHE_TTL_SECONDS
+        payload["cache"] = {
+            "status": "miss",
+            "ttl_seconds": OBSERVATION_CACHE_TTL_SECONDS,
+            "expires_in_seconds": OBSERVATION_CACHE_TTL_SECONDS,
+        }
+    else:
+        payload["cache"] = {
+            "status": "bypass_error",
+            "ttl_seconds": OBSERVATION_CACHE_TTL_SECONDS,
+            "expires_in_seconds": 0,
+        }
+    return payload

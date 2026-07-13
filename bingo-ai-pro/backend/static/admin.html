@@ -24,7 +24,7 @@
     body {
       margin: 0;
       background:
-        radial-gradient(circle at 20% 0%, rgba(90, 200, 255, .18), transparent 32%),
+        radial-gradient(circle at 18% 0%, rgba(90, 200, 255, .16), transparent 30%),
         linear-gradient(180deg, #07111c 0%, #0b1623 100%);
       color: var(--text);
       font-family: Arial, "Microsoft JhengHei", sans-serif;
@@ -32,14 +32,12 @@
     }
 
     main {
-      width: min(760px, 100%);
+      width: min(780px, 100%);
       margin: 0 auto;
       padding: 18px 12px 42px;
     }
 
-    header {
-      padding: 12px 4px 18px;
-    }
+    header { padding: 12px 4px 18px; }
 
     h1 {
       margin: 0;
@@ -52,6 +50,16 @@
       margin-top: 8px;
       color: var(--muted);
       font-size: 15px;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
     }
 
     .card {
@@ -110,6 +118,11 @@
       background: var(--card2);
     }
 
+    .status-row span {
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
     .status-ok { color: var(--ok); }
     .status-warning, .status-unknown { color: var(--warn); }
     .status-error { color: var(--bad); }
@@ -120,6 +133,7 @@
       background: #152638;
       color: var(--muted);
       margin-top: 10px;
+      overflow-wrap: anywhere;
     }
 
     .actions {
@@ -154,16 +168,6 @@
       border: 1px solid rgba(255, 101, 120, .35);
     }
 
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
     @media (min-width: 720px) {
       main { padding-top: 28px; }
       h1 { font-size: 34px; }
@@ -175,10 +179,10 @@
   <main>
     <header>
       <h1>Bingo AI Pro 管理中心</h1>
-      <div class="subtitle">手機查看 Collector、同步、Prediction History 與 AI 命中率。</div>
+      <div class="subtitle">手機優先監控 Collector、Learning、Operations 與 AI 系統狀態。</div>
       <div class="toolbar">
-        <span id="lastRefresh">載入中</span>
-        <span id="topStatus">狀態檢查中</span>
+        <span id="lastRefresh">尚未刷新</span>
+        <span id="topStatus">讀取中</span>
       </div>
     </header>
 
@@ -189,6 +193,9 @@
       <article class="card" id="syncCard"></article>
       <article class="card" id="historyCard"></article>
       <article class="card" id="analysisCard"></article>
+      <article class="card" id="learningCard"></article>
+      <article class="card" id="learningModelsCard"></article>
+      <article class="card" id="incompleteTargetsCard"></article>
       <article class="card" id="modelCard"></article>
       <article class="card" id="systemHealthCard"></article>
       <article class="card" id="operationsCard"></article>
@@ -213,13 +220,21 @@
     };
 
     const statusLabel = (status) => {
-      if (status === "ok") return "🟢 正常";
-      if (status === "warning") return "🟡 Warning";
-      if (status === "error") return "🔴 Error";
-      return "🟡 Warning";
+      if (status === "ok" || status === true) return "正常";
+      if (status === "warning") return "Warning";
+      if (status === "error" || status === false) return "Error";
+      if (status === "ready_for_phase_22_2") return "可進入 Phase 22.2";
+      if (status === "waiting_official") return "等待官方";
+      if (status === "insufficient_samples") return "樣本不足";
+      if (status === "collecting") return "收集中";
+      return safe(status, "未知");
     };
 
-    const statusClass = (status) => `status-${status || "unknown"}`;
+    const statusClass = (status) => {
+      if (status === "ok" || status === true || status === "ready_for_phase_22_2") return "status-ok";
+      if (status === "error" || status === false) return "status-error";
+      return "status-warning";
+    };
 
     const metric = (label, value, klass = "") => `
       <div class="metric">
@@ -245,6 +260,7 @@
       try {
         const payload = await getJson(adminApi);
         render(payload);
+        loadLazyDetails();
         document.getElementById("errorBox").style.display = "none";
       } catch (error) {
         const box = document.getElementById("errorBox");
@@ -254,11 +270,58 @@
       document.getElementById("lastRefresh").textContent = `最後刷新：${new Date().toLocaleString()}`;
     }
 
+    function loadLazyDetails() {
+      loadLearningObservation();
+      loadLazyCard("/api/models/status", renderModels);
+      loadLazyCard("/api/system-health", renderSystemHealth);
+      loadLazyCard("/api/operations/summary", renderOperations);
+      loadLazyCard("/api/prediction-history/statistics?limit=100", renderHitRate);
+      loadLazyCard("/api/analysis/statistics", renderAnalysis);
+    }
+
+    async function loadLazyCard(url, renderer) {
+      try {
+        renderer(await getJson(url));
+      } catch (error) {
+        renderer({
+          status: "unknown",
+          message: `資料載入失敗：${error.message}`,
+          readiness: { status: "unknown", ready: false, reasons: [`資料載入失敗：${error.message}`] },
+        });
+      }
+    }
+
+    async function loadLearningObservation() {
+      try {
+        const learning = await getJson("/api/learning/observation");
+        renderLearning(learning);
+        renderLearningModels(learning);
+        renderIncompleteTargets(learning);
+      } catch (error) {
+        const fallback = {
+          status: "unknown",
+          readiness: {
+            status: "unknown",
+            ready: false,
+            reasons: [`Learning API 錯誤：${error.message}`],
+          },
+          records: {},
+          targets: {},
+          quality: {},
+          models: [],
+        };
+        renderLearning(fallback);
+        renderLearningModels(fallback);
+        renderIncompleteTargets(fallback);
+      }
+    }
+
     function render(payload) {
       const system = payload.system || {};
       const sync = payload.sync || {};
       const history = payload.prediction_history || {};
       const analysis = payload.analysis_engine || {};
+      const learning = payload.learning_engine || {};
       const models = payload.model_engine || {};
       const systemHealth = payload.system_health || {};
       const operations = payload.operations || {};
@@ -272,6 +335,9 @@
       renderSync(sync);
       renderHistory(history);
       renderAnalysis(analysis);
+      renderLearning(learning);
+      renderLearningModels(learning);
+      renderIncompleteTargets(learning);
       renderModels(models);
       renderSystemHealth(systemHealth);
       renderOperations(operations);
@@ -296,7 +362,7 @@
 
     function renderSync(sync) {
       const lag = Number(sync.lag || 0);
-      const summary = lag === 0 ? "★★★★★ 已同步" : `⚠ 落後 ${num(lag)} 期`;
+      const summary = lag === 0 ? "已同步" : `落後 ${num(lag)} 期`;
       const klass = lag === 0 ? "status-ok" : "status-warning";
       document.getElementById("syncCard").innerHTML = `
         <h2>2. 資料同步</h2>
@@ -317,7 +383,7 @@
         <div class="grid">
           ${metric("總筆數", num(history.total_count))}
           ${metric("今日新增", num(history.today_count))}
-          ${metric("最後一筆 Prediction", safe(history.last_prediction_issue))}
+          ${metric("最後 Prediction", safe(history.last_prediction_issue))}
           ${metric("最後驗證時間", safe(history.last_verified_at))}
         </div>
       `;
@@ -336,6 +402,67 @@
       `;
     }
 
+    function renderLearning(learning) {
+      const records = learning.records || {};
+      const pipeline = learning.pipeline || {};
+      const quality = learning.quality || {};
+      const readiness = learning.readiness || {};
+      const reasons = readiness.reasons || [];
+      document.getElementById("learningCard").innerHTML = `
+        <h2>5. Learning Engine</h2>
+        <div class="grid">
+          ${metric("Engine Version", safe(learning.engine_version))}
+          ${metric("Readiness", statusLabel(readiness.status), statusClass(readiness.status))}
+          ${metric("Total Records", num(records.total))}
+          ${metric("Live Records", num(records.live))}
+          ${metric("Learned Records", num(records.learned))}
+          ${metric("Pending Official", num(records.pending_official))}
+          ${metric("Pending Target", num(records.pending_target))}
+          ${metric("Missing Snapshot", num(records.missing_snapshot), Number(records.missing_snapshot || 0) ? "status-error" : "status-ok")}
+          ${metric("Failed", num(records.failed), Number(records.failed || 0) ? "status-error" : "status-ok")}
+          ${metric("Latest Snapshot", safe(records.latest_snapshot_issue))}
+          ${metric("Latest Learned", safe(records.latest_learned_issue))}
+          ${metric("Official Lag", num(pipeline.official_lag_issues))}
+          ${metric("Snapshot Success", `${num(quality.snapshot_success_rate)}%`)}
+          ${metric("Learning Success", `${num(quality.learning_success_rate)}%`)}
+        </div>
+        <div class="notice">${reasons.length ? reasons.map(item => safe(item)).join("；") : "尚無 readiness 訊息"}</div>
+      `;
+    }
+
+    function renderLearningModels(learning) {
+      const models = learning.models || [];
+      const rows = models.length
+        ? models.map(item => `
+          <div class="status-row">
+            <strong>${safe(item.model_name)}</strong>
+            <span>Targets ${num(item.target_sample_count)} / Learned ${num(item.learned_target_count)} / Top5 ${num(item.top_5_average_hits)} / Top10 ${num(item.top_10_average_hits)} / Top20 ${num(item.top_20_average_hits)} / Trend ${safe(item.trend)}</span>
+          </div>
+        `).join("")
+        : `<div class="notice">尚無模型 learning performance。</div>`;
+      document.getElementById("learningModelsCard").innerHTML = `
+        <h2>6. Model Performance Observation</h2>
+        <div class="status-list">${rows}</div>
+      `;
+    }
+
+    function renderIncompleteTargets(learning) {
+      const targets = ((learning.targets || {}).incomplete_targets || []).slice(0, 10);
+      const rows = targets.length
+        ? targets.map(item => `
+          <div class="status-row">
+            <strong>${safe(item.target_issue)}</strong>
+            <span>${num(item.record_count)} records / missing models ${safe((item.missing_models || []).join(", "), "none")} / missing Top N ${safe((item.missing_top_n || []).join(", "), "none")}</span>
+          </div>
+          <div class="notice">${safe(item.reason)}</div>
+        `).join("")
+        : `<div class="notice">目前沒有 incomplete live target。</div>`;
+      document.getElementById("incompleteTargetsCard").innerHTML = `
+        <h2>7. Incomplete Targets</h2>
+        <div class="status-list">${rows}</div>
+      `;
+    }
+
     function renderModels(models) {
       const ranking = models.ranking || [];
       const rows = ranking.length
@@ -345,9 +472,9 @@
             <span>${safe(item.stars)} ${num(item.confidence)}% / 命中 ${num(item.recent_hit_rate)}%</span>
           </div>
         `).join("")
-        : `<div class="notice">尚無模型資料</div>`;
+        : `<div class="notice">尚無 Model Engine 資料。</div>`;
       document.getElementById("modelCard").innerHTML = `
-        <h2>5. Model Engine</h2>
+        <h2>8. Model Engine</h2>
         <div class="grid">
           ${metric("最新分析期數", safe(models.latest_issue))}
           ${metric("最終信心", `${num(models.confidence)}%`)}
@@ -399,18 +526,18 @@
 
     function renderHitRate(hit) {
       if (hit.status === "empty") {
-        document.getElementById("hitRateCard").innerHTML = `<h2>6. AI 命中率</h2><div class="notice">${safe(hit.message, "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。")}</div>`;
+        document.getElementById("hitRateCard").innerHTML = `<h2>AI 命中率</h2><div class="notice">${safe(hit.message, "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。")}</div>`;
         return;
       }
       document.getElementById("hitRateCard").innerHTML = `
-        <h2>6. AI 命中率</h2>
+        <h2>AI 命中率</h2>
         <div class="grid">
           ${metric("近100期三星", `${num(hit.three_star_rate)}%`)}
           ${metric("四星", `${num(hit.four_star_rate)}%`)}
           ${metric("五星", `${num(hit.five_star_rate)}%`)}
           ${metric("超獎", `${num(hit.super_hit_rate)}%`)}
           ${metric("平均命中", num(hit.average_hits))}
-          ${metric("統計樣本", `${num(hit.sample_size)} 期`)}
+          ${metric("樣本數", `${num(hit.sample_size)} 期`)}
         </div>
       `;
     }
@@ -418,7 +545,7 @@
     function renderCollector(collector, recentError) {
       const errorText = recentError.error_message || recentError.message || "目前沒有未解決錯誤";
       document.getElementById("collectorCard").innerHTML = `
-        <h2>7. Collector</h2>
+        <h2>Collector</h2>
         <div class="grid">
           ${metric("官方來源", safe(collector.official_source))}
           ${metric("最後抓取", safe(collector.last_fetch))}
@@ -430,7 +557,7 @@
 
     function renderActions() {
       document.getElementById("actionsCard").innerHTML = `
-        <h2>8. 快速操作</h2>
+        <h2>快速操作</h2>
         <div class="actions">
           <button class="primary" type="button" onclick="runCatchUp()">立即 Catch-up</button>
           <button type="button" onclick="loadAdmin()">重新整理</button>
