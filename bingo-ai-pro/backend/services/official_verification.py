@@ -336,6 +336,15 @@ def collect_official_today() -> dict:
         )
         verification = run_official_verification(limit=10)
         reverify = reverify_recent_draws(limit=20)
+        prediction_refresh = {"status": "unknown"}
+        try:
+            from services.prediction_refresh import ensure_next_prediction
+
+            latest_draw = get_latest_official_draw() or (draws[0] if draws else None)
+            prediction_refresh = ensure_next_prediction(latest_draw)
+        except Exception as exc:
+            logger.exception("official next prediction refresh failed")
+            prediction_refresh = {"status": "error", "message": str(exc)}
         prediction = {"status": "unknown"}
         try:
             from services.prediction_tracker import evaluate_pending_predictions
@@ -350,6 +359,7 @@ def collect_official_today() -> dict:
             "saved": saved,
             "verification": verification,
             "reverify": reverify,
+            "prediction_refresh": prediction_refresh,
             "prediction": prediction,
         }
     except Exception as exc:

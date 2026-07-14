@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 ENGINE_VERSION = "22.1"
 OBSERVATION_VERSION = "22.1.5"
 OBSERVATION_CACHE_TTL_SECONDS = 30
+LEARNING_STATUS_CACHE_TTL_SECONDS = 60
 DEFAULT_MODEL_VERSION = "v7"
 TOP_N_VALUES = (5, 10, 20)
 EXPECTED_LIVE_MODELS = {"laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"}
@@ -45,10 +46,56 @@ LEARNING_READINESS_THRESHOLDS = {
 }
 _OBSERVATION_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _OBSERVATION_CACHE_LOCK = threading.Lock()
+_LEARNING_STATUS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
+_LEARNING_STATUS_CACHE_LOCK = threading.Lock()
 
 
 def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
+
+
+def _cached_learning_status() -> dict | None:
+    now = time.monotonic()
+    with _LEARNING_STATUS_CACHE_LOCK:
+        cached = _LEARNING_STATUS_CACHE.get("payload")
+        expires_at = float(_LEARNING_STATUS_CACHE.get("expires_at") or 0)
+        if cached is None or expires_at <= now:
+            return None
+        payload = copy.deepcopy(cached)
+        payload["cache"] = {
+            "status": "hit",
+            "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+            "expires_in_seconds": round(expires_at - now, 3),
+        }
+        return payload
+
+
+def _store_learning_status_cache(payload: dict) -> None:
+    if payload.get("status") == "error":
+        return
+    with _LEARNING_STATUS_CACHE_LOCK:
+        _LEARNING_STATUS_CACHE["payload"] = copy.deepcopy(payload)
+        _LEARNING_STATUS_CACHE["expires_at"] = time.monotonic() + LEARNING_STATUS_CACHE_TTL_SECONDS
+
+
+def _stale_learning_status() -> dict | None:
+    with _LEARNING_STATUS_CACHE_LOCK:
+        cached = _LEARNING_STATUS_CACHE.get("payload")
+        if cached is None:
+            return None
+        payload = copy.deepcopy(cached)
+        payload["cache"] = {
+            "status": "stale",
+            "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+            "expires_in_seconds": 0,
+        }
+        return payload
+
+
+def invalidate_learning_status_cache() -> None:
+    with _LEARNING_STATUS_CACHE_LOCK:
+        _LEARNING_STATUS_CACHE["payload"] = None
+        _LEARNING_STATUS_CACHE["expires_at"] = 0.0
 
 
 def _as_int_list(values: Any) -> list[int]:
@@ -614,6 +661,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             except Exception as exc:
                 logger.exception("prediction history learning queue update failed")
                 learning_queue = {"status": "error", "message": str(exc)}
+            invalidate_learning_status_cache()
         return {
             "status": status,
             "issue": issue,
@@ -678,6 +726,10 @@ def evaluate_historical_backtest_issue(issue: str, prediction: dict | None = Non
 
 
 def get_learning_status() -> dict:
+    cached_status = _cached_learning_status()
+    if cached_status is not None:
+        return cached_status
+    start = time.perf_counter()
     try:
         counts = get_learning_status_counts()
         observation = _cached_observation()
@@ -689,7 +741,7 @@ def get_learning_status() -> dict:
         status = "ok"
         if int(counts.get("failed_records") or 0) > 0:
             status = "warning"
-        return {
+        payload = {
             "status": (observation or {}).get("status", status),
             "engine_version": ENGINE_VERSION,
             "observation_version": OBSERVATION_VERSION,
@@ -724,14 +776,32 @@ def get_learning_status() -> dict:
             "ready_for_phase_22_2": bool(readiness.get("ready")),
             "readiness_reasons": readiness.get("reasons", []),
             "observation_cache": (observation or {}).get("cache", {"status": "miss_not_computed"}),
+            "cache": {
+                "status": "miss",
+                "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+                "elapsed_ms": _duration_ms(start),
+            },
         }
+        _store_learning_status_cache(payload)
+        return payload
     except Exception as exc:
         logger.exception("learning status failed")
+        stale = _stale_learning_status()
+        if stale is not None:
+            stale["status"] = "warning"
+            stale["stale"] = True
+            stale["error"] = "learning status unavailable"
+            return stale
         return {
             "status": "error",
             "engine_version": ENGINE_VERSION,
             "observation_version": OBSERVATION_VERSION,
             "error": str(exc),
+            "cache": {
+                "status": "bypass_error",
+                "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+                "elapsed_ms": _duration_ms(start),
+            },
         }
 
 

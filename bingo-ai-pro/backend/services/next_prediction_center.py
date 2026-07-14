@@ -5,12 +5,14 @@ from datetime import datetime
 from typing import Any
 
 from database.analysis_store import get_latest_analysis_history
+from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import (
     get_latest_prediction_history,
     get_prediction_history_statistics,
     save_prediction_history,
 )
 from database.recommendation_center_store import get_latest_recommendation_run
+from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +189,8 @@ def build_next_prediction_dashboard() -> dict:
     latest_history = get_latest_prediction_history()
     fallback = None if latest_history else _fallback_recommendation()
     prediction = latest_history or fallback
+    latest_draw = get_latest_official_draw()
+    refresh = prediction_refresh_status(latest_draw, prediction)
     analysis = get_latest_analysis_history()
     stats = get_prediction_history_statistics(100)
 
@@ -224,6 +228,14 @@ def build_next_prediction_dashboard() -> dict:
             "odd_even": prediction.get("odd_even") or _odd_even(numbers),
             "model_scores": prediction.get("model_scores") or {},
             "winning_model": prediction.get("winning_model"),
+            "refresh_status": refresh.get("refresh_status"),
+            "refresh_reason": refresh.get("refresh_reason"),
+            "last_refresh_attempt": refresh.get("last_refresh_attempt"),
+            "last_refresh_success": refresh.get("last_refresh_success"),
+            "based_on_issue": refresh.get("based_on_issue") or prediction.get("issue"),
+            "target_issue": refresh.get("target_issue") or prediction.get("prediction_issue"),
+            "is_stale": refresh.get("is_stale"),
+            "lag_issues": refresh.get("lag_issues"),
         },
         "laowanjia": {
             "laowanjia_score": laowanjia_score,

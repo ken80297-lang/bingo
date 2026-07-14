@@ -10,6 +10,7 @@ from typing import Any
 from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
+from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,7 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         target_issue = derived
         target_issue_source = "derived_from_source_issue" if derived else "unavailable"
     status = _target_status(target_issue, current_issue)
+    refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
     return {
         "target_issue": target_issue,
@@ -222,6 +224,12 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "based_on_issue": based_on_issue,
         "is_current": status["is_current"],
         "status": status["status"],
+        "refresh_status": refresh.get("refresh_status"),
+        "refresh_reason": refresh.get("refresh_reason"),
+        "last_refresh_attempt": refresh.get("last_refresh_attempt"),
+        "last_refresh_success": refresh.get("last_refresh_success"),
+        "is_stale": refresh.get("is_stale"),
+        "lag_issues": refresh.get("lag_issues"),
         "expected_draw_time": expected_time,
         "expected_draw_time_source": expected_source,
         "generated_at": record.get("predict_time") or record.get("created_at"),

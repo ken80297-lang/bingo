@@ -468,6 +468,34 @@ def get_learning_status_counts() -> dict:
     }
 
 
+def get_learned_live_target_issues(limit: int = 1000) -> set[str]:
+    limit = max(1, min(int(limit or 1000), 5000))
+    rows = _query_with_fallback(
+        """
+        select distinct coalesce(target_issue, issue) as target
+        from learning_history
+        where prediction_type = 'live_prediction'
+          and learned_status = 'learned'
+          and coalesce(target_issue, issue) is not null
+          and coalesce(target_issue, issue) not like 'pending:%%'
+        order by target desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select distinct coalesce(target_issue, issue) as target
+        from learning_history
+        where prediction_type = 'live_prediction'
+          and learned_status = 'learned'
+          and coalesce(target_issue, issue) is not null
+          and coalesce(target_issue, issue) not like 'pending:%'
+        order by target desc
+        limit ?
+        """,
+    )
+    return {str(row[0]) for row in rows if row and row[0]}
+
+
 def get_learning_model_performance(
     model_name: str | None = None,
     window: int | str = 100,

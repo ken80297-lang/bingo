@@ -406,9 +406,9 @@ def _explanation(
     )
 
 
-def generate_recommendation_center() -> dict:
+def generate_recommendation_center(issue_override: str | None = None, target_issue_override: str | None = None) -> dict:
     try:
-        issue = _latest_issue()
+        issue = str(issue_override) if issue_override is not None else _latest_issue()
         simulation = get_simulation_run_by_issue(issue) if issue else None
         if issue and not simulation:
             created = ensure_simulation_for_issue(issue, window=100, groups=5, numbers_per_group=10)
@@ -429,7 +429,7 @@ def generate_recommendation_center() -> dict:
         quality = get_data_quality_status()
         quality_status = quality.get("status", "unknown")
         issue = simulation.get("source_issue") or issue
-        target_issue = _target_issue(issue)
+        target_issue = target_issue_override or _target_issue(issue)
 
         candidates = simulation.get("results", [])[:5]
         voting = build_voting_result(100)

@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 import time
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ SQLITE_PATH = ROOT / "data" / "bingo.db"
 _INITIALIZED = False
 _LEARNED_ISSUES_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 LEARNED_ISSUES_TTL_SECONDS = 30
+_PREDICTION_STATS_CACHE: dict[str, Any] = {"payload": {}, "expires_at": {}}
+PREDICTION_STATS_TTL_SECONDS = 60
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -35,6 +38,11 @@ ALLOWED_PREDICTION_STATUSES = {"pending", "waiting_draw", "verified", "expired",
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
+
+
+def _invalidate_prediction_stats_cache() -> None:
+    _PREDICTION_STATS_CACHE["payload"] = {}
+    _PREDICTION_STATS_CACHE["expires_at"] = {}
 
 
 def _json_dumps(value: Any) -> str:
@@ -182,8 +190,11 @@ def init_prediction_history_tables() -> dict:
 
 
 def _ensure_initialized() -> None:
+    global _INITIALIZED
     if not _INITIALIZED:
-        init_prediction_history_tables()
+        # Table creation/migration belongs to FastAPI startup. Running DDL from
+        # read APIs can block player dashboard requests when Supabase is busy.
+        _INITIALIZED = True
 
 
 def _prediction_params(item: dict) -> tuple:
@@ -264,6 +275,7 @@ def save_prediction_history(item: dict) -> dict:
                     )
                     row_id = int(cur.fetchone()[0])
                 conn.commit()
+            _invalidate_prediction_stats_cache()
             return {"status": "ok", "storage": "cloud", "id": row_id}
         except Exception as exc:
             logger.exception("cloud prediction_history save failed")
@@ -310,6 +322,7 @@ def save_prediction_history(item: dict) -> dict:
                 (*_prediction_params(item), _now()),
             )
             row_id = int(cursor.lastrowid or 0)
+        _invalidate_prediction_stats_cache()
         return {"status": "ok", "storage": "sqlite", "id": row_id, "cloud_error": cloud_error}
     except Exception as exc:
         logger.exception("sqlite prediction_history save failed")
@@ -481,6 +494,7 @@ def mark_prediction_learning_used(issue: str, used: bool = True) -> dict:
                     )
                     updated = cur.rowcount or 0
                 conn.commit()
+            _invalidate_prediction_stats_cache()
             return {"status": "ok", "storage": "cloud", "updated": updated}
         except Exception:
             logger.exception("cloud prediction_history learning_used update failed")
@@ -498,6 +512,7 @@ def mark_prediction_learning_used(issue: str, used: bool = True) -> dict:
                 (1 if used else 0, _now(), issue),
             )
             updated = cursor.rowcount or 0
+        _invalidate_prediction_stats_cache()
         return {"status": "ok", "storage": "sqlite", "updated": updated}
     except Exception as exc:
         logger.exception("sqlite prediction_history learning_used update failed")
@@ -670,6 +685,8 @@ def update_prediction_history_result(actual: dict) -> dict:
             )
         except Exception:
             logger.exception("sqlite prediction_history result update failed")
+    if updated:
+        _invalidate_prediction_stats_cache()
     return {
         "status": "ok",
         "updated": updated,
@@ -711,17 +728,9 @@ def _learned_prediction_issues(limit: int = 1000) -> set[str]:
     if isinstance(cached, set) and time.monotonic() < expires_at:
         return set(cached)
     try:
-        from database.learning_store import get_learning_records
+        from database.learning_store import get_learned_live_target_issues
 
-        learned = set()
-        for item in get_learning_records(
-            limit=limit,
-            prediction_type="live_prediction",
-            learned_status="learned",
-        ):
-            issue = str(item.get("target_issue") or item.get("issue") or "")
-            if issue and not issue.startswith("pending:"):
-                learned.add(issue)
+        learned = get_learned_live_target_issues(limit)
         _LEARNED_ISSUES_CACHE["payload"] = set(learned)
         _LEARNED_ISSUES_CACHE["expires_at"] = time.monotonic() + LEARNED_ISSUES_TTL_SECONDS
         return learned
@@ -772,6 +781,20 @@ def _as_int_list(values: Any) -> list[int]:
 
 
 def get_prediction_history_statistics(limit: int = 100) -> dict:
+    limit = max(1, min(int(limit or 100), 500))
+    cache_key = str(limit)
+    now = time.monotonic()
+    cached_payload = (_PREDICTION_STATS_CACHE.get("payload") or {}).get(cache_key)
+    expires_at = float((_PREDICTION_STATS_CACHE.get("expires_at") or {}).get(cache_key) or 0)
+    if isinstance(cached_payload, dict) and expires_at > now:
+        payload = deepcopy(cached_payload)
+        payload["cache"] = {
+            "status": "hit",
+            "ttl_seconds": PREDICTION_STATS_TTL_SECONDS,
+            "expires_in_seconds": round(expires_at - now, 3),
+        }
+        return payload
+    start = time.perf_counter()
     all_records = get_prediction_history_records(limit)
     records = [item for item in all_records if item.get("winning_numbers")]
     total = len(records)
@@ -794,7 +817,7 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
     ]
     last_learning_time = max((item.get("updated_at") for item in learned_records if item.get("updated_at")), default=None)
     if not total:
-        return {
+        payload = {
             "status": "empty",
             "message": "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。",
             "sample_size": 0,
@@ -817,9 +840,17 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
             "verified_waiting_learning": verified_waiting_learning,
             "last_learning_time": last_learning_time,
         }
+        payload["cache"] = {
+            "status": "miss",
+            "ttl_seconds": PREDICTION_STATS_TTL_SECONDS,
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+        }
+        (_PREDICTION_STATS_CACHE.setdefault("payload", {}))[cache_key] = deepcopy(payload)
+        (_PREDICTION_STATS_CACHE.setdefault("expires_at", {}))[cache_key] = time.monotonic() + PREDICTION_STATS_TTL_SECONDS
+        return payload
     last_30 = records[:30]
     last_100 = records[:100]
-    return {
+    payload = {
         "status": "ok",
         "sample_size": total,
         "three_star_rate": round(sum(1 for item in records if item.get("three_star_hit")) / total * 100, 2),
@@ -841,3 +872,11 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
         "verified_waiting_learning": verified_waiting_learning,
         "last_learning_time": last_learning_time,
     }
+    payload["cache"] = {
+        "status": "miss",
+        "ttl_seconds": PREDICTION_STATS_TTL_SECONDS,
+        "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+    }
+    (_PREDICTION_STATS_CACHE.setdefault("payload", {}))[cache_key] = deepcopy(payload)
+    (_PREDICTION_STATS_CACHE.setdefault("expires_at", {}))[cache_key] = time.monotonic() + PREDICTION_STATS_TTL_SECONDS
+    return payload
