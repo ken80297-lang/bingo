@@ -299,6 +299,7 @@
 
   <script>
     const apis = {
+      playerSummary: "/api/dashboard/player-summary",
       next: "/api/next-prediction",
       system: "/api/system/status",
       official: "/api/official/statistics",
@@ -363,6 +364,32 @@
         <div class="value ${extraClass}">${value}</div>
       </div>
     `;
+
+    function playerNextToLegacy(nextPrediction) {
+      const item = nextPrediction || {};
+      return {
+        prediction_issue: item.target_issue,
+        target_issue_source: item.target_issue_source,
+        based_on_issue: item.based_on_issue,
+        is_current: item.is_current,
+        status: item.status,
+        expected_draw_time: item.expected_draw_time,
+        expected_draw_time_source: item.expected_draw_time_source,
+        confidence: item.confidence,
+        candidates: item.main_numbers || [],
+        super_number: item.super_number,
+        three_star: (item.main_numbers || []).slice(0, 3),
+        four_star: (item.main_numbers || []).slice(0, 4),
+        twins: item.twins || [],
+        consecutive: item.consecutive || [],
+        patch_numbers: item.patch_numbers || [],
+        tails: item.tails || [],
+        big_small: item.big_small,
+        odd_even: item.odd_even,
+        model_scores: item.model_scores || {},
+        winning_model: item.winning_model
+      };
+    }
 
     const FETCH_TIMEOUT_MS = 10000;
     const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
@@ -455,24 +482,31 @@
     }
 
     function render(data, errors) {
+      const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const payload = data.next || {};
-      const next = payload.next_recommendation || {};
-      const laowanjia = payload.laowanjia || {};
-      const history = payload.history || {};
-      const reasons = list(payload.reasons);
-      const alerts = payload.alerts || {};
+      const next = player ? playerNextToLegacy(player.next_prediction) : (payload.next_recommendation || {});
+      const laowanjia = player && player.next_prediction && player.next_prediction.laowanjia
+        ? player.next_prediction.laowanjia
+        : (payload.laowanjia || {});
+      const history = player ? (player.history || {}) : (payload.history || {});
+      const reasons = player && player.next_prediction ? list(player.next_prediction.reasons) : list(payload.reasons);
+      const alerts = player && player.next_prediction ? (player.next_prediction.alerts || {}) : (payload.alerts || {});
+      const sync = player ? (player.sync || {}) : (data.system || {});
+      const currentDraw = player ? (player.current_draw || {}) : {};
+      const counts = player ? (player.data_counts || {}) : {};
+      const previousVerification = player ? (player.previous_verification || {}) : {};
 
       const errorBox = document.getElementById("errorBox");
       errorBox.style.display = errors.length ? "block" : "none";
       errorBox.textContent = errors.length ? "部分資料暫時無法取得，系統已顯示可用快取資料。" : "";
       document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
 
-      renderSync(data.system || {});
+      renderSync(sync, currentDraw, counts);
       renderNext(next, payload);
       renderLaowanjia(laowanjia);
-      renderReasons(reasons, payload.confidence || next.confidence);
+      renderReasons(reasons, payload.confidence || next.confidence, previousVerification, next);
       renderAlerts(alerts);
-      renderHistory(history);
+      renderHistory(history, previousVerification, counts);
       renderPipeline(data.health || {}, data.recommendation || {});
       renderOfficial(data.official || {});
       renderOperations(data.operations || {});
@@ -600,9 +634,9 @@
       `;
     }
 
-    function renderSync(system) {
+    function renderSync(system, currentDraw = {}, counts = {}) {
       const lag = Number(system.lag_count || 0);
-      const status = system.collector_status || (lag > 0 ? "warning" : "ok");
+      const status = system.is_synced === false || lag > 0 ? "warning" : "ok";
       const summary = status === "ok" && lag === 0 ? "已同步" : `落後 ${number(lag)} 期`;
       document.getElementById("cardSync").innerHTML = `
         <h2>資料同步</h2>
@@ -629,6 +663,76 @@
           ${metric("下一期期號", safe(next.prediction_issue))}
           ${metric("AI 信心值", `${number(next.confidence)}%`)}
         </div>
+        <h3>推薦號碼</h3>
+        ${balls(next.candidates)}
+        <h3>模型投票</h3>
+        ${modelVotes(next.model_scores)}
+        <h3>超級獎號</h3>
+        ${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超獎推薦</div>`}
+        <h3>三星組合</h3>${chips(next.three_star)}
+        <h3>四星組合</h3>${chips(next.four_star)}
+        <h3>雙生號</h3>${chips(next.twins)}
+        <h3>連號</h3>${chips(next.consecutive)}
+        <h3>補號</h3>${chips(next.patch_numbers)}
+        <h3>尾數</h3>${chips(next.tails)}
+        <div class="hero-row">
+          ${metric("大小判斷", safe(next.big_small))}
+          ${metric("單雙判斷", safe(next.odd_even))}
+        </div>
+      `;
+    }
+
+    function renderSync(system, currentDraw = {}, counts = {}) {
+      const lag = Number(system.lag_count || 0);
+      const status = system.is_synced === false || lag > 0 ? "warning" : "ok";
+      const summary = status === "ok" && lag === 0 ? "已同步" : `落後 ${number(lag)} 期`;
+      document.getElementById("cardSync").innerHTML = `
+        <h2>資料同步</h2>
+        <div class="hero-row">
+          ${metric("最新期", safe(system.official_latest_issue || system.source_latest_issue || system.database_latest_issue))}
+          ${metric("同步狀態", summary, `status-${status}`)}
+          ${metric("Database 最新期", safe(system.database_latest_issue))}
+          ${metric("Source 最新期", safe(system.official_latest_issue || system.source_latest_issue))}
+          ${metric("最後同步", safe(system.last_successful_collection || system.last_successful_collect_time))}
+          ${metric("同步耗時", `${number(system.collection_duration_seconds || system.last_collect_duration)} 秒`)}
+        </div>
+        <div class="empty">狀態：${statusText(status)}。系統會自動補抓缺少期數。</div>
+        <h3>最新開獎資訊</h3>
+        <div class="hero-row">
+          ${metric("期數", safe(currentDraw.issue))}
+          ${metric("開獎時間", safe(currentDraw.draw_time))}
+          ${metric("資料來源", safe(currentDraw.source || "official"))}
+          ${metric("資料筆數", number(counts.draw_count))}
+        </div>
+        ${balls(currentDraw.numbers)}
+        <h3>超級獎號</h3>
+        ${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">尚無資料</div>`}
+      `;
+    }
+
+    function renderNext(next, payload) {
+      if (payload.status === "empty") {
+        document.getElementById("cardNext").innerHTML = `<h2>1. 下一期 AI 推薦</h2><div class="empty">${safe(payload.message)}</div>`;
+        return;
+      }
+      const nextStatus = next.status || (next.prediction_issue ? "ready" : "unavailable");
+      const statusClass = nextStatus === "ready" ? "status-ok" : nextStatus === "waiting_refresh" ? "status-warning" : nextStatus === "expired" ? "status-error" : "status-unknown";
+      const statusMessage = {
+        ready: "下一期預測已準備完成。",
+        waiting_refresh: "目前預測期數已開出，正在等待下一期推薦更新。",
+        expired: "預測期數已落後，請等待系統刷新下一期推薦。",
+        unavailable: "暫時無法取得下一期期數，其他推薦資料仍可參考。"
+      }[nextStatus] || "暫時無法確認預測狀態。";
+      document.getElementById("cardNext").innerHTML = `
+        <h2>1. 下一期 AI 推薦</h2>
+        <div class="hero-row">
+          ${metric("下一期期號", safe(next.prediction_issue))}
+          ${metric("AI 信心值", `${number(next.confidence)}%`)}
+          ${metric("狀態", statusText(nextStatus), statusClass)}
+          ${metric("依據期數", safe(next.based_on_issue))}
+          ${metric("預估開獎", safe(next.expected_draw_time))}
+        </div>
+        <div class="empty">${statusMessage} 期數來源：${safe(next.target_issue_source)}；時間來源：${safe(next.expected_draw_time_source)}。</div>
         <h3>推薦號碼</h3>
         ${balls(next.candidates)}
         <h3>模型投票</h3>
@@ -723,6 +827,62 @@
           ${metric("平均命中顆數", number(history.average_hits))}
           ${metric("統計樣本", `${number(history.sample_size)} 期`)}
         </div>
+      `;
+    }
+
+    function renderHistory(history, verification = {}, counts = {}) {
+      if (!history || history.status === "empty") {
+        document.getElementById("cardHistory").innerHTML = `<h2>5. AI 歷史命中率</h2><div class="empty">${safe(history && history.message)}</div>`;
+        return;
+      }
+      const hitCount = Number(verification.hit_count || 0);
+      const predictionCount = Number(verification.prediction_count || 0);
+      document.getElementById("cardHistory").innerHTML = `
+        <h2>5. AI 歷史命中率</h2>
+        <h3>上一期命中比對</h3>
+        <div class="hero-row">
+          ${metric("比對期數", safe(verification.target_issue))}
+          ${metric("命中", predictionCount ? `${number(hitCount)} / ${number(predictionCount)}` : "尚無資料", hitCount >= 5 ? "status-ok" : hitCount >= 3 ? "status-warning" : "")}
+          ${metric("命中等級", safe(verification.hit_label))}
+          ${metric("超獎", verification.super_number_hit ? "命中" : "未命中")}
+        </div>
+        <h3>命中號碼</h3>
+        ${balls(verification.matched_numbers)}
+        <h3>未中號碼</h3>
+        ${balls(verification.missed_numbers)}
+        <div class="hero-row">
+          ${metric("近100期三星命中率", `${number(history.three_star_rate)}%`)}
+          ${metric("四星命中率", `${number(history.four_star_rate)}%`)}
+          ${metric("五星命中率", `${number(history.five_star_rate)}%`)}
+          ${metric("超獎命中率", `${number(history.super_hit_rate)}%`)}
+          ${metric("平均命中顆數", number(history.average_hits))}
+          ${metric("統計樣本", `${number(history.sample_size)} 期`)}
+        </div>
+        <h3>資料量</h3>
+        <div class="hero-row">
+          ${metric("開獎分析", number(counts.analysis_count || counts.draw_count))}
+          ${metric("預測紀錄", number(counts.prediction_count))}
+          ${metric("已驗證預測", number(counts.verified_prediction_count))}
+          ${metric("學習樣本", number(counts.learning_sample_count))}
+        </div>
+      `;
+    }
+
+    function renderReasons(reasons, confidence, verification = {}, next = {}) {
+      const rows = reasons.length
+        ? reasons.map(reason => `<li><span class="check">✓</span>${safe(reason)}</li>`).join("")
+        : `<li><span class="check">✓</span>系統已依目前可用資料產生推薦。</li>`;
+      const predictionStatus = verification.prediction_status || next.status || "waiting_draw";
+      const learningStatus = verification.learning_status || (verification.learning_used ? "completed" : "waiting");
+      document.getElementById("cardReasons").innerHTML = `
+        <h2>3. AI 推薦原因</h2>
+        <div class="hero-row">
+          ${metric("Prediction Status", statusText(predictionStatus), `status-${predictionStatus === "verified" ? "ok" : predictionStatus === "expired" || predictionStatus === "failed" ? "error" : "warning"}`)}
+          ${metric("Learning 狀態", learningStatus === "completed" ? "Completed" : "Waiting", learningStatus === "completed" ? "status-ok" : "status-warning")}
+          ${metric("驗證期數", safe(verification.verified_issue || verification.target_issue))}
+        </div>
+        <ul class="summary-list">${rows}</ul>
+        <div class="hero-row" style="margin-top:14px">${metric("AI 信心值", `${number(confidence)}%`)}</div>
       `;
     }
 

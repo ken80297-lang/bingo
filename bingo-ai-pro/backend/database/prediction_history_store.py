@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,24 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+_INITIALIZED = False
+_LEARNED_ISSUES_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
+LEARNED_ISSUES_TTL_SECONDS = 30
+
+LIFECYCLE_COLUMNS = {
+    "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
+    "verified_issue": ("text", "text"),
+    "verified_at": ("timestamptz", "text"),
+    "matched_numbers": ("jsonb", "text"),
+    "missed_numbers": ("jsonb", "text"),
+    "prediction_count": ("integer default 0", "integer default 0"),
+    "hit_rate": ("double precision default 0", "real default 0"),
+    "super_number_hit": ("boolean default false", "integer default 0"),
+    "verification_version": ("text", "text"),
+    "learning_used": ("boolean default false", "integer default 0"),
+    "model_score": ("double precision default 0", "real default 0"),
+}
+ALLOWED_PREDICTION_STATUSES = {"pending", "waiting_draw", "verified", "expired", "failed"}
 
 
 def _now() -> str:
@@ -27,6 +46,13 @@ def _json_loads(value: Any) -> Any:
         return None
     if isinstance(value, (dict, list)):
         return value
+
+
+def _prediction_status(value: Any, has_winning_numbers: bool = False) -> str:
+    if has_winning_numbers:
+        return "verified"
+    text = str(value or "waiting_draw")
+    return text if text in ALLOWED_PREDICTION_STATUSES else "waiting_draw"
     try:
         return json.loads(value)
     except Exception:
@@ -49,6 +75,7 @@ def _sqlite_connection() -> sqlite3.Connection:
 
 
 def init_prediction_history_tables() -> dict:
+    global _INITIALIZED
     results = {"cloud": "unknown", "sqlite": "unknown"}
 
     if _cloud_enabled():
@@ -92,6 +119,11 @@ def init_prediction_history_tables() -> dict:
                     )
                     cur.execute("alter table prediction_history add column if not exists model_scores jsonb", prepare=False)
                     cur.execute("alter table prediction_history add column if not exists winning_model text", prepare=False)
+                    for column, (cloud_type, _) in LIFECYCLE_COLUMNS.items():
+                        cur.execute(
+                            f"alter table prediction_history add column if not exists {column} {cloud_type}",
+                            prepare=False,
+                        )
                 conn.commit()
             results["cloud"] = "available"
         except Exception:
@@ -138,21 +170,31 @@ def init_prediction_history_tables() -> dict:
                 conn.execute("alter table prediction_history add column model_scores text")
             if "winning_model" not in existing:
                 conn.execute("alter table prediction_history add column winning_model text")
+            for column, (_, sqlite_type) in LIFECYCLE_COLUMNS.items():
+                if column not in existing:
+                    conn.execute(f"alter table prediction_history add column {column} {sqlite_type}")
         results["sqlite"] = "available"
     except Exception:
         logger.exception("failed to initialize sqlite prediction_history table")
 
+    _INITIALIZED = True
     return results
 
 
+def _ensure_initialized() -> None:
+    if not _INITIALIZED:
+        init_prediction_history_tables()
+
+
 def _prediction_params(item: dict) -> tuple:
+    recommended = item.get("recommend_numbers", [])
     return (
         item.get("issue"),
         item.get("prediction_issue"),
         item.get("predict_time") or _now(),
         item.get("strategy"),
         item.get("confidence"),
-        _json_dumps(item.get("recommend_numbers", [])),
+        _json_dumps(recommended),
         item.get("super_number"),
         _json_dumps(item.get("three_star", [])),
         _json_dumps(item.get("four_star", [])),
@@ -165,10 +207,14 @@ def _prediction_params(item: dict) -> tuple:
         _json_dumps(item.get("reasons", [])),
         _json_dumps(item.get("model_scores", {})),
         item.get("winning_model"),
+        item.get("prediction_status") or "waiting_draw",
+        len(recommended or []),
+        bool(item.get("learning_used", False)),
     )
 
 
 def save_prediction_history(item: dict) -> dict:
+    _ensure_initialized()
     cloud_error = None
     if _cloud_enabled():
         try:
@@ -181,11 +227,12 @@ def save_prediction_history(item: dict) -> dict:
                             issue, prediction_issue, predict_time, strategy, confidence,
                             recommend_numbers, super_number, three_star, four_star, twins,
                             consecutive, patch_numbers, tails, big_small, odd_even, reasons,
-                            model_scores, winning_model, updated_at
+                            model_scores, winning_model, prediction_status, prediction_count,
+                            learning_used, updated_at
                         )
                         values (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb,
                                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb,
-                                %s::jsonb, %s, now())
+                                %s::jsonb, %s, %s, %s, %s, now())
                         on conflict (prediction_issue, strategy) do update set
                             issue = excluded.issue,
                             predict_time = excluded.predict_time,
@@ -203,6 +250,12 @@ def save_prediction_history(item: dict) -> dict:
                             reasons = excluded.reasons,
                             model_scores = excluded.model_scores,
                             winning_model = excluded.winning_model,
+                            prediction_status = case
+                                when prediction_history.prediction_status in ('verified', 'failed')
+                                then prediction_history.prediction_status
+                                else excluded.prediction_status
+                            end,
+                            prediction_count = excluded.prediction_count,
                             updated_at = now()
                         returning id
                         """,
@@ -225,9 +278,10 @@ def save_prediction_history(item: dict) -> dict:
                     issue, prediction_issue, predict_time, strategy, confidence,
                     recommend_numbers, super_number, three_star, four_star, twins,
                     consecutive, patch_numbers, tails, big_small, odd_even, reasons,
-                    model_scores, winning_model, updated_at
+                    model_scores, winning_model, prediction_status, prediction_count,
+                    learning_used, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(prediction_issue, strategy) do update set
                     issue = excluded.issue,
                     predict_time = excluded.predict_time,
@@ -245,6 +299,12 @@ def save_prediction_history(item: dict) -> dict:
                     reasons = excluded.reasons,
                     model_scores = excluded.model_scores,
                     winning_model = excluded.winning_model,
+                    prediction_status = case
+                        when prediction_history.prediction_status in ('verified', 'failed')
+                        then prediction_history.prediction_status
+                        else excluded.prediction_status
+                    end,
+                    prediction_count = excluded.prediction_count,
                     updated_at = excluded.updated_at
                 """,
                 (*_prediction_params(item), _now()),
@@ -282,6 +342,18 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
 
 
 def _row_to_prediction(row: Any) -> dict:
+    recommend_numbers = _json_loads(row[6]) or []
+    winning_numbers = _json_loads(row[17]) or []
+    matched_numbers = _json_loads(row[30]) if len(row) > 30 else []
+    missed_numbers = _json_loads(row[31]) if len(row) > 31 else []
+    if winning_numbers and not matched_numbers:
+        winning_set = set(_as_int_list(winning_numbers))
+        matched_numbers = [number for number in _as_int_list(recommend_numbers) if number in winning_set]
+    if winning_numbers and not missed_numbers:
+        winning_set = set(_as_int_list(winning_numbers))
+        missed_numbers = [number for number in _as_int_list(recommend_numbers) if number not in winning_set]
+    raw_status = row[27] if len(row) > 27 and row[27] else None
+    effective_status = _prediction_status(raw_status, bool(winning_numbers))
     return {
         "id": row[0],
         "issue": row[1],
@@ -289,7 +361,7 @@ def _row_to_prediction(row: Any) -> dict:
         "predict_time": str(row[3]) if row[3] is not None else None,
         "strategy": row[4],
         "confidence": row[5],
-        "recommend_numbers": _json_loads(row[6]) or [],
+        "recommend_numbers": recommend_numbers,
         "super_number": row[7],
         "three_star": _json_loads(row[8]) or [],
         "four_star": _json_loads(row[9]) or [],
@@ -300,7 +372,7 @@ def _row_to_prediction(row: Any) -> dict:
         "big_small": row[14],
         "odd_even": row[15],
         "reasons": _json_loads(row[16]) or [],
-        "winning_numbers": _json_loads(row[17]) or [],
+        "winning_numbers": winning_numbers,
         "hit_count": row[18] or 0,
         "super_hit": bool(row[19]),
         "three_star_hit": bool(row[20]),
@@ -310,57 +382,126 @@ def _row_to_prediction(row: Any) -> dict:
         "updated_at": str(row[24]) if row[24] is not None else None,
         "model_scores": _json_loads(row[25]) if len(row) > 25 else {},
         "winning_model": row[26] if len(row) > 26 else None,
+        "prediction_status": effective_status,
+        "verified_issue": row[28] if len(row) > 28 else None,
+        "verified_at": str(row[29]) if len(row) > 29 and row[29] is not None else None,
+        "matched_numbers": matched_numbers or [],
+        "missed_numbers": missed_numbers or [],
+        "prediction_count": row[32] if len(row) > 32 and row[32] is not None else len(recommend_numbers or []),
+        "hit_rate": row[33] if len(row) > 33 and row[33] is not None else (row[22] or 0),
+        "super_number_hit": bool(row[34]) if len(row) > 34 else bool(row[19]),
+        "verification_version": row[35] if len(row) > 35 else None,
+        "learning_used": bool(row[36]) if len(row) > 36 else False,
+        "model_score": row[37] if len(row) > 37 else None,
     }
 
 
+PREDICTION_SELECT_COLUMNS = """
+        id, issue, prediction_issue, predict_time, strategy, confidence,
+        recommend_numbers, super_number, three_star, four_star, twins,
+        consecutive, patch_numbers, tails, big_small, odd_even, reasons,
+        winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
+        accuracy, created_at, updated_at, model_scores, winning_model,
+        prediction_status, verified_issue, verified_at, matched_numbers,
+        missed_numbers, prediction_count, hit_rate, super_number_hit,
+        verification_version, learning_used, model_score
+"""
+
+
 def get_latest_prediction_history() -> dict | None:
+    _ensure_initialized()
     rows = _query_with_fallback(
         """
-        select id, issue, prediction_issue, predict_time, strategy, confidence,
-               recommend_numbers, super_number, three_star, four_star, twins,
-               consecutive, patch_numbers, tails, big_small, odd_even, reasons,
-               winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
-               accuracy, created_at, updated_at, model_scores, winning_model
+        select {columns}
         from prediction_history
+        where prediction_issue is not null
+          and prediction_issue not like '99%%'
+          and upper(prediction_issue) not like 'TEST%%'
         order by prediction_issue desc, updated_at desc
         limit 1
-        """,
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
     )
     return _row_to_prediction(rows[0]) if rows else None
 
 
 def get_prediction_history_records(limit: int = 100) -> list[dict]:
+    _ensure_initialized()
     limit = max(1, min(int(limit or 100), 500))
     rows = _query_with_fallback(
         """
-        select id, issue, prediction_issue, predict_time, strategy, confidence,
-               recommend_numbers, super_number, three_star, four_star, twins,
-               consecutive, patch_numbers, tails, big_small, odd_even, reasons,
-               winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
-               accuracy, created_at, updated_at, model_scores, winning_model
+        select {columns}
         from prediction_history
+        where prediction_issue is not null
+          and prediction_issue not like '99%%'
+          and upper(prediction_issue) not like 'TEST%%'
         order by prediction_issue desc, updated_at desc
         limit %s
-        """,
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
         (limit,),
         sqlite_sql="""
-        select id, issue, prediction_issue, predict_time, strategy, confidence,
-               recommend_numbers, super_number, three_star, four_star, twins,
-               consecutive, patch_numbers, tails, big_small, odd_even, reasons,
-               winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
-               accuracy, created_at, updated_at, model_scores, winning_model
+        select {columns}
         from prediction_history
+        where prediction_issue is not null
+          and prediction_issue not like '99%'
+          and upper(prediction_issue) not like 'TEST%'
         order by prediction_issue desc, updated_at desc
         limit ?
-        """,
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
     )
     return [_row_to_prediction(row) for row in rows]
 
 
 def get_prediction_history_count() -> int:
+    _ensure_initialized()
     rows = _query_with_fallback("select count(*) from prediction_history")
     if not rows:
         return 0
+
+
+def mark_prediction_learning_used(issue: str, used: bool = True) -> dict:
+    _ensure_initialized()
+    issue = str(issue or "")
+    if not issue:
+        return {"status": "error", "updated": 0, "error": "missing issue"}
+    updated = 0
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update prediction_history
+                        set learning_used = %s,
+                            updated_at = now()
+                        where prediction_issue = %s
+                          and prediction_status = 'verified'
+                        """,
+                        (used, issue),
+                        prepare=False,
+                    )
+                    updated = cur.rowcount or 0
+                conn.commit()
+            return {"status": "ok", "storage": "cloud", "updated": updated}
+        except Exception:
+            logger.exception("cloud prediction_history learning_used update failed")
+
+    try:
+        with _sqlite_connection() as conn:
+            cursor = conn.execute(
+                """
+                update prediction_history
+                set learning_used = ?,
+                    updated_at = ?
+                where prediction_issue = ?
+                  and prediction_status = 'verified'
+                """,
+                (1 if used else 0, _now(), issue),
+            )
+            updated = cursor.rowcount or 0
+        return {"status": "ok", "storage": "sqlite", "updated": updated}
+    except Exception as exc:
+        logger.exception("sqlite prediction_history learning_used update failed")
+        return {"status": "error", "updated": 0, "error": str(exc)}
     try:
         return int(rows[0][0] or 0)
     except Exception:
@@ -368,20 +509,31 @@ def get_prediction_history_count() -> int:
 
 
 def update_prediction_history_result(actual: dict) -> dict:
+    _ensure_initialized()
     issue = str(actual.get("issue"))
     winning_numbers = [int(n) for n in actual.get("numbers") or []]
     actual_super = actual.get("super_number")
+    if len(winning_numbers) != 20:
+        return {"status": "waiting_draw", "updated": 0, "issue": issue}
     updated = 0
+    verified_items = []
+    learned_issues = _learned_prediction_issues()
     for item in get_prediction_history_records(200):
         if str(item.get("prediction_issue")) != issue:
             continue
         recommended = [int(n) for n in item.get("recommend_numbers") or []]
-        hit_count = len(set(recommended) & set(winning_numbers))
+        matched_numbers = sorted(set(recommended) & set(winning_numbers))
+        missed_numbers = [number for number in recommended if number not in set(winning_numbers)]
+        hit_count = len(matched_numbers)
+        prediction_count = len(recommended)
         super_hit = bool(actual_super is not None and item.get("super_number") == actual_super)
         three_star_hit = len(set(item.get("three_star") or []) & set(winning_numbers)) >= 3
         four_star_hit = len(set(item.get("four_star") or []) & set(winning_numbers)) >= 4
-        accuracy = round(hit_count / max(1, len(recommended)), 4)
+        accuracy = round(hit_count / max(1, prediction_count), 4)
         winning_model = _winning_model(item.get("model_scores") or {}, winning_numbers)
+        model_score = _model_score(item.get("model_scores") or {}, winning_model)
+        verified_at = _now()
+        learning_used = bool(item.get("learning_used") or str(item.get("prediction_issue") or "") in learned_issues)
         params = (
             _json_dumps(winning_numbers),
             hit_count,
@@ -390,7 +542,18 @@ def update_prediction_history_result(actual: dict) -> dict:
             four_star_hit,
             accuracy,
             winning_model,
-            _now(),
+            "verified",
+            issue,
+            verified_at,
+            _json_dumps(matched_numbers),
+            _json_dumps(missed_numbers),
+            prediction_count,
+            accuracy,
+            super_hit,
+            "prediction_lifecycle_v1",
+            learning_used,
+            model_score,
+            verified_at,
             item.get("id"),
         )
         if _cloud_enabled():
@@ -407,6 +570,17 @@ def update_prediction_history_result(actual: dict) -> dict:
                                 four_star_hit = %s,
                                 accuracy = %s,
                                 winning_model = %s,
+                                prediction_status = %s,
+                                verified_issue = %s,
+                                verified_at = %s,
+                                matched_numbers = %s::jsonb,
+                                missed_numbers = %s::jsonb,
+                                prediction_count = %s,
+                                hit_rate = %s,
+                                super_number_hit = %s,
+                                verification_version = %s,
+                                learning_used = %s,
+                                model_score = %s,
                                 updated_at = %s
                             where id = %s
                             """,
@@ -415,6 +589,19 @@ def update_prediction_history_result(actual: dict) -> dict:
                         )
                     conn.commit()
                 updated += 1
+                verified_items.append(
+                    _verification_summary(
+                        item,
+                        issue,
+                        matched_numbers,
+                        missed_numbers,
+                        hit_count,
+                        prediction_count,
+                        accuracy,
+                        super_hit,
+                        verified_at,
+                    )
+                )
                 continue
             except Exception:
                 logger.exception("cloud prediction_history result update failed")
@@ -430,6 +617,17 @@ def update_prediction_history_result(actual: dict) -> dict:
                         four_star_hit = ?,
                         accuracy = ?,
                         winning_model = ?,
+                        prediction_status = ?,
+                        verified_issue = ?,
+                        verified_at = ?,
+                        matched_numbers = ?,
+                        missed_numbers = ?,
+                        prediction_count = ?,
+                        hit_rate = ?,
+                        super_number_hit = ?,
+                        verification_version = ?,
+                        learning_used = ?,
+                        model_score = ?,
                         updated_at = ?
                     where id = ?
                     """,
@@ -442,13 +640,44 @@ def update_prediction_history_result(actual: dict) -> dict:
                         accuracy,
                         winning_model,
                         params[7],
+                        params[8],
+                        params[9],
+                        params[10],
+                        params[11],
+                        params[12],
+                        params[13],
+                        1 if super_hit else 0,
+                        params[15],
+                        1 if params[16] else 0,
+                        params[17],
+                        params[18],
                         item.get("id"),
                     ),
                 )
             updated += 1
+            verified_items.append(
+                _verification_summary(
+                    item,
+                    issue,
+                    matched_numbers,
+                    missed_numbers,
+                    hit_count,
+                    prediction_count,
+                    accuracy,
+                    super_hit,
+                    verified_at,
+                )
+            )
         except Exception:
             logger.exception("sqlite prediction_history result update failed")
-    return {"status": "ok", "updated": updated}
+    return {
+        "status": "ok",
+        "updated": updated,
+        "issue": issue,
+        "prediction_status": "verified" if updated else "waiting_draw",
+        "learning_used": False,
+        "results": verified_items,
+    }
 
 
 def _winning_model(model_scores: dict, winning_numbers: list[int]) -> str | None:
@@ -464,6 +693,72 @@ def _winning_model(model_scores: dict, winning_numbers: list[int]) -> str | None
     return best_model
 
 
+def _model_score(model_scores: dict, model_name: str | None) -> float | None:
+    if not model_name:
+        return None
+    payload = (model_scores or {}).get(model_name)
+    if isinstance(payload, dict):
+        try:
+            return float(payload.get("confidence") or 0)
+        except Exception:
+            return None
+    return None
+
+
+def _learned_prediction_issues(limit: int = 1000) -> set[str]:
+    cached = _LEARNED_ISSUES_CACHE.get("payload")
+    expires_at = float(_LEARNED_ISSUES_CACHE.get("expires_at") or 0)
+    if isinstance(cached, set) and time.monotonic() < expires_at:
+        return set(cached)
+    try:
+        from database.learning_store import get_learning_records
+
+        learned = set()
+        for item in get_learning_records(
+            limit=limit,
+            prediction_type="live_prediction",
+            learned_status="learned",
+        ):
+            issue = str(item.get("target_issue") or item.get("issue") or "")
+            if issue and not issue.startswith("pending:"):
+                learned.add(issue)
+        _LEARNED_ISSUES_CACHE["payload"] = set(learned)
+        _LEARNED_ISSUES_CACHE["expires_at"] = time.monotonic() + LEARNED_ISSUES_TTL_SECONDS
+        return learned
+    except Exception:
+        logger.exception("failed to load learned prediction issues")
+        return set()
+
+
+def _verification_summary(
+    item: dict,
+    issue: str,
+    matched_numbers: list[int],
+    missed_numbers: list[int],
+    hit_count: int,
+    prediction_count: int,
+    hit_rate: float,
+    super_hit: bool,
+    verified_at: str,
+) -> dict:
+    return {
+        "id": item.get("id"),
+        "issue": item.get("issue"),
+        "prediction_issue": item.get("prediction_issue"),
+        "target_issue": item.get("prediction_issue"),
+        "prediction_status": "verified",
+        "verified_issue": issue,
+        "verified_at": verified_at,
+        "matched_numbers": matched_numbers,
+        "missed_numbers": missed_numbers,
+        "hit_count": hit_count,
+        "prediction_count": prediction_count,
+        "hit_rate": hit_rate,
+        "super_number_hit": super_hit,
+        "learning_used": False,
+    }
+
+
 def _as_int_list(values: Any) -> list[int]:
     numbers = []
     for value in values or []:
@@ -477,8 +772,27 @@ def _as_int_list(values: Any) -> list[int]:
 
 
 def get_prediction_history_statistics(limit: int = 100) -> dict:
-    records = [item for item in get_prediction_history_records(limit) if item.get("winning_numbers")]
+    all_records = get_prediction_history_records(limit)
+    records = [item for item in all_records if item.get("winning_numbers")]
     total = len(records)
+    learned_issues = _learned_prediction_issues()
+    waiting_prediction_count = sum(
+        1 for item in all_records if item.get("prediction_status") in ("pending", "waiting_draw")
+    )
+    verified_prediction_count = sum(1 for item in all_records if item.get("prediction_status") == "verified")
+    verified_waiting_learning = sum(
+        1
+        for item in all_records
+        if item.get("prediction_status") == "verified"
+        and not item.get("learning_used")
+        and str(item.get("prediction_issue") or "") not in learned_issues
+    )
+    learned_records = [
+        item
+        for item in all_records
+        if item.get("learning_used") or str(item.get("prediction_issue") or "") in learned_issues
+    ]
+    last_learning_time = max((item.get("updated_at") for item in learned_records if item.get("updated_at")), default=None)
     if not total:
         return {
             "status": "empty",
@@ -489,7 +803,22 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
             "five_star_rate": 0,
             "super_hit_rate": 0,
             "average_hits": 0,
+            "prediction_success_rate": 0,
+            "success_threshold": 1,
+            "success_definition": "hit_count >= 1 among verified predictions",
+            "verified_rate": 0,
+            "three_star_or_better_rate": 0,
+            "average_hit": 0,
+            "average_hit_last_30": 0,
+            "average_hit_last_100": 0,
+            "waiting_prediction_count": waiting_prediction_count,
+            "verified_prediction_count": verified_prediction_count,
+            "pending_learning": verified_waiting_learning,
+            "verified_waiting_learning": verified_waiting_learning,
+            "last_learning_time": last_learning_time,
         }
+    last_30 = records[:30]
+    last_100 = records[:100]
     return {
         "status": "ok",
         "sample_size": total,
@@ -498,4 +827,17 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
         "five_star_rate": round(sum(1 for item in records if (item.get("hit_count") or 0) >= 5) / total * 100, 2),
         "super_hit_rate": round(sum(1 for item in records if item.get("super_hit")) / total * 100, 2),
         "average_hits": round(sum(item.get("hit_count") or 0 for item in records) / total, 2),
+        "prediction_success_rate": round(sum(1 for item in records if (item.get("hit_count") or 0) > 0) / total * 100, 2),
+        "success_threshold": 1,
+        "success_definition": "hit_count >= 1 among verified predictions",
+        "verified_rate": round(total / max(1, len(all_records)) * 100, 2),
+        "three_star_or_better_rate": round(sum(1 for item in records if (item.get("hit_count") or 0) >= 3) / total * 100, 2),
+        "average_hit": round(sum(item.get("hit_count") or 0 for item in records) / total, 2),
+        "average_hit_last_30": round(sum(item.get("hit_count") or 0 for item in last_30) / max(1, len(last_30)), 2),
+        "average_hit_last_100": round(sum(item.get("hit_count") or 0 for item in last_100) / max(1, len(last_100)), 2),
+        "waiting_prediction_count": waiting_prediction_count,
+        "verified_prediction_count": verified_prediction_count,
+        "pending_learning": verified_waiting_learning,
+        "verified_waiting_learning": verified_waiting_learning,
+        "last_learning_time": last_learning_time,
     }

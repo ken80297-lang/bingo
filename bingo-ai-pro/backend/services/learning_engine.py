@@ -17,6 +17,7 @@ from database.learning_store import (
 from database.official_draw_store import get_official_draw_by_issue
 from database.prediction_history_store import (
     get_prediction_history_records,
+    get_prediction_history_statistics,
 )
 from services.analysis_engine import analysis_engine_status
 from services.catch_up_service import get_catch_up_status
@@ -604,7 +605,22 @@ def evaluate_verified_issue(issue: str) -> dict:
             message=f"learning evaluation {status}",
             duration_ms=_duration_ms(start),
         )
-        return {"status": status, "issue": issue, "records": len(records), "saved": saved}
+        learning_queue = {"status": "skipped"}
+        if status == "ok":
+            try:
+                from database.prediction_history_store import mark_prediction_learning_used
+
+                learning_queue = mark_prediction_learning_used(str(issue), True)
+            except Exception as exc:
+                logger.exception("prediction history learning queue update failed")
+                learning_queue = {"status": "error", "message": str(exc)}
+        return {
+            "status": status,
+            "issue": issue,
+            "records": len(records),
+            "saved": saved,
+            "learning_queue": learning_queue,
+        }
     except Exception as exc:
         logger.exception("learning evaluation failed")
         record_operation_event(
@@ -669,6 +685,7 @@ def get_learning_status() -> dict:
         targets = (observation or {}).get("targets") or {}
         quality = (observation or {}).get("quality") or {}
         readiness = (observation or {}).get("readiness") or {}
+        prediction_stats = get_prediction_history_statistics(100)
         status = "ok"
         if int(counts.get("failed_records") or 0) > 0:
             status = "warning"
@@ -700,6 +717,9 @@ def get_learning_status() -> dict:
             "duplicate_risk_count": quality.get("duplicate_risk_count", 0),
             "snapshot_success_rate": quality.get("snapshot_success_rate", 0),
             "learning_success_rate": quality.get("learning_success_rate", 0),
+            "pending_learning": prediction_stats.get("pending_learning", 0),
+            "verified_waiting_learning": prediction_stats.get("verified_waiting_learning", 0),
+            "last_learning_time": prediction_stats.get("last_learning_time"),
             "readiness_status": readiness.get("status", "unknown"),
             "ready_for_phase_22_2": bool(readiness.get("ready")),
             "readiness_reasons": readiness.get("reasons", []),
