@@ -334,8 +334,6 @@ def collect_official_today() -> dict:
             start,
             f"official collector saved {saved.get('saved', 0)} draws",
         )
-        verification = run_official_verification(limit=10)
-        reverify = reverify_recent_draws(limit=20)
         prediction_refresh = {"status": "unknown"}
         try:
             from services.prediction_refresh import ensure_next_prediction
@@ -345,6 +343,8 @@ def collect_official_today() -> dict:
         except Exception as exc:
             logger.exception("official next prediction refresh failed")
             prediction_refresh = {"status": "error", "message": str(exc)}
+        verification = run_official_verification(limit=10)
+        reverify = reverify_recent_draws(limit=20)
         prediction = {"status": "unknown"}
         try:
             from services.prediction_tracker import evaluate_pending_predictions
