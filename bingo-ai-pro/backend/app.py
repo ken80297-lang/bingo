@@ -10,6 +10,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.events import (
+    EVENT_JOB_ERROR,
+    EVENT_JOB_EXECUTED,
+    EVENT_JOB_MAX_INSTANCES,
+    EVENT_JOB_MISSED,
+)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -79,6 +85,7 @@ from db import (
 )
 from services.data_quality import run_kuaishou_data_quality_check
 from services.catch_up_service import catch_up_missing_issues
+from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.official_verification import collect_official_today
 
@@ -89,10 +96,10 @@ app = FastAPI(title="Bingo AI Pro API")
 
 try:
     conn = get_connection()
-    print("✅ Supabase 連線成功")
+    print("Supabase connection ok")
     conn.close()
 except Exception as e:
-    print("❌ Supabase 連線失敗")
+    print("Supabase connection failed")
     print(e)
 
 app.include_router(adaptive_weight_router)
@@ -139,6 +146,28 @@ STATE: dict[str, str | int | None] = {
 
 scheduler = BackgroundScheduler()
 app.state.scheduler = scheduler
+
+
+def _scheduler_listener(event) -> None:
+    job_id = getattr(event, "job_id", None)
+    if event.code == EVENT_JOB_EXECUTED:
+        mark_scheduler_event("success", job_id)
+    elif event.code == EVENT_JOB_ERROR:
+        mark_scheduler_event("error", job_id, getattr(event, "exception", None))
+    elif event.code == EVENT_JOB_MISSED:
+        mark_scheduler_event("missed", job_id)
+    elif event.code == EVENT_JOB_MAX_INSTANCES:
+        mark_scheduler_event("max_instances", job_id)
+
+
+def _ensure_scheduler_listener() -> None:
+    if getattr(app.state, "scheduler_listener_registered", False):
+        return
+    scheduler.add_listener(
+        _scheduler_listener,
+        EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES,
+    )
+    app.state.scheduler_listener_registered = True
 
 
 def summary_statistics(draws: list[dict]) -> dict:
@@ -190,6 +219,7 @@ def refresh_data() -> dict[str, object]:
 @app.on_event("startup")
 def startup_event() -> None:
     init_db()
+    _ensure_scheduler_listener()
 
     try:
         init_collector_tables()
@@ -212,10 +242,6 @@ def startup_event() -> None:
             warm_health_cache()
         except Exception as exc:
             print(f"Health cache warm-up failed: {exc}")
-        try:
-            catch_up_missing_issues()
-        except Exception as exc:
-            print(f"Official catch-up startup check failed: {exc}")
         scheduler.add_job(
             refresh_health_cache,
             "date",
@@ -231,6 +257,36 @@ def startup_event() -> None:
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+        )
+        scheduler.add_job(
+            refresh_system_status_cache,
+            "date",
+            run_date=datetime.utcnow() + timedelta(seconds=5),
+            id="system_status_runtime_cache_startup",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
+        )
+        scheduler.add_job(
+            refresh_system_status_cache,
+            "interval",
+            seconds=30,
+            id="system_status_runtime_cache_refresh",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
+        )
+        scheduler.add_job(
+            catch_up_missing_issues,
+            "date",
+            run_date=datetime.utcnow() + timedelta(seconds=8),
+            id="collector_official_catch_up_startup",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
         )
         scheduler.add_job(
             collect_pilio_today,
@@ -259,6 +315,9 @@ def startup_event() -> None:
             minutes=2,
             id="collector_official_catch_up",
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
         )
         scheduler.add_job(
             collect_official_today,
@@ -266,6 +325,18 @@ def startup_event() -> None:
             minutes=2,
             id="collector_official_today",
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
+        )
+        scheduler.add_job(
+            run_kuaishou_data_quality_check,
+            "date",
+            run_date=datetime.utcnow() + timedelta(seconds=15),
+            id="data_quality_startup",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
         scheduler.add_job(
             run_kuaishou_data_quality_check,
@@ -274,11 +345,9 @@ def startup_event() -> None:
             minute=0,
             id="data_quality_daily",
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
-        try:
-            run_kuaishou_data_quality_check()
-        except Exception as exc:
-            print(f"Data quality startup check failed: {exc}")
     except Exception as exc:
         print(f"Collector scheduler setup failed: {exc}")
 
@@ -298,7 +367,8 @@ def startup_event() -> None:
         replace_existing=True,
     )
 
-    scheduler.start()
+    if not scheduler.running:
+        scheduler.start()
 
 
 @app.on_event("shutdown")
@@ -387,6 +457,11 @@ def api_health() -> dict[str, str]:
 @app.get("/dashboard")
 def dashboard_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.head("/dashboard")
+def dashboard_head() -> JSONResponse:
+    return JSONResponse(status_code=200, content=None)
 
 
 @app.get("/admin")

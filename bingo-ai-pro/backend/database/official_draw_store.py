@@ -175,6 +175,29 @@ def _verification_params(item: dict) -> tuple:
     )
 
 
+def _valid_draw(draw: dict) -> bool:
+    issue = str(draw.get("issue") or "").strip()
+    if not issue or not issue.isdigit():
+        return False
+    try:
+        numbers = [int(value) for value in draw.get("numbers") or []]
+    except Exception:
+        return False
+    if len(numbers) != 20 or len(set(numbers)) != 20:
+        return False
+    if any(number < 1 or number > 80 for number in numbers):
+        return False
+    super_number = draw.get("super_number")
+    if super_number is not None:
+        try:
+            super_value = int(super_number)
+        except Exception:
+            return False
+        if super_value < 1 or super_value > 80:
+            return False
+    return True
+
+
 def _save_official_cloud(draws: list[dict]) -> None:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
@@ -234,21 +257,29 @@ def _save_official_sqlite(draws: list[dict]) -> None:
 
 
 def save_official_draws(draws: list[dict]) -> dict:
-    if not draws:
-        return {"status": "ok", "saved": 0, "storage": None}
+    valid_draws = [draw for draw in draws or [] if _valid_draw(draw)]
+    invalid_count = len(draws or []) - len(valid_draws)
+    if not valid_draws:
+        return {"status": "ok", "saved": 0, "invalid": invalid_count, "storage": None}
 
     cloud_error = None
     if _cloud_enabled():
         try:
-            _save_official_cloud(draws)
-            return {"status": "ok", "saved": len(draws), "storage": "cloud"}
+            _save_official_cloud(valid_draws)
+            return {"status": "ok", "saved": len(valid_draws), "invalid": invalid_count, "storage": "cloud"}
         except Exception as exc:
             logger.exception("cloud official draws upsert failed")
             cloud_error = str(exc)
 
     try:
-        _save_official_sqlite(draws)
-        return {"status": "ok", "saved": len(draws), "storage": "sqlite", "cloud_error": cloud_error}
+        _save_official_sqlite(valid_draws)
+        return {
+            "status": "ok",
+            "saved": len(valid_draws),
+            "invalid": invalid_count,
+            "storage": "sqlite",
+            "cloud_error": cloud_error,
+        }
     except Exception as exc:
         logger.exception("sqlite official draws upsert failed")
         return {"status": "error", "saved": 0, "storage": None, "error": str(exc)}

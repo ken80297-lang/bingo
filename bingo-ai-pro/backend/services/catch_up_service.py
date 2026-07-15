@@ -8,10 +8,16 @@ from typing import Any
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
 from database.official_draw_store import (
     get_latest_official_draw,
+    save_draw_verification,
     save_official_draws,
 )
 from services.operations_center import record_operation_event
 from services.official_verification import run_official_verification
+from services.collector_runtime import (
+    mark_error,
+    mark_success,
+    official_collection_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,9 @@ LAST_CATCH_UP_RESULT: dict[str, Any] = {
     "last_collect_duration": None,
     "catch_up_available": True,
 }
+MAX_BATCH_SIZE = 20
+JOB_TIME_BUDGET_SECONDS = 75
+PER_ISSUE_RETRY_LIMIT = 1
 
 
 def _today_taipei() -> date:
@@ -48,6 +57,54 @@ def _latest_issue_from_draws(draws: list[dict]) -> str | None:
     return str(max(issues)) if issues else None
 
 
+def _valid_draw(draw: dict) -> bool:
+    issue = _issue_int(draw.get("issue"))
+    numbers = draw.get("numbers") or []
+    super_number = draw.get("super_number")
+    if issue is None or len(numbers) != 20:
+        return False
+    try:
+        normalized = [int(value) for value in numbers]
+    except Exception:
+        return False
+    if len(set(normalized)) != 20:
+        return False
+    if any(number < 1 or number > 80 for number in normalized):
+        return False
+    if super_number is not None:
+        try:
+            super_value = int(super_number)
+        except Exception:
+            return False
+        if super_value < 1 or super_value > 80:
+            return False
+    return True
+
+
+def _mark_pending_verification(issue: Any, reason: str) -> None:
+    issue_text = str(issue or "").strip()
+    if not issue_text:
+        return
+    try:
+        save_draw_verification(
+            {
+                "issue": issue_text,
+                "kuaishou_numbers": [],
+                "official_numbers": [],
+                "kuaishou_super": None,
+                "official_super": None,
+                "numbers_match": False,
+                "super_match": False,
+                "verified": False,
+                "status": "pending_verification",
+                "verified_at": None,
+                "error_message": reason,
+            }
+        )
+    except Exception:
+        logger.exception("failed to mark pending verification for issue %s", issue_text)
+
+
 def get_database_latest_issue() -> str | None:
     try:
         latest = get_latest_official_draw()
@@ -60,6 +117,7 @@ def get_database_latest_issue() -> str | None:
 def fetch_source_today_draws(max_pages: int = 3, page_size: int = 100) -> list[dict]:
     collected: dict[str, dict] = {}
     query_date = _today_taipei()
+    page_size = max(1, min(int(page_size or 20), 20))
     for page in range(1, max(1, int(max_pages or 1)) + 1):
         draws = fetch_official_bingo_results(query_date, page_num=page, page_size=page_size)
         if not draws:
@@ -123,9 +181,24 @@ def _empty_result(start: float, database_issue: str | None, source_issue: str | 
 
 def catch_up_missing_issues() -> dict:
     start = time.perf_counter()
+    with official_collection_lock("catch_up") as (locked, lock_payload):
+        if not locked:
+            result = {
+                **LAST_CATCH_UP_RESULT,
+                **lock_payload,
+                "catch_count": 0,
+                "success_count": 0,
+                "failed_count": 0,
+            }
+            LAST_CATCH_UP_RESULT.update(result)
+            return result
+        return _catch_up_missing_issues_locked(start)
+
+
+def _catch_up_missing_issues_locked(start: float) -> dict:
     database_issue = get_database_latest_issue()
     try:
-        source_draws = fetch_source_today_draws()
+        source_draws = fetch_source_today_draws(page_size=20)
         source_issue = _latest_issue_from_draws(source_draws)
         database_number = _issue_int(database_issue)
         source_number = _issue_int(source_issue)
@@ -134,24 +207,36 @@ def catch_up_missing_issues() -> dict:
             result = _empty_result(start, database_issue, source_issue, status="warning")
             result["reason"] = "source_latest_issue_unavailable"
             LAST_CATCH_UP_RESULT.update(result)
+            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000)
             _record_event("warning", database_issue, start, "official catch-up skipped: source unavailable")
             return result
 
         if database_number is not None and source_number <= database_number:
             result = _empty_result(start, database_issue, source_issue)
             LAST_CATCH_UP_RESULT.update(result)
+            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000)
             _record_event("ok", source_issue, start, "official catch-up already synced")
             return result
 
         missing = []
+        pending_verification = []
         for draw in source_draws:
+            if time.perf_counter() - start > JOB_TIME_BUDGET_SECONDS:
+                break
             issue_number = _issue_int(draw.get("issue"))
             if issue_number is None:
                 continue
             if database_number is None or database_number < issue_number <= source_number:
-                missing.append(draw)
+                if _valid_draw(draw):
+                    missing.append(draw)
+                else:
+                    pending_issue = draw.get("issue")
+                    pending_verification.append(pending_issue)
+                    _mark_pending_verification(pending_issue, "invalid_or_incomplete_official_draw")
+            if len(missing) >= MAX_BATCH_SIZE:
+                break
 
-        saved = save_official_draws(missing)
+        saved = save_official_draws(missing[:MAX_BATCH_SIZE])
         success_count = int(saved.get("saved") or 0) if saved.get("status") == "ok" else 0
         failed_count = max(0, len(missing) - success_count)
         verification = run_official_verification(limit=10)
@@ -176,6 +261,11 @@ def catch_up_missing_issues() -> dict:
             "catch_count": len(missing),
             "success_count": success_count,
             "failed_count": failed_count,
+            "pending_verification_count": len(pending_verification),
+            "pending_verification": pending_verification[:20],
+            "max_batch_size": MAX_BATCH_SIZE,
+            "job_time_budget_seconds": JOB_TIME_BUDGET_SECONDS,
+            "per_issue_retry_limit": PER_ISSUE_RETRY_LIMIT,
             "elapsed_seconds": elapsed,
             "saved": saved,
             "verification": verification,
@@ -185,6 +275,13 @@ def catch_up_missing_issues() -> dict:
             "catch_up_available": True,
         }
         LAST_CATCH_UP_RESULT.update(result)
+        mark_success(
+            "catch_up",
+            elapsed * 1000,
+            last_catch_up_recovered_count=success_count,
+            last_catch_up_failed_count=failed_count,
+            last_catch_up_pending_count=len(pending_verification),
+        )
         _record_event(result["status"], source_issue, start, f"official catch-up saved {success_count}/{len(missing)} draws")
         return result
     except Exception as exc:
@@ -207,6 +304,7 @@ def catch_up_missing_issues() -> dict:
             "catch_up_available": True,
         }
         LAST_CATCH_UP_RESULT.update(result)
+        mark_error("catch_up", exc, elapsed * 1000)
         _record_event("error", database_issue, start, "official catch-up failed", exc)
         return result
 

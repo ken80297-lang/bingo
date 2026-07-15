@@ -4,10 +4,7 @@ import logging
 from datetime import date
 from typing import Any
 
-import requests
-import urllib3
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
+from services.http_client import safe_get_json
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +23,7 @@ def _as_numbers(values: Any) -> list[int]:
     numbers = []
     for value in values or []:
         number = _as_int(value)
-        if number is not None:
+        if number is not None and number not in numbers:
             numbers.append(number)
     return numbers
 
@@ -60,25 +57,11 @@ def fetch_official_bingo_results(
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
             ),
         }
-        try:
-            response = requests.get(
-                OFFICIAL_BINGO_URL,
-                params=params,
-                headers=headers,
-                timeout=8,
-            )
-        except SSLError:
-            logger.warning("official bingo api ssl verification failed; retrying without certificate verification")
-            urllib3.disable_warnings(InsecureRequestWarning)
-            response = requests.get(
-                OFFICIAL_BINGO_URL,
-                params=params,
-                headers=headers,
-                timeout=8,
-                verify=False,
-            )
-        response.raise_for_status()
-        payload = response.json()
+        result = safe_get_json(OFFICIAL_BINGO_URL, params=params, headers=headers)
+        if not result.get("ok"):
+            logger.warning("official bingo api fetch skipped: %s", result)
+            return []
+        payload = result.get("data") or {}
         if payload.get("rtCode") != 0:
             logger.error("official bingo api returned error: %s", payload)
             return []
@@ -89,7 +72,7 @@ def fetch_official_bingo_results(
             issue = row.get("drawTerm")
             numbers = _as_numbers(row.get("bigShowOrder"))
             open_order_numbers = _as_numbers(row.get("openShowOrder"))
-            if not issue or len(numbers) != 20:
+            if not issue or len(numbers) != 20 or len(set(numbers)) != 20:
                 continue
             draws.append(
                 {

@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bingo AI 下一期預測中心</title>
+  <title>Bingo AI 智慧預測中心</title>
   <style>
     :root {
       color-scheme: dark;
       --bg: #07111c;
       --panel: #101c28;
-      --panel-2: #172838;
+      --panel-soft: #162638;
       --text: #f4f8ff;
       --muted: #9fb1c8;
-      --line: #283b4f;
+      --line: #284058;
       --ok: #2fd17c;
       --warn: #f6c344;
       --bad: #ff6478;
-      --accent: #55c7ff;
+      --accent: #59c7ff;
       --super: #ffd166;
     }
 
@@ -24,26 +24,44 @@
 
     body {
       margin: 0;
+      min-height: 100vh;
       background:
-        radial-gradient(circle at 20% 0%, rgba(85, 199, 255, .18), transparent 34%),
-        linear-gradient(180deg, #07111c 0%, #0b1623 100%);
+        radial-gradient(circle at 16% 0%, rgba(89, 199, 255, .18), transparent 32%),
+        radial-gradient(circle at 85% 4%, rgba(47, 209, 124, .10), transparent 30%),
+        linear-gradient(180deg, #07111c 0%, #0b1724 100%);
       color: var(--text);
-      font-family: Arial, "Microsoft JhengHei", sans-serif;
+      font-family: Arial, "Microsoft JhengHei", "PingFang TC", sans-serif;
       line-height: 1.55;
     }
 
     main {
-      width: min(760px, 100%);
+      width: min(780px, 100%);
       margin: 0 auto;
-      padding: 18px 12px 40px;
+      padding: 18px 12px 42px;
     }
 
-    header { padding: 10px 4px 18px; }
+    header {
+      padding: 10px 4px 18px;
+    }
 
     h1 {
       margin: 0;
-      font-size: 28px;
-      line-height: 1.2;
+      font-size: 29px;
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 16px 0 8px;
+      color: var(--muted);
+      font-size: 14px;
       letter-spacing: 0;
     }
 
@@ -55,9 +73,9 @@
 
     .toolbar {
       display: flex;
-      gap: 10px;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       margin-top: 14px;
       color: var(--muted);
       font-size: 13px;
@@ -66,7 +84,7 @@
     button {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #1d3448;
+      background: #1c344a;
       color: var(--text);
       padding: 10px 14px;
       font-size: 15px;
@@ -75,38 +93,26 @@
 
     .card {
       width: 100%;
-      background: rgba(16, 28, 40, .95);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 18px;
       margin-bottom: 14px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(16, 28, 40, .96);
       box-shadow: 0 16px 36px rgba(0, 0, 0, .24);
     }
 
-    h2 {
-      margin: 0 0 14px;
-      font-size: 20px;
-      letter-spacing: 0;
-    }
-
-    h3 {
-      margin: 16px 0 8px;
-      font-size: 15px;
-      color: var(--muted);
-    }
-
-    .hero-row {
+    .grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
-      margin-bottom: 14px;
     }
 
     .metric {
-      background: var(--panel-2);
-      border: 1px solid rgba(255,255,255,.06);
-      border-radius: 8px;
+      min-width: 0;
       padding: 12px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      background: var(--panel-soft);
     }
 
     .metric .label {
@@ -120,11 +126,6 @@
       font-weight: 900;
       overflow-wrap: anywhere;
     }
-
-    .status-ok { color: var(--ok); }
-    .status-warning { color: var(--warn); }
-    .status-error { color: var(--bad); }
-    .status-unknown { color: var(--muted); }
 
     .balls, .chips {
       display: flex;
@@ -140,7 +141,7 @@
       height: 38px;
       padding: 0 12px;
       border-radius: 999px;
-      background: #223a50;
+      background: #243d55;
       border: 1px solid rgba(255,255,255,.08);
       color: var(--text);
       font-size: 18px;
@@ -165,51 +166,45 @@
       font-weight: 800;
     }
 
-    .summary-list {
+    .list {
       display: grid;
-      gap: 10px;
+      gap: 9px;
       margin: 0;
       padding: 0;
       list-style: none;
     }
 
-    .summary-list li {
-      background: var(--panel-2);
-      border: 1px solid rgba(255,255,255,.06);
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 16px;
-    }
-
-    .status-row {
+    .row {
       display: flex;
-      align-items: center;
       justify-content: space-between;
+      align-items: center;
       gap: 10px;
-      background: var(--panel-2);
-      border: 1px solid rgba(255,255,255,.06);
-      border-radius: 8px;
-      padding: 12px;
-      margin-bottom: 8px;
+      padding: 11px 12px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      background: var(--panel-soft);
     }
 
-    .check {
-      color: var(--ok);
-      font-weight: 900;
-      margin-right: 6px;
+    .row span:last-child {
+      text-align: right;
+      font-weight: 800;
     }
 
-    .alert-row { margin-bottom: 14px; }
-
-    .alert-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 6px;
+    .empty, .notice {
+      padding: 13px;
+      border-radius: 10px;
+      background: #162433;
       color: var(--muted);
-      font-size: 14px;
     }
+
+    .notice.warn { color: var(--warn); }
+    .notice.bad { color: var(--bad); }
+    .notice.ok { color: var(--ok); }
+
+    .status-ok { color: var(--ok); }
+    .status-warning { color: var(--warn); }
+    .status-error { color: var(--bad); }
+    .status-unknown { color: var(--muted); }
 
     .bar {
       height: 10px;
@@ -225,30 +220,17 @@
       background: linear-gradient(90deg, var(--ok), var(--warn), var(--bad));
     }
 
-    .empty, .error-box {
-      padding: 14px;
-      border-radius: 8px;
-      background: #162433;
-      color: var(--muted);
-    }
-
-    .error-box {
-      display: none;
-      color: var(--bad);
-      margin-bottom: 14px;
-    }
-
     details {
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 12px 14px;
       background: rgba(16, 28, 40, .72);
     }
 
     summary {
       cursor: pointer;
-      font-weight: 800;
       color: var(--muted);
+      font-weight: 800;
     }
 
     pre {
@@ -262,29 +244,31 @@
       main { padding-top: 28px; }
       h1 { font-size: 34px; }
       .card { padding: 22px; }
+      .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>Bingo AI 下一期預測中心</h1>
-      <div class="subtitle">打開 5 秒內，看懂下一期推薦、老玩家模式、預警與 AI 命中表現。</div>
+      <h1>Bingo AI 智慧預測中心</h1>
+      <div class="subtitle">打開首頁 5 秒內看懂下一期推薦、老玩家模式、資料同步與 AI 成績。</div>
       <div class="toolbar">
         <button type="button" id="refreshButton">重新整理</button>
         <span id="refreshState">載入中</span>
       </div>
     </header>
 
-    <div id="errorBox" class="error-box"></div>
+    <div id="errorBox" class="notice warn" style="display:none"></div>
 
     <section>
-      <article class="card" id="cardSync"></article>
       <article class="card" id="cardNext"></article>
       <article class="card" id="cardLaowanjia"></article>
       <article class="card" id="cardReasons"></article>
       <article class="card" id="cardAlerts"></article>
       <article class="card" id="cardHistory"></article>
+      <article class="card" id="cardSync"></article>
+      <article class="card" id="cardContinuity"></article>
       <article class="card" id="cardPipeline"></article>
       <article class="card" id="cardOfficial"></article>
       <article class="card" id="cardOperations"></article>
@@ -292,12 +276,16 @@
     </section>
 
     <details>
-      <summary>進階分析 / Developer 區</summary>
+      <summary>進階資訊 / Developer</summary>
       <pre id="developerInfo">載入中</pre>
     </details>
   </main>
 
   <script>
+    const API_TIMEOUT_MS = 10000;
+    const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
+    const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
+
     const apis = {
       playerSummary: "/api/dashboard/player-summary",
       next: "/api/next-prediction",
@@ -306,7 +294,28 @@
       health: "/api/system-health",
       operations: "/api/operations/summary",
       evolution: "/api/strategy-evolution/latest",
-      evolutionHistory: "/api/strategy-evolution/history"
+      evolutionHistory: "/api/strategy-evolution/history",
+      collectorStatus: "/api/collector/status",
+      collectorGaps: "/api/collector/gaps",
+      analysisLatest: "/api/analysis/latest"
+    };
+
+    const zhStatus = {
+      ok: "正常",
+      warning: "警告",
+      error: "錯誤",
+      unknown: "未知",
+      running: "執行中",
+      available: "可用",
+      ready: "已準備",
+      waiting_draw: "等待開獎",
+      verified: "已驗證",
+      learned: "已學習",
+      expired: "已過期",
+      failed: "失敗",
+      skipped_due_to_lock: "前一輪仍在執行",
+      complete: "完整",
+      incomplete: "不完整"
     };
 
     const safe = (value, fallback = "尚無資料") => {
@@ -314,48 +323,27 @@
       return String(value);
     };
 
-    const list = (value) => Array.isArray(value) ? value : [];
+    const asList = (value) => Array.isArray(value) ? value : [];
 
-    const number = (value, fallback = "0") => {
+    const fmtNumber = (value, fallback = "0") => {
       const n = Number(value);
       if (!Number.isFinite(n)) return fallback;
       return n.toFixed(2).replace(/\.?0+$/, "");
     };
 
-    const statusText = (status) => ({
-      ok: "正常",
-      warning: "警告",
-      error: "錯誤",
-      unknown: "未知",
-      running: "執行中",
-      available: "可用",
-      live: "即時",
-      recent: "近期",
-      stale: "過期",
-      unavailable: "無法取得"
-    }[status] || safe(status));
-
-    const balls = (values, type = "") => {
-      const items = list(values);
-      if (!items.length) return `<div class="empty">尚無資料</div>`;
-      return `<div class="balls">${items.map(n => `<span class="ball ${type}">${safe(n)}</span>`).join("")}</div>`;
+    const percent = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "0%";
+      return `${fmtNumber(n > 1 ? n : n * 100)}%`;
     };
 
-    const chips = (values) => {
-      const items = list(values);
-      if (!items.length) return `<div class="empty">尚無資料</div>`;
-      return `<div class="chips">${items.map(item => `<span class="chip">${Array.isArray(item) ? item.join(" - ") : safe(item)}</span>`).join("")}</div>`;
-    };
+    const statusText = (status) => zhStatus[status] || safe(status);
 
-    const modelVotes = (scores) => {
-      const entries = Object.values(scores || {});
-      if (!entries.length) return `<div class="empty">尚無模型投票資料</div>`;
-      return `<div class="summary-list">${entries.map(item => `
-        <div class="status-row">
-          <strong>${safe(item.label)}</strong>
-          <span>${safe(item.stars)} ${number(item.confidence)}%</span>
-        </div>
-      `).join("")}</div>`;
+    const statusClass = (status) => {
+      if (["ok", "complete", "ready", "verified", "learned", "available", "running"].includes(status)) return "status-ok";
+      if (["warning", "waiting_draw", "skipped_due_to_lock", "incomplete"].includes(status)) return "status-warning";
+      if (["error", "expired", "failed"].includes(status)) return "status-error";
+      return "status-unknown";
     };
 
     const metric = (label, value, extraClass = "") => `
@@ -365,42 +353,24 @@
       </div>
     `;
 
-    function playerNextToLegacy(nextPrediction) {
-      const item = nextPrediction || {};
-      return {
-        prediction_issue: item.target_issue,
-        target_issue_source: item.target_issue_source,
-        based_on_issue: item.based_on_issue,
-        is_current: item.is_current,
-        status: item.status,
-        expected_draw_time: item.expected_draw_time,
-        expected_draw_time_source: item.expected_draw_time_source,
-        confidence: item.confidence,
-        candidates: item.main_numbers || [],
-        super_number: item.super_number,
-        three_star: (item.main_numbers || []).slice(0, 3),
-        four_star: (item.main_numbers || []).slice(0, 4),
-        twins: item.twins || [],
-        consecutive: item.consecutive || [],
-        patch_numbers: item.patch_numbers || [],
-        tails: item.tails || [],
-        big_small: item.big_small,
-        odd_even: item.odd_even,
-        model_scores: item.model_scores || {},
-        winning_model: item.winning_model
-      };
-    }
+    const balls = (values, type = "") => {
+      const items = asList(values).filter((item) => item !== null && item !== undefined && item !== "");
+      if (!items.length) return `<div class="empty">尚無資料</div>`;
+      return `<div class="balls">${items.map((n) => `<span class="ball ${type}">${safe(n)}</span>`).join("")}</div>`;
+    };
 
-    const FETCH_TIMEOUT_MS = 10000;
-    const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
-    const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
+    const chips = (values) => {
+      const items = asList(values).filter((item) => item !== null && item !== undefined && item !== "");
+      if (!items.length) return `<div class="empty">尚無資料</div>`;
+      return `<div class="chips">${items.map((item) => `<span class="chip">${Array.isArray(item) ? item.join(" - ") : safe(item)}</span>`).join("")}</div>`;
+    };
+
+    const rows = (items) => `<div class="list">${items.join("")}</div>`;
+    const row = (label, value, cls = "") => `<div class="row"><span>${label}</span><span class="${cls}">${value}</span></div>`;
 
     function saveHealthBrowserCache(payload) {
       try {
-        localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify({
-          saved_at: Date.now(),
-          payload
-        }));
+        localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload }));
       } catch (error) {
         console.warn("[dashboard] health browser cache save failed", error);
       }
@@ -411,9 +381,8 @@
         const raw = localStorage.getItem(HEALTH_STORAGE_KEY);
         if (!raw) return null;
         const cached = JSON.parse(raw);
-        if (!cached || !cached.payload || (Date.now() - Number(cached.saved_at || 0)) > HEALTH_STORAGE_MAX_AGE_MS) {
-          return null;
-        }
+        if (!cached || !cached.payload) return null;
+        if ((Date.now() - Number(cached.saved_at || 0)) > HEALTH_STORAGE_MAX_AGE_MS) return null;
         return {
           ...cached.payload,
           cached: true,
@@ -428,25 +397,25 @@
       }
     }
 
-    async function loadJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
+    async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const response = await fetch(url, { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
-        if (url === apis.health) saveHealthBrowserCache(payload);
+        if (key === "health") saveHealthBrowserCache(payload);
         return payload;
       } catch (error) {
         const message = error && error.name === "AbortError"
           ? `${url} timeout after ${timeoutMs / 1000}s`
           : `${url} ${error && error.message ? error.message : error}`;
         console.warn("[dashboard] API failed", { endpoint: url, error: message });
-        if (url === apis.health) {
+        if (key === "health") {
           const cachedHealth = loadHealthBrowserCache();
           if (cachedHealth) return cachedHealth;
         }
-        throw new Error(message);
+        return { status: "unknown", unavailable: true, error: message };
       } finally {
         clearTimeout(timer);
       }
@@ -454,435 +423,323 @@
 
     async function loadAll() {
       document.getElementById("refreshState").textContent = "載入中";
+      const loaded = await Promise.allSettled(
+        Object.entries(apis).map(async ([key, url]) => [key, await loadJson(key, url)])
+      );
       const data = {};
       const errors = [];
-      try {
-        const entries = await Promise.allSettled(
-          Object.entries(apis).map(async ([key, url]) => {
-            try {
-              return [key, await loadJson(url), null];
-            } catch (error) {
-              const message = error && error.message ? error.message : String(error);
-              return [key, { status: "unknown", unavailable: true, error: message }, message];
-            }
-          })
-        );
-        for (const entry of entries) {
-          if (entry.status === "fulfilled") {
-            data[entry.value[0]] = entry.value[1];
-            if (entry.value[2]) errors.push(entry.value[2]);
-          }
-          else errors.push(entry.reason.message);
+      for (const entry of loaded) {
+        if (entry.status === "fulfilled") {
+          data[entry.value[0]] = entry.value[1];
+          if (entry.value[1] && entry.value[1].unavailable) errors.push(entry.value[1].error);
+        } else {
+          errors.push(entry.reason && entry.reason.message ? entry.reason.message : String(entry.reason));
         }
-      } catch (error) {
-        errors.push(error && error.message ? error.message : String(error));
-      } finally {
-        render(data, errors);
       }
+      render(data, errors);
+      document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
+    }
+
+    function normalizeNext(data) {
+      const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
+      const raw = player && player.next_prediction ? player.next_prediction : (data.next && data.next.next_recommendation) || data.next || {};
+      return {
+        prediction_issue: raw.prediction_issue || raw.target_issue,
+        target_issue_source: raw.target_issue_source,
+        based_on_issue: raw.based_on_issue || raw.source_issue,
+        status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
+        expected_draw_time: raw.expected_draw_time,
+        confidence: raw.confidence,
+        candidates: raw.candidates || raw.main_numbers || raw.recommend_numbers || [],
+        super_number: raw.super_number || raw.recommended_super_number,
+        three_star: raw.three_star || asList(raw.main_numbers).slice(0, 3),
+        four_star: raw.four_star || asList(raw.main_numbers).slice(0, 4),
+        twins: raw.twins || [],
+        consecutive: raw.consecutive || [],
+        patch_numbers: raw.patch_numbers || [],
+        tails: raw.tails || [],
+        big_small: raw.big_small,
+        odd_even: raw.odd_even,
+        model_scores: raw.model_scores || {},
+        winning_model: raw.winning_model,
+        reasons: raw.reasons || []
+      };
     }
 
     function render(data, errors) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
-      const payload = data.next || {};
-      const next = player ? playerNextToLegacy(player.next_prediction) : (payload.next_recommendation || {});
+      const next = normalizeNext(data);
       const laowanjia = player && player.next_prediction && player.next_prediction.laowanjia
         ? player.next_prediction.laowanjia
-        : (payload.laowanjia || {});
-      const history = player ? (player.history || {}) : (payload.history || {});
-      const reasons = player && player.next_prediction ? list(player.next_prediction.reasons) : list(payload.reasons);
-      const alerts = player && player.next_prediction ? (player.next_prediction.alerts || {}) : (payload.alerts || {});
-      const sync = player ? (player.sync || {}) : (data.system || {});
+        : (data.next && data.next.laowanjia) || {};
+      const history = player ? (player.history || {}) : (data.next && data.next.history) || {};
+      const alerts = player && player.next_prediction ? (player.next_prediction.alerts || {}) : (data.next && data.next.alerts) || {};
+      const previousVerification = player ? (player.previous_verification || {}) : {};
       const currentDraw = player ? (player.current_draw || {}) : {};
       const counts = player ? (player.data_counts || {}) : {};
-      const previousVerification = player ? (player.previous_verification || {}) : {};
+      const sync = player ? (player.sync || {}) : (data.system || {});
 
       const errorBox = document.getElementById("errorBox");
       errorBox.style.display = errors.length ? "block" : "none";
-      errorBox.textContent = errors.length ? "部分資料暫時無法取得，系統已顯示可用快取資料。" : "";
-      document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
+      errorBox.textContent = errors.length ? "部分資料暫時無法取得，其他卡片已先顯示。" : "";
 
-      renderSync(sync, currentDraw, counts);
-      renderNext(next, payload);
-      renderLaowanjia(laowanjia);
-      renderReasons(reasons, payload.confidence || next.confidence, previousVerification, next);
-      renderAlerts(alerts);
+      renderNext(next);
+      renderLaowanjia(laowanjia, data.analysisLatest || {});
+      renderReasons(next.reasons, data.next || {}, previousVerification, next);
+      renderAlerts(alerts, data.analysisLatest || {});
       renderHistory(history, previousVerification, counts);
-      renderPipeline(data.health || {}, data.recommendation || {});
+      renderSync(sync, currentDraw, counts, data.collectorStatus || {});
+      renderContinuity(data.collectorGaps || {});
+      renderPipeline(data.health || {}, data.collectorStatus || {});
       renderOfficial(data.official || {});
       renderOperations(data.operations || {});
       renderEvolution(data.evolution || {}, data.evolutionHistory || {});
       document.getElementById("developerInfo").textContent = JSON.stringify({
         system: data.system,
-        official: data.official,
         health: data.health,
+        collector: data.collectorStatus,
+        gaps: data.collectorGaps,
+        official: data.official,
         operations_status: data.operations && data.operations.status
       }, null, 2);
     }
 
-    function renderPipeline(health) {
-      if (health.unavailable) {
-        document.getElementById("cardPipeline").innerHTML = `
-          <h2>Pipeline 同步狀態</h2>
-          <div class="empty">暫時無法取得</div>
-        `;
-        return;
-      }
-      const collector = health.collector || {};
-      const simulation = health.simulation || {};
-      const recommendation = health.recommendation || {};
-      const prediction = health.prediction || {};
-      const cacheAge = Number(health.cache_age_seconds);
-      const cacheAgeLabel = Number.isFinite(cacheAge)
-        ? `${number(cacheAge / 60)} 分鐘`
-        : "尚無資料";
-      document.getElementById("cardPipeline").innerHTML = `
-        <h2>Pipeline 同步狀態</h2>
-        <div class="hero-row">
-          ${metric("Kuaishou Issue", safe(collector.issue))}
-          ${metric("Simulation Issue", safe(simulation.issue))}
-          ${metric("Recommendation Issue", safe(recommendation.issue))}
-          ${metric("Super Issue", safe(recommendation.super_issue))}
-          ${metric("Prediction Issue", safe(prediction.issue))}
-          ${metric("同步狀態", statusText((health.pipeline || {}).status || health.status), `status-${(health.pipeline || {}).status || health.status}`)}
-          ${metric("Health 快取", statusText(health.cache_state), health.stale ? "status-warning" : "status-ok")}
-          ${metric("快取年齡", cacheAgeLabel)}
-          ${metric("資料來源", safe(health.source))}
-          ${metric("最後檢查", safe(health.last_checked))}
-        </div>
-      `;
-    }
-
-    function renderOfficial(official) {
-      const status = Number(official.mismatch_count || 0) > 0
-        ? "error"
-        : Number(official.waiting_count || 0) > 0 ? "warning" : "ok";
-      document.getElementById("cardOfficial").innerHTML = `
-        <h2>官方驗證中心</h2>
-        <div class="hero-row">
-          ${metric("官方最新期數", safe(official.latest_official_issue))}
-          ${metric("快手最新期數", safe(official.latest_kuaishou_issue))}
-          ${metric("已驗證", number(official.verified_count))}
-          ${metric("Mismatch", number(official.mismatch_count), Number(official.mismatch_count || 0) ? "status-error" : "")}
-          ${metric("等待超獎", number(official.waiting_super_number_count))}
-          ${metric("等待快手", number(official.waiting_kuaishou_count))}
-          ${metric("等待官方", number(official.waiting_official_count))}
-          ${metric("一致率", `${number(official.verified_rate)}%`)}
-          ${metric("狀態", statusText(status), `status-${status}`)}
-        </div>
-      `;
-    }
-
-    function renderOperations(operations) {
-      if (operations.unavailable) {
-        document.getElementById("cardOperations").innerHTML = `
-          <h2>AI Operations Center</h2>
-          <div class="empty">暫時無法取得</div>
-        `;
-        return;
-      }
-      const metrics = operations.metrics || {};
-      const database = operations.database_health || {};
-      const errors = list(operations.errors);
-      const timeline = list(operations.timeline);
-      const summary = operations.error_summary || {};
-      const unresolved = Number(summary.unresolved || errors.filter(item => !item.resolved).length);
-      const resolved = Number(summary.resolved || 0);
-      const total = Number(summary.total || errors.length);
-      const unresolvedByComponent = summary.unresolved_by_component || {};
-      const recentUnresolved = errors.find(item => !item.resolved);
-      const componentRows = Object.entries(metrics.components || metrics || {}).slice(0, 4).map(([key, value]) => {
-        const item = typeof value === "object" ? value : {};
-        return `<div class="status-row"><strong>${safe(item.component || key)}</strong><span>${number(item.average_duration_ms)} ms</span></div>`;
-      }).join("");
-      const unresolvedRows = Object.entries(unresolvedByComponent).map(([component, count]) => `
-        <div class="status-row"><strong>${safe(component)}</strong><span>${number(count)}</span></div>
-      `).join("");
-      document.getElementById("cardOperations").innerHTML = `
-        <h2>AI Operations Center</h2>
-        <div class="hero-row">
-          ${metric("營運狀態", statusText(operations.status), `status-${operations.status}`)}
-          ${metric("總錯誤數", number(total))}
-          ${metric("最新事件", number(timeline.length))}
-          ${metric("未解決錯誤", number(unresolved), unresolved ? "status-error" : "status-ok")}
-          ${metric("已解決錯誤", number(resolved))}
-          ${metric("資料表數", number(Object.keys(database.tables || database || {}).length))}
-        </div>
-        <h3>各 component 未解決數</h3>
-        <div class="summary-list">${unresolvedRows || `<div class="empty">目前無未解決錯誤</div>`}</div>
-        <h3>最近未解決錯誤</h3>
-        <div class="empty">${recentUnresolved ? `${safe(recentUnresolved.component)} / ${safe(recentUnresolved.error_message)}` : "目前無未解決錯誤"}</div>
-        <h3>Pipeline 平均耗時</h3>
-        <div class="summary-list">${componentRows || `<div class="empty">尚無 component duration</div>`}</div>
-      `;
-    }
-
-    function renderEvolution(evolution, history) {
-      const data = evolution.data || evolution;
-      const weights = data.recommended_weights || data.weights || {};
-      const weightRows = Object.entries(weights).map(([key, value]) => `
-        <div class="status-row"><strong>${safe(key)}</strong><span>${number(Number(value) * 100)}%</span></div>
-      `).join("");
-      document.getElementById("cardEvolution").innerHTML = `
-        <h2>AI Evolution</h2>
-        <div class="hero-row">
-          ${metric("版本", safe(data.version))}
-          ${metric("平均命中", number(data.average_hits))}
-          ${metric("Super Hit", `${number((data.super_hit_rate || 0) * 100)}%`)}
-          ${metric("Candidate", data.candidate ? "YES" : "NO")}
-        </div>
-        <div class="summary-list">${weightRows || `<div class="empty">尚無 evolution weights</div>`}</div>
-      `;
-    }
-
-    function renderSync(system, currentDraw = {}, counts = {}) {
-      const lag = Number(system.lag_count || 0);
-      const status = system.is_synced === false || lag > 0 ? "warning" : "ok";
-      const summary = status === "ok" && lag === 0 ? "已同步" : `落後 ${number(lag)} 期`;
-      document.getElementById("cardSync").innerHTML = `
-        <h2>資料同步</h2>
-        <div class="hero-row">
-          ${metric("最新期", safe(system.source_latest_issue || system.database_latest_issue))}
-          ${metric("同步狀態", summary, `status-${status}`)}
-          ${metric("資料庫最新期", safe(system.database_latest_issue))}
-          ${metric("官方來源最新期", safe(system.source_latest_issue))}
-          ${metric("最後成功收集", safe(system.last_successful_collect_time))}
-          ${metric("收集耗時", `${number(system.last_collect_duration)} 秒`)}
-        </div>
-        <div class="empty">狀態：${statusText(status)}。${safe(system.collector_status_reason, "系統會在啟動與排程時自動補抓缺少期數。")}</div>
-      `;
-    }
-
-    function renderNext(next, payload) {
-      if (payload.status === "empty") {
-        document.getElementById("cardNext").innerHTML = `<h2>1. 下一期 AI 推薦</h2><div class="empty">${safe(payload.message)}</div>`;
-        return;
-      }
+    function renderNext(next) {
+      const status = next.status || "unknown";
       document.getElementById("cardNext").innerHTML = `
         <h2>1. 下一期 AI 推薦</h2>
-        <div class="hero-row">
+        <div class="grid">
           ${metric("下一期期號", safe(next.prediction_issue))}
-          ${metric("AI 信心值", `${number(next.confidence)}%`)}
-        </div>
-        <h3>推薦號碼</h3>
-        ${balls(next.candidates)}
-        <h3>模型投票</h3>
-        ${modelVotes(next.model_scores)}
-        <h3>超級獎號</h3>
-        ${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超獎推薦</div>`}
-        <h3>三星組合</h3>${chips(next.three_star)}
-        <h3>四星組合</h3>${chips(next.four_star)}
-        <h3>雙生號</h3>${chips(next.twins)}
-        <h3>連號</h3>${chips(next.consecutive)}
-        <h3>補號</h3>${chips(next.patch_numbers)}
-        <h3>尾數</h3>${chips(next.tails)}
-        <div class="hero-row">
-          ${metric("大小判斷", safe(next.big_small))}
-          ${metric("單雙判斷", safe(next.odd_even))}
-        </div>
-      `;
-    }
-
-    function renderSync(system, currentDraw = {}, counts = {}) {
-      const lag = Number(system.lag_count || 0);
-      const status = system.is_synced === false || lag > 0 ? "warning" : "ok";
-      const summary = status === "ok" && lag === 0 ? "已同步" : `落後 ${number(lag)} 期`;
-      document.getElementById("cardSync").innerHTML = `
-        <h2>資料同步</h2>
-        <div class="hero-row">
-          ${metric("最新期", safe(system.official_latest_issue || system.source_latest_issue || system.database_latest_issue))}
-          ${metric("同步狀態", summary, `status-${status}`)}
-          ${metric("Database 最新期", safe(system.database_latest_issue))}
-          ${metric("Source 最新期", safe(system.official_latest_issue || system.source_latest_issue))}
-          ${metric("最後同步", safe(system.last_successful_collection || system.last_successful_collect_time))}
-          ${metric("同步耗時", `${number(system.collection_duration_seconds || system.last_collect_duration)} 秒`)}
-        </div>
-        <div class="empty">狀態：${statusText(status)}。系統會自動補抓缺少期數。</div>
-        <h3>最新開獎資訊</h3>
-        <div class="hero-row">
-          ${metric("期數", safe(currentDraw.issue))}
-          ${metric("開獎時間", safe(currentDraw.draw_time))}
-          ${metric("資料來源", safe(currentDraw.source || "official"))}
-          ${metric("資料筆數", number(counts.draw_count))}
-        </div>
-        ${balls(currentDraw.numbers)}
-        <h3>超級獎號</h3>
-        ${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">尚無資料</div>`}
-      `;
-    }
-
-    function renderNext(next, payload) {
-      if (payload.status === "empty") {
-        document.getElementById("cardNext").innerHTML = `<h2>1. 下一期 AI 推薦</h2><div class="empty">${safe(payload.message)}</div>`;
-        return;
-      }
-      const nextStatus = next.status || (next.prediction_issue ? "ready" : "unavailable");
-      const statusClass = nextStatus === "ready" ? "status-ok" : nextStatus === "waiting_refresh" ? "status-warning" : nextStatus === "expired" ? "status-error" : "status-unknown";
-      const statusMessage = {
-        ready: "下一期預測已準備完成。",
-        waiting_refresh: "目前預測期數已開出，正在等待下一期推薦更新。",
-        expired: "預測期數已落後，請等待系統刷新下一期推薦。",
-        unavailable: "暫時無法取得下一期期數，其他推薦資料仍可參考。"
-      }[nextStatus] || "暫時無法確認預測狀態。";
-      document.getElementById("cardNext").innerHTML = `
-        <h2>1. 下一期 AI 推薦</h2>
-        <div class="hero-row">
-          ${metric("下一期期號", safe(next.prediction_issue))}
-          ${metric("AI 信心值", `${number(next.confidence)}%`)}
-          ${metric("狀態", statusText(nextStatus), statusClass)}
+          ${metric("AI 信心值", `${fmtNumber(next.confidence)}%`)}
+          ${metric("狀態", statusText(status), statusClass(status))}
           ${metric("依據期數", safe(next.based_on_issue))}
           ${metric("預估開獎", safe(next.expected_draw_time))}
+          ${metric("Winning Model", safe(next.winning_model))}
         </div>
-        <div class="empty">${statusMessage} 期數來源：${safe(next.target_issue_source)}；時間來源：${safe(next.expected_draw_time_source)}。</div>
-        <h3>推薦號碼</h3>
-        ${balls(next.candidates)}
-        <h3>模型投票</h3>
-        ${modelVotes(next.model_scores)}
-        <h3>超級獎號</h3>
-        ${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超獎推薦</div>`}
-        <h3>三星組合</h3>${chips(next.three_star)}
-        <h3>四星組合</h3>${chips(next.four_star)}
-        <h3>雙生號</h3>${chips(next.twins)}
-        <h3>連號</h3>${chips(next.consecutive)}
-        <h3>補號</h3>${chips(next.patch_numbers)}
-        <h3>尾數</h3>${chips(next.tails)}
-        <div class="hero-row">
+        <h3>推薦號碼</h3>${balls(next.candidates)}
+        <h3>模型投票</h3>${renderModelVotes(next.model_scores)}
+        <h3>超級獎號</h3>${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超級獎號推薦</div>`}
+        <h3>三星 / 四星</h3>${chips([next.three_star, next.four_star].filter((item) => asList(item).length))}
+        <h3>雙生號 / 連號 / 補號 / 尾數</h3>${chips([...asList(next.twins), ...asList(next.consecutive), ...asList(next.patch_numbers), ...asList(next.tails)])}
+        <div class="grid">
           ${metric("大小判斷", safe(next.big_small))}
           ${metric("單雙判斷", safe(next.odd_even))}
         </div>
       `;
     }
 
-    function renderLaowanjia(data) {
-      if (data.message) {
-        document.getElementById("cardLaowanjia").innerHTML = `<h2>2. 老玩家分析</h2><div class="empty">${safe(data.message)}</div>`;
-        return;
-      }
+    function renderModelVotes(scores) {
+      const entries = Object.entries(scores || {});
+      if (!entries.length) return `<div class="empty">尚無模型投票資料</div>`;
+      return rows(entries.map(([name, item]) => {
+        const confidence = typeof item === "object" ? (item.confidence || item.score || item.total_score) : item;
+        const stars = Math.max(1, Math.min(5, Math.round(Number(confidence || 0) / 20)));
+        return row(safe((item && item.label) || name), `${"★".repeat(stars)}${"☆".repeat(5 - stars)} ${fmtNumber(confidence)}%`);
+      }));
+    }
+
+    function renderLaowanjia(data, analysis) {
+      const analysisBody = analysis.analysis || analysis.data || analysis || {};
+      const aiScore = analysisBody.ai_score || {};
+      const superTrajectory = aiScore.super_number_trajectory_recovery || {};
+      const clusterAftershock = aiScore.cluster_aftershock_recovery || {};
+      const conclusion = data.conclusion || analysisBody.ai_pattern || analysisBody.pattern;
       document.getElementById("cardLaowanjia").innerHTML = `
         <h2>2. 老玩家分析</h2>
-        <div class="hero-row">
-          ${metric("老玩家指數", number(data.laowanjia_score))}
-          ${metric("目前模式", safe(data.current_pattern))}
-          ${metric("熱區", safe(data.hot_zone))}
-          ${metric("可能形成星數", safe(data.possible_star))}
+        <div class="grid">
+          ${metric("老玩家指數", fmtNumber(data.laowanjia_score || analysisBody.laowanjia_score))}
+          ${metric("目前模式", safe(data.current_pattern || analysisBody.pattern))}
+          ${metric("熱區", safe(data.hot_zone || analysisBody.hot_zone))}
+          ${metric("可能星數", safe(data.possible_star || analysisBody.four_star || analysisBody.five_star))}
+          ${metric("斜線分析", fmtNumber(data.diagonal_score || analysisBody.diagonal_score))}
+          ${metric("差值分析", fmtNumber(data.gap_score || analysisBody.gap_score))}
         </div>
-        <h3>預測補號</h3>${chips(data.patch_numbers)}
-        <h3>雙生號</h3>${chips(data.twins)}
-        <h3>超級獎號</h3>${data.super_number ? balls([data.super_number], "super") : `<div class="empty">尚無資料</div>`}
-        <div class="hero-row">
-          ${metric("斜線分析", number(data.diagonal_score))}
-          ${metric("差值分析", number(data.gap_score))}
-          ${metric("大小", safe(data.big_small))}
-          ${metric("單雙", safe(data.odd_even))}
+        <h3>補號 / 雙生號 / 尾數</h3>${chips([...asList(data.patch_numbers || analysisBody.patch_numbers), ...asList(data.twins || analysisBody.twins), ...asList(data.tails || Object.keys(analysisBody.tail_distribution || {}))])}
+        <h3>超級獎號軌跡</h3>
+        <div class="grid">
+          ${metric("趨勢", safe(superTrajectory.trend))}
+          ${metric("軌跡信心", `${fmtNumber(superTrajectory.confidence)}%`)}
+          ${metric("群聚復原", safe(clusterAftershock.warning_level || clusterAftershock.status))}
         </div>
-        <h3>尾數</h3>${chips(data.tails)}
-        ${metric("AI 結論", safe(data.conclusion))}
+        <h3>軌跡候選 / 群聚復原候選</h3>${chips([...asList(superTrajectory.candidate_numbers), ...asList(clusterAftershock.candidate_numbers)])}
+        ${metric("AI 結論", safe(conclusion))}
       `;
     }
 
-    function renderReasons(reasons, confidence) {
-      const rows = reasons.length
-        ? reasons.map(reason => `<li><span class="check">✓</span>${safe(reason)}</li>`).join("")
-        : `<li><span class="check">✓</span>尚未累積 AI 預測紀錄，系統已開始保存後續推薦。</li>`;
+    function renderReasons(reasons, nextPayload, verification, next) {
+      const listItems = asList(reasons).length
+        ? asList(reasons).map((reason) => `<li class="row"><span>✓</span><span>${safe(reason)}</span></li>`).join("")
+        : `<li class="row"><span>✓</span><span>系統已整合老玩家、冷熱、遺漏、型態與平衡模型。</span></li>`;
+      const predictionStatus = verification.prediction_status || next.status || "waiting_draw";
+      const learningStatus = verification.learning_used ? "已學習" : "等待 Learning";
       document.getElementById("cardReasons").innerHTML = `
         <h2>3. AI 推薦原因</h2>
-        <ul class="summary-list">${rows}</ul>
-        <div class="hero-row" style="margin-top:14px">${metric("AI 信心值", `${number(confidence)}%`)}</div>
+        <div class="grid">
+          ${metric("Prediction Status", statusText(predictionStatus), statusClass(predictionStatus))}
+          ${metric("Learning 狀態", learningStatus, verification.learning_used ? "status-ok" : "status-warning")}
+          ${metric("AI 信心值", `${fmtNumber(nextPayload.confidence || next.confidence)}%`)}
+        </div>
+        <ul class="list" style="margin-top:12px">${listItems}</ul>
       `;
     }
 
     function alertRow(label, item) {
-      const percent = Number(item && item.percent || 0);
-      const stars = Number(item && item.stars || 0);
+      const percentValue = Number(item && (item.percent || item.score || item.confidence) || 0);
+      const width = Math.max(0, Math.min(100, percentValue));
+      const stars = Math.max(0, Math.min(5, Number(item && item.stars) || Math.round(width / 20)));
       return `
-        <div class="alert-row">
-          <div class="alert-head"><span>${label}</span><strong>${"★".repeat(stars)}${"☆".repeat(Math.max(0, 5 - stars))}</strong></div>
-          <div class="bar"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>
+        <div class="row" style="display:block">
+          <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:7px">
+            <span>${label}</span><strong>${"★".repeat(stars)}${"☆".repeat(5 - stars)}</strong>
+          </div>
+          <div class="bar"><span style="width:${width}%"></span></div>
         </div>
       `;
     }
 
-    function renderAlerts(alerts) {
+    function renderAlerts(alerts, analysis) {
+      const body = analysis.analysis || analysis.data || analysis || {};
+      const aiScore = body.ai_score || {};
       document.getElementById("cardAlerts").innerHTML = `
         <h2>4. 下一期預警</h2>
-        ${alertRow("大群聚", alerts.cluster_alert)}
-        ${alertRow("補號爆發", alerts.patch_alert)}
-        ${alertRow("雙生號", alerts.twin_alert)}
-        ${alertRow("連號", alerts.consecutive_alert)}
-        ${alertRow("超獎", alerts.super_alert)}
+        ${rows([
+          alertRow("大群聚", alerts.cluster_alert || aiScore.cluster_aftershock_recovery),
+          alertRow("補號爆發", alerts.patch_alert),
+          alertRow("雙生號", alerts.twin_alert),
+          alertRow("連號", alerts.consecutive_alert),
+          alertRow("超級獎號軌跡", alerts.super_alert || aiScore.super_number_trajectory_recovery)
+        ])}
       `;
     }
 
-    function renderHistory(history) {
+    function renderHistory(history, verification, counts) {
       if (!history || history.status === "empty") {
-        document.getElementById("cardHistory").innerHTML = `<h2>5. AI 歷史命中率</h2><div class="empty">${safe(history && history.message)}</div>`;
-        return;
-      }
-      document.getElementById("cardHistory").innerHTML = `
-        <h2>5. AI 歷史命中率</h2>
-        <div class="hero-row">
-          ${metric("近100期三星命中率", `${number(history.three_star_rate)}%`)}
-          ${metric("四星命中率", `${number(history.four_star_rate)}%`)}
-          ${metric("五星命中率", `${number(history.five_star_rate)}%`)}
-          ${metric("超獎命中率", `${number(history.super_hit_rate)}%`)}
-          ${metric("平均命中顆數", number(history.average_hits))}
-          ${metric("統計樣本", `${number(history.sample_size)} 期`)}
-        </div>
-      `;
-    }
-
-    function renderHistory(history, verification = {}, counts = {}) {
-      if (!history || history.status === "empty") {
-        document.getElementById("cardHistory").innerHTML = `<h2>5. AI 歷史命中率</h2><div class="empty">${safe(history && history.message)}</div>`;
+        document.getElementById("cardHistory").innerHTML = `<h2>5. AI 歷史命中率</h2><div class="empty">${safe(history && history.message, "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。")}</div>`;
         return;
       }
       const hitCount = Number(verification.hit_count || 0);
       const predictionCount = Number(verification.prediction_count || 0);
       document.getElementById("cardHistory").innerHTML = `
         <h2>5. AI 歷史命中率</h2>
-        <h3>上一期命中比對</h3>
-        <div class="hero-row">
-          ${metric("比對期數", safe(verification.target_issue))}
-          ${metric("命中", predictionCount ? `${number(hitCount)} / ${number(predictionCount)}` : "尚無資料", hitCount >= 5 ? "status-ok" : hitCount >= 3 ? "status-warning" : "")}
-          ${metric("命中等級", safe(verification.hit_label))}
-          ${metric("超獎", verification.super_number_hit ? "命中" : "未命中")}
-        </div>
-        <h3>命中號碼</h3>
-        ${balls(verification.matched_numbers)}
-        <h3>未中號碼</h3>
-        ${balls(verification.missed_numbers)}
-        <div class="hero-row">
-          ${metric("近100期三星命中率", `${number(history.three_star_rate)}%`)}
-          ${metric("四星命中率", `${number(history.four_star_rate)}%`)}
-          ${metric("五星命中率", `${number(history.five_star_rate)}%`)}
-          ${metric("超獎命中率", `${number(history.super_hit_rate)}%`)}
-          ${metric("平均命中顆數", number(history.average_hits))}
-          ${metric("統計樣本", `${number(history.sample_size)} 期`)}
-        </div>
-        <h3>資料量</h3>
-        <div class="hero-row">
-          ${metric("開獎分析", number(counts.analysis_count || counts.draw_count))}
-          ${metric("預測紀錄", number(counts.prediction_count))}
-          ${metric("已驗證預測", number(counts.verified_prediction_count))}
-          ${metric("學習樣本", number(counts.learning_sample_count))}
+        <div class="grid">
+          ${metric("上一期命中", predictionCount ? `${fmtNumber(hitCount)} / ${fmtNumber(predictionCount)}` : "尚無資料", hitCount >= 5 ? "status-ok" : hitCount >= 3 ? "status-warning" : "")}
+          ${metric("近100期三星", `${fmtNumber(history.three_star_rate)}%`)}
+          ${metric("四星命中率", `${fmtNumber(history.four_star_rate)}%`)}
+          ${metric("五星命中率", `${fmtNumber(history.five_star_rate)}%`)}
+          ${metric("超獎命中率", `${fmtNumber(history.super_hit_rate)}%`)}
+          ${metric("平均命中顆數", fmtNumber(history.average_hits))}
+          ${metric("Prediction History", fmtNumber(counts.prediction_count))}
+          ${metric("已驗證", fmtNumber(counts.verified_prediction_count))}
         </div>
       `;
     }
 
-    function renderReasons(reasons, confidence, verification = {}, next = {}) {
-      const rows = reasons.length
-        ? reasons.map(reason => `<li><span class="check">✓</span>${safe(reason)}</li>`).join("")
-        : `<li><span class="check">✓</span>系統已依目前可用資料產生推薦。</li>`;
-      const predictionStatus = verification.prediction_status || next.status || "waiting_draw";
-      const learningStatus = verification.learning_status || (verification.learning_used ? "completed" : "waiting");
-      document.getElementById("cardReasons").innerHTML = `
-        <h2>3. AI 推薦原因</h2>
-        <div class="hero-row">
-          ${metric("Prediction Status", statusText(predictionStatus), `status-${predictionStatus === "verified" ? "ok" : predictionStatus === "expired" || predictionStatus === "failed" ? "error" : "warning"}`)}
-          ${metric("Learning 狀態", learningStatus === "completed" ? "Completed" : "Waiting", learningStatus === "completed" ? "status-ok" : "status-warning")}
-          ${metric("驗證期數", safe(verification.verified_issue || verification.target_issue))}
+    function renderSync(system, currentDraw, counts, collectorStatus) {
+      const lag = Number(system.lag_count || collectorStatus.lag_count || 0);
+      const status = lag > 0 || system.is_synced === false ? "warning" : "ok";
+      const summary = status === "ok" && lag === 0 ? "已同步" : `落後 ${fmtNumber(lag)} 期`;
+      document.getElementById("cardSync").innerHTML = `
+        <h2>資料同步</h2>
+        <div class="grid">
+          ${metric("最新期", safe(system.source_latest_issue || system.latest_issue || currentDraw.issue))}
+          ${metric("同步狀態", summary, statusClass(status))}
+          ${metric("Database 最新期", safe(system.database_latest_issue))}
+          ${metric("Source 最新期", safe(system.source_latest_issue || system.official_latest_issue))}
+          ${metric("最後同步時間", safe(system.last_successful_collect_time || collectorStatus.last_collector_finished_at))}
+          ${metric("同步耗時", `${fmtNumber(system.last_collect_duration || collectorStatus.last_collector_duration_ms / 1000)} 秒`)}
         </div>
-        <ul class="summary-list">${rows}</ul>
-        <div class="hero-row" style="margin-top:14px">${metric("AI 信心值", `${number(confidence)}%`)}</div>
+        <h3>最新開獎資訊</h3>
+        <div class="grid">
+          ${metric("期數", safe(currentDraw.issue))}
+          ${metric("開獎時間", safe(currentDraw.draw_time))}
+          ${metric("資料來源", safe(currentDraw.source || "official"))}
+        </div>
+        <h3>一般獎號</h3>${balls(currentDraw.numbers)}
+        <h3>超級獎號</h3>${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">尚無資料</div>`}
+      `;
+    }
+
+    function renderContinuity(gaps) {
+      const status = gaps.continuity_status || gaps.status || "unknown";
+      const missingCount = Number(gaps.missing_count || asList(gaps.missing_issues).length || 0);
+      document.getElementById("cardContinuity").innerHTML = `
+        <h2>資料連續性檢查</h2>
+        <div class="grid">
+          ${metric("連續性", statusText(status), statusClass(status === "complete" ? "ok" : status))}
+          ${metric("缺漏期數", fmtNumber(missingCount), missingCount ? "status-warning" : "status-ok")}
+          ${metric("待驗證", fmtNumber(gaps.pending_verification_count))}
+          ${metric("異常資料", fmtNumber(asList(gaps.invalid_issues).length))}
+          ${metric("檢查範圍", `${safe(gaps.start_issue)} - ${safe(gaps.end_issue)}`)}
+          ${metric("最後檢查", safe(gaps.checked_at))}
+        </div>
+        <h3>缺漏期數</h3>${chips(asList(gaps.missing_issues).slice(0, 20))}
+      `;
+    }
+
+    function renderPipeline(health, collectorStatus) {
+      const components = ["collector", "simulation", "recommendation", "prediction", "official_verification", "evolution"];
+      const rowsHtml = components.map((name) => {
+        const item = health[name] || {};
+        return row(name, `${statusText(item.status || "unknown")} / lag ${fmtNumber(item.lag)}`, statusClass(item.status));
+      });
+      document.getElementById("cardPipeline").innerHTML = `
+        <h2>Pipeline 同步狀態</h2>
+        <div class="grid">
+          ${metric("整體狀態", statusText(health.status || "unknown"), statusClass(health.status))}
+          ${metric("快取來源", safe(health.source))}
+          ${metric("快取年齡", `${fmtNumber(health.cache_age_seconds)} 秒`)}
+          ${metric("Collector Lock", safe(collectorStatus.official_lock_owner || "空閒"))}
+          ${metric("跳過次數", fmtNumber(collectorStatus.scheduler_skipped_count))}
+          ${metric("連續失敗", fmtNumber(collectorStatus.consecutive_failures))}
+        </div>
+        <h3>各模組</h3>${rows(rowsHtml)}
+      `;
+    }
+
+    function renderOfficial(official) {
+      document.getElementById("cardOfficial").innerHTML = `
+        <h2>官方驗證中心</h2>
+        <div class="grid">
+          ${metric("最新官方期數", safe(official.latest_official_issue))}
+          ${metric("最新快手期數", safe(official.latest_kuaishou_issue))}
+          ${metric("驗證率", `${fmtNumber(official.verified_rate)}%`, Number(official.verified_rate) >= 99 ? "status-ok" : "status-warning")}
+          ${metric("已驗證", fmtNumber(official.verified_count))}
+          ${metric("Mismatch", fmtNumber(official.mismatch_count), Number(official.mismatch_count) ? "status-error" : "status-ok")}
+          ${metric("等待官方", fmtNumber(official.waiting_count || official.waiting_official_count))}
+        </div>
+      `;
+    }
+
+    function renderOperations(ops) {
+      const summary = ops.error_summary || {};
+      const unresolved = Number(summary.unresolved || 0);
+      document.getElementById("cardOperations").innerHTML = `
+        <h2>AI Operations Center</h2>
+        <div class="grid">
+          ${metric("營運狀態", statusText(ops.status || "unknown"), statusClass(ops.status))}
+          ${metric("未解決錯誤", fmtNumber(unresolved), unresolved ? "status-error" : "status-ok")}
+          ${metric("已解決錯誤", fmtNumber(summary.resolved))}
+          ${metric("總錯誤數", fmtNumber(summary.total))}
+        </div>
+        <h3>最近事件</h3>
+        ${rows(asList(ops.timeline).slice(0, 5).map((event) => row(safe(event.component), `${safe(event.status)} / ${safe(event.issue)}`, statusClass(event.status))))}
+      `;
+    }
+
+    function renderEvolution(evolution, history) {
+      const weights = evolution.recommended_weights || evolution.weights || {};
+      const weightRows = Object.entries(weights).map(([key, value]) => row(key, percent(value)));
+      const versions = asList(history.items || history.history).slice(0, 5).map((item) => row(`V${safe(item.version)}`, `平均 ${fmtNumber(item.average_hits)} / Super ${percent(item.super_hit_rate)}`));
+      document.getElementById("cardEvolution").innerHTML = `
+        <h2>AI Evolution</h2>
+        <div class="grid">
+          ${metric("目前版本", safe(evolution.version))}
+          ${metric("平均命中", fmtNumber(evolution.average_hits))}
+          ${metric("Super Hit", percent(evolution.super_hit_rate))}
+          ${metric("Candidate", evolution.candidate ? "YES" : "NO", evolution.candidate ? "status-ok" : "status-unknown")}
+        </div>
+        <h3>建議權重</h3>${weightRows.length ? rows(weightRows) : `<div class="empty">尚無 Evolution 權重</div>`}
+        <h3>Version History</h3>${versions.length ? rows(versions) : `<div class="empty">尚無版本歷史</div>`}
       `;
     }
 

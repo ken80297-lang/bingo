@@ -214,6 +214,8 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "diagonal": len(diagonal_pattern),
         "consecutive": len(consecutive_numbers),
     }
+    super_trajectory = _super_number_trajectory(draw, recent)
+    cluster_aftershock = _cluster_aftershock(numbers, recent)
     ai_score = {
         "score": min(
             100,
@@ -221,7 +223,21 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             + laowanjia_score["repeat"] * 8
             + laowanjia_score["diagonal"] * 6
             + laowanjia_score["consecutive"] * 4,
-        )
+        ),
+        "super_number_trajectory_recovery": super_trajectory,
+        "cluster_aftershock_recovery": cluster_aftershock,
+        "learning_features": {
+            "trajectory_direction": super_trajectory.get("trend"),
+            "trajectory_distance": super_trajectory.get("distance"),
+            "trajectory_reversal": super_trajectory.get("trend") == "reversal",
+            "trajectory_zone_jump": super_trajectory.get("trend") == "zone_jump",
+            "cluster_recovery_age": cluster_aftershock.get("cluster_recovery_age"),
+            "cluster_recovery_candidates": cluster_aftershock.get("candidate_numbers"),
+            "pending_verification_flag": False,
+            "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
+            "data_gap_detected": False,
+            "stale_input_flag": False,
+        },
     }
     twins = [[number, number + 2] for number in numbers if number + 2 in numbers]
     consecutive = consecutive_numbers
@@ -317,6 +333,77 @@ def _patch_numbers(numbers: list[int]) -> list[int]:
                 if 1 <= candidate <= 80 and candidate not in numbers and candidate not in result:
                     result.append(candidate)
     return result[:12]
+
+
+def _super_number_trajectory(draw: dict, recent: list[dict]) -> dict:
+    current = _as_int_list([draw.get("super_number")])
+    current_super = current[0] if current else None
+    previous = [
+        item.get("super_number")
+        for item in recent[:10]
+        if _as_int_list([item.get("super_number")])
+    ]
+    previous_numbers = [_as_int_list([value])[0] for value in previous]
+    candidate_numbers: list[int] = []
+    trend = "stable"
+    distance = 0
+    if current_super is not None and previous_numbers:
+        last = previous_numbers[0]
+        distance = current_super - last
+        if abs(distance) >= 20:
+            trend = "zone_jump"
+        elif len(previous_numbers) >= 2 and (current_super - last) * (last - previous_numbers[1]) < 0:
+            trend = "reversal"
+        elif distance > 0:
+            trend = "up"
+        elif distance < 0:
+            trend = "down"
+        for gap in (1, 2, 3, 10, 20):
+            for value in (current_super - gap, current_super + gap):
+                if 1 <= value <= 80 and value not in candidate_numbers:
+                    candidate_numbers.append(value)
+    confidence = min(100, 40 + len(candidate_numbers) * 4 + min(abs(distance), 20))
+    warning_level = "high" if trend in ("zone_jump", "reversal") else "medium" if abs(distance) >= 10 else "low"
+    return {
+        "name": "超級獎號軌跡修復",
+        "key": "super_number_trajectory_recovery",
+        "trend": trend,
+        "distance": distance,
+        "candidate_numbers": candidate_numbers[:10],
+        "reference_issues": [str(item.get("issue")) for item in recent[:10] if item.get("issue")],
+        "confidence": round(confidence, 2),
+        "triggered_rules": [trend] if current_super is not None else [],
+        "warning_level": warning_level,
+    }
+
+
+def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
+    zones = {
+        start: sum(1 for number in numbers if start <= number <= start + 9)
+        for start in range(1, 80, 10)
+    }
+    hot_zone = max(zones, key=zones.get) if zones else None
+    candidate_numbers: list[int] = []
+    if hot_zone is not None:
+        for value in range(hot_zone, min(hot_zone + 10, 81)):
+            if value not in numbers:
+                candidate_numbers.append(value)
+    recent_cluster_age = 0
+    for index, item in enumerate(recent[:10], start=1):
+        item_numbers = _as_int_list(item.get("numbers"))
+        if hot_zone and sum(1 for number in item_numbers if hot_zone <= number <= hot_zone + 9) >= 4:
+            recent_cluster_age = index
+            break
+    return {
+        "name": "群聚後座力修復",
+        "key": "cluster_aftershock_recovery",
+        "candidate_numbers": candidate_numbers[:10],
+        "cluster_recovery_age": recent_cluster_age,
+        "reference_issues": [str(item.get("issue")) for item in recent[:10] if item.get("issue")],
+        "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
+        "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
+        "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
 
 
 def _big_small(numbers: list[int]) -> str:

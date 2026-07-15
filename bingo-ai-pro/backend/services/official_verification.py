@@ -24,6 +24,7 @@ from database.official_draw_store import (
 )
 from services.operations_center import record_operation_event
 from services.prediction_lifecycle import verify_prediction
+from services.collector_runtime import mark_error, mark_success, official_collection_lock
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,17 @@ def reverify_recent_draws(limit: int = 200) -> dict:
 
 def collect_official_today() -> dict:
     start = time.perf_counter()
+    with official_collection_lock("official_collector") as (locked, lock_payload):
+        if not locked:
+            return {
+                "status": "skipped_due_to_lock",
+                "count": 0,
+                **lock_payload,
+            }
+        return _collect_official_today_locked(start)
+
+
+def _collect_official_today_locked(start: float) -> dict:
     try:
         draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=10)
         saved = save_official_draws(draws)
@@ -353,7 +365,7 @@ def collect_official_today() -> dict:
         except Exception as exc:
             logger.exception("official prediction evaluation failed")
             prediction = {"status": "error", "message": str(exc)}
-        return {
+        result = {
             "status": "ok" if saved.get("status") == "ok" else "warning",
             "count": len(draws),
             "saved": saved,
@@ -362,9 +374,12 @@ def collect_official_today() -> dict:
             "prediction_refresh": prediction_refresh,
             "prediction": prediction,
         }
+        mark_success("official_collector", round((time.perf_counter() - start) * 1000, 2))
+        return result
     except Exception as exc:
         logger.exception("official collector failed")
         _record_event("official_collector", "error", None, start, "official collector failed", exc)
+        mark_error("official_collector", exc, round((time.perf_counter() - start) * 1000, 2))
         return {"status": "error", "count": 0, "error": str(exc)}
 
 

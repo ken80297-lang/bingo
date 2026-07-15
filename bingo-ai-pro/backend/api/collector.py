@@ -8,21 +8,30 @@ from database.collector_store import (
     get_latest_kuaishou_snapshot,
 )
 from services.catch_up_service import catch_up_missing_issues
+from services.collector_gap_service import scan_collector_gaps
+from services.collector_runtime import collector_runtime_status
 
 router = APIRouter(prefix="/api", tags=["Collectors"])
 
 
 @router.get("/collector/status")
 def api_collector_status():
+    runtime = collector_runtime_status()
     return {
         "status": "ok",
         "collector": get_collector_status(),
+        **runtime,
     }
 
 
 @router.get("/collector/catch-up")
 def api_collector_catch_up():
     return catch_up_missing_issues()
+
+
+@router.get("/collector/gaps")
+def api_collector_gaps():
+    return scan_collector_gaps()
 
 
 @router.get("/kuaishou/latest")
