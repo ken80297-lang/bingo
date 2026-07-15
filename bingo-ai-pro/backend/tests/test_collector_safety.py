@@ -7,6 +7,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from database.official_draw_store import _valid_draw
 from services import catch_up_service
+from services import official_verification
 
 
 def _draw(issue: int, numbers=None):
@@ -48,3 +49,42 @@ def test_catch_up_limits_batch(monkeypatch):
     assert result["catch_count"] == 20
     assert result["success_count"] == 20
     assert len(saved_batches[0]) == 20
+
+
+def test_catch_up_deadline_skips_downstream(monkeypatch):
+    source_draws = [_draw(issue) for issue in range(101, 104)]
+
+    monkeypatch.setattr(catch_up_service, "JOB_TIME_BUDGET_SECONDS", 0)
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "100")
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: source_draws)
+    monkeypatch.setattr(catch_up_service, "save_official_draws", lambda draws: {"status": "ok", "saved": len(draws)})
+    monkeypatch.setattr(
+        catch_up_service,
+        "run_official_verification",
+        lambda limit=10: (_ for _ in ()).throw(AssertionError("verification should be skipped")),
+    )
+
+    result = catch_up_service.catch_up_missing_issues()
+
+    assert result["exit_reason"] == "deadline_exceeded"
+    assert result["deadline_exceeded"] is True
+    assert result["verification"]["status"] == "skipped"
+    assert result["prediction"]["status"] == "skipped"
+
+
+def test_official_collector_deadline_skips_downstream(monkeypatch):
+    monkeypatch.setattr(official_verification, "COLLECTOR_JOB_TIME_BUDGET_SECONDS", 0)
+    monkeypatch.setattr(official_verification, "fetch_official_bingo_results", lambda *args, **kwargs: [_draw(101)])
+    monkeypatch.setattr(official_verification, "save_official_draws", lambda draws: {"status": "ok", "saved": len(draws)})
+    monkeypatch.setattr(official_verification, "get_latest_official_draw", lambda: _draw(101))
+    monkeypatch.setattr(
+        official_verification,
+        "run_official_verification",
+        lambda limit=10: (_ for _ in ()).throw(AssertionError("verification should be skipped")),
+    )
+
+    result = official_verification.collect_official_today()
+
+    assert result["exit_reason"] == "deadline_exceeded"
+    assert result["deadline_exceeded"] is True
+    assert result["verification"]["status"] == "skipped"

@@ -33,6 +33,12 @@ _STATE: dict[str, Any] = {
     "last_error": None,
     "consecutive_failures": 0,
     "scheduler_skipped_count": 0,
+    "skipped_due_to_lock_count": 0,
+    "collector_deadline_exceeded_count": 0,
+    "catch_up_deadline_exceeded_count": 0,
+    "last_job_exit_reason": None,
+    "last_collector_exit_reason": None,
+    "last_catch_up_exit_reason": None,
     "scheduler_missed_count": 0,
     "scheduler_error_count": 0,
     "scheduler_success_count": 0,
@@ -129,6 +135,7 @@ def collector_runtime_status() -> dict:
     with _STATE_LOCK:
         payload = deepcopy(_STATE)
     payload.update(_collector_health_from_runtime(payload))
+    payload["scheduler_max_instances_skipped_count"] = payload.get("scheduler_skipped_count", 0)
     return payload
 
 
@@ -138,32 +145,48 @@ def update_collector_runtime(**kwargs: Any) -> None:
 
 
 def mark_success(owner: str, duration_ms: float | None = None, **kwargs: Any) -> None:
+    exit_reason = kwargs.pop("exit_reason", "completed")
     with _STATE_LOCK:
         if owner == "catch_up":
             _STATE["last_catch_up_finished_at"] = _now()
             _STATE["last_catch_up_duration_ms"] = duration_ms
             _STATE["catch_up_running"] = False
+            _STATE["last_catch_up_exit_reason"] = exit_reason
         else:
             _STATE["last_collector_finished_at"] = _now()
             _STATE["last_collector_duration_ms"] = duration_ms
             _STATE["collector_running"] = False
+            _STATE["last_collector_exit_reason"] = exit_reason
         _STATE["last_error"] = None
         _STATE["consecutive_failures"] = 0
+        _STATE["last_job_exit_reason"] = exit_reason
         _STATE.update(kwargs)
 
 
 def mark_error(owner: str, error: Exception | str, duration_ms: float | None = None) -> None:
+    exit_reason = "exception"
     with _STATE_LOCK:
         if owner == "catch_up":
             _STATE["last_catch_up_finished_at"] = _now()
             _STATE["last_catch_up_duration_ms"] = duration_ms
             _STATE["catch_up_running"] = False
+            _STATE["last_catch_up_exit_reason"] = exit_reason
         else:
             _STATE["last_collector_finished_at"] = _now()
             _STATE["last_collector_duration_ms"] = duration_ms
             _STATE["collector_running"] = False
+            _STATE["last_collector_exit_reason"] = exit_reason
         _STATE["last_error"] = str(error)
         _STATE["consecutive_failures"] = int(_STATE.get("consecutive_failures") or 0) + 1
+        _STATE["last_job_exit_reason"] = exit_reason
+
+
+def mark_deadline_exceeded(owner: str) -> None:
+    with _STATE_LOCK:
+        if owner == "catch_up":
+            _STATE["catch_up_deadline_exceeded_count"] = int(_STATE.get("catch_up_deadline_exceeded_count") or 0) + 1
+        else:
+            _STATE["collector_deadline_exceeded_count"] = int(_STATE.get("collector_deadline_exceeded_count") or 0) + 1
 
 
 def mark_scheduler_event(event_type: str, job_id: str | None = None, error: Exception | str | None = None) -> None:
@@ -187,6 +210,8 @@ def official_collection_lock(owner: str) -> Iterator[tuple[bool, dict]]:
     if not acquired:
         with _STATE_LOCK:
             _STATE["scheduler_skipped_count"] = int(_STATE.get("scheduler_skipped_count") or 0) + 1
+            _STATE["skipped_due_to_lock_count"] = int(_STATE.get("skipped_due_to_lock_count") or 0) + 1
+            _STATE["last_job_exit_reason"] = "skipped_due_to_lock"
             lock_owner = _STATE.get("official_lock_owner")
         yield False, {
             "status": "skipped_due_to_lock",

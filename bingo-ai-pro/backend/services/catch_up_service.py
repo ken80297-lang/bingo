@@ -15,6 +15,7 @@ from services.operations_center import record_operation_event
 from services.official_verification import run_official_verification
 from services.collector_runtime import (
     mark_error,
+    mark_deadline_exceeded,
     mark_success,
     official_collection_lock,
 )
@@ -38,6 +39,14 @@ LAST_CATCH_UP_RESULT: dict[str, Any] = {
 MAX_BATCH_SIZE = 20
 JOB_TIME_BUDGET_SECONDS = 75
 PER_ISSUE_RETRY_LIMIT = 1
+
+
+def _deadline_exceeded(start: float) -> bool:
+    return (time.perf_counter() - start) >= JOB_TIME_BUDGET_SECONDS
+
+
+def _elapsed_seconds(start: float) -> float:
+    return round(time.perf_counter() - start, 3)
 
 
 def _today_taipei() -> date:
@@ -156,6 +165,18 @@ def _record_event(status: str, issue: str | None, start: float, message: str, er
         logger.exception("failed to record catch-up operation event")
 
 
+def _log_job_finished(result: dict) -> None:
+    logger.info(
+        "catch_up_job_finished duration_ms=%s processed_count=%s recovered_count=%s failed_count=%s pending_count=%s exit_reason=%s lock_released=true",
+        round(float(result.get("elapsed_seconds") or 0) * 1000, 2),
+        result.get("catch_count", 0),
+        result.get("success_count", 0),
+        result.get("failed_count", 0),
+        result.get("pending_verification_count", 0),
+        result.get("exit_reason"),
+    )
+
+
 def _empty_result(start: float, database_issue: str | None, source_issue: str | None, status: str = "ok") -> dict:
     database_number = _issue_int(database_issue)
     source_number = _issue_int(source_issue)
@@ -181,6 +202,7 @@ def _empty_result(start: float, database_issue: str | None, source_issue: str | 
 
 def catch_up_missing_issues() -> dict:
     start = time.perf_counter()
+    logger.info("catch_up_job_started")
     with official_collection_lock("catch_up") as (locked, lock_payload):
         if not locked:
             result = {
@@ -189,10 +211,14 @@ def catch_up_missing_issues() -> dict:
                 "catch_count": 0,
                 "success_count": 0,
                 "failed_count": 0,
+                "exit_reason": "skipped_due_to_lock",
             }
             LAST_CATCH_UP_RESULT.update(result)
+            _log_job_finished(result)
             return result
-        return _catch_up_missing_issues_locked(start)
+        result = _catch_up_missing_issues_locked(start)
+        _log_job_finished(result)
+        return result
 
 
 def _catch_up_missing_issues_locked(start: float) -> dict:
@@ -207,21 +233,23 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             result = _empty_result(start, database_issue, source_issue, status="warning")
             result["reason"] = "source_latest_issue_unavailable"
             LAST_CATCH_UP_RESULT.update(result)
-            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000)
+            result["exit_reason"] = "source_error"
+            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="source_error")
             _record_event("warning", database_issue, start, "official catch-up skipped: source unavailable")
             return result
 
         if database_number is not None and source_number <= database_number:
             result = _empty_result(start, database_issue, source_issue)
             LAST_CATCH_UP_RESULT.update(result)
-            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000)
+            result["exit_reason"] = "completed"
+            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="completed")
             _record_event("ok", source_issue, start, "official catch-up already synced")
             return result
 
         missing = []
         pending_verification = []
         for draw in source_draws:
-            if time.perf_counter() - start > JOB_TIME_BUDGET_SECONDS:
+            if _deadline_exceeded(start):
                 break
             issue_number = _issue_int(draw.get("issue"))
             if issue_number is None:
@@ -239,18 +267,18 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         saved = save_official_draws(missing[:MAX_BATCH_SIZE])
         success_count = int(saved.get("saved") or 0) if saved.get("status") == "ok" else 0
         failed_count = max(0, len(missing) - success_count)
-        verification = run_official_verification(limit=10)
+        deadline_hit = _deadline_exceeded(start)
+        verification = {
+            "status": "skipped",
+            "reason": "deadline_exceeded" if deadline_hit else "deferred_to_official_verification_job",
+        }
+        prediction = {
+            "status": "skipped",
+            "reason": "deadline_exceeded" if deadline_hit else "deferred_to_prediction_job",
+        }
 
-        prediction = {"status": "unknown"}
-        try:
-            from services.prediction_tracker import evaluate_pending_predictions
-
-            prediction = evaluate_pending_predictions(max_runs=3)
-        except Exception as exc:
-            logger.exception("catch-up prediction evaluation failed")
-            prediction = {"status": "error", "message": str(exc)}
-
-        elapsed = round(time.perf_counter() - start, 3)
+        elapsed = _elapsed_seconds(start)
+        exit_reason = "deadline_exceeded" if deadline_hit else "completed"
         result = {
             "status": "ok" if saved.get("status") == "ok" else "warning",
             "database_latest_issue": database_issue,
@@ -273,11 +301,16 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "last_successful_collect_time": datetime.utcnow().isoformat() if success_count else LAST_CATCH_UP_RESULT.get("last_successful_collect_time"),
             "last_collect_duration": elapsed,
             "catch_up_available": True,
+            "deadline_exceeded": deadline_hit,
+            "exit_reason": exit_reason,
         }
         LAST_CATCH_UP_RESULT.update(result)
+        if deadline_hit:
+            mark_deadline_exceeded("catch_up")
         mark_success(
             "catch_up",
             elapsed * 1000,
+            exit_reason=exit_reason,
             last_catch_up_recovered_count=success_count,
             last_catch_up_failed_count=failed_count,
             last_catch_up_pending_count=len(pending_verification),
@@ -286,7 +319,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         return result
     except Exception as exc:
         logger.exception("official catch-up failed")
-        elapsed = round(time.perf_counter() - start, 3)
+        elapsed = _elapsed_seconds(start)
         result = {
             "status": "error",
             "database_latest_issue": database_issue,
@@ -302,6 +335,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "last_successful_collect_time": LAST_CATCH_UP_RESULT.get("last_successful_collect_time"),
             "last_collect_duration": elapsed,
             "catch_up_available": True,
+            "exit_reason": "exception",
         }
         LAST_CATCH_UP_RESULT.update(result)
         mark_error("catch_up", exc, elapsed * 1000)

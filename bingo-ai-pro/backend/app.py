@@ -53,7 +53,6 @@ from api.today import router as today_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from collectors import collect_kuaishou_snapshot, collect_pilio_today
-from database import get_connection
 from database.adaptive_weight_store import init_adaptive_weight_tables
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
@@ -93,14 +92,7 @@ DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
 
 app = FastAPI(title="Bingo AI Pro API")
-
-try:
-    conn = get_connection()
-    print("Supabase connection ok")
-    conn.close()
-except Exception as e:
-    print("Supabase connection failed")
-    print(e)
+print("startup_import_completed host=0.0.0.0 port_env=PORT")
 
 app.include_router(adaptive_weight_router)
 app.include_router(admin_router)
@@ -218,6 +210,8 @@ def refresh_data() -> dict[str, object]:
 
 @app.on_event("startup")
 def startup_event() -> None:
+    startup_started = datetime.utcnow()
+    print("startup_scheduler_registered background_jobs_deferred=true")
     init_db()
     _ensure_scheduler_listener()
 
@@ -369,6 +363,16 @@ def startup_event() -> None:
 
     if not scheduler.running:
         scheduler.start()
+    duration_ms = round((datetime.utcnow() - startup_started).total_seconds() * 1000, 2)
+    print(
+        f"startup_application_ready duration_ms={duration_ms} "
+        f"scheduler_running={scheduler.running} background_jobs_deferred=true"
+    )
+    print(
+        f"startup_background_jobs_scheduled duration_ms={duration_ms} "
+        f"scheduler_running={scheduler.running} background_jobs_deferred=true "
+        f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
+    )
 
 
 @app.on_event("shutdown")

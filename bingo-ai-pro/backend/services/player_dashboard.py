@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,7 +15,14 @@ from services.prediction_refresh import prediction_refresh_status
 logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 30
+PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 4
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
+_PLAYER_COMPONENT_CACHE: dict[str, Any] = {
+    "official_draw": None,
+    "latest_prediction": None,
+    "prediction_history": [],
+}
+_PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="player-dashboard")
 
 
 def _now() -> str:
@@ -35,6 +42,17 @@ def _cached_summary() -> dict | None:
 def _store_summary_cache(payload: dict) -> None:
     _PLAYER_SUMMARY_CACHE["payload"] = deepcopy(payload)
     _PLAYER_SUMMARY_CACHE["expires_at"] = time.monotonic() + PLAYER_SUMMARY_TTL_SECONDS
+
+
+def _store_component_cache(name: str, payload: Any) -> None:
+    _PLAYER_COMPONENT_CACHE[name] = deepcopy(payload)
+
+
+def _load_component_cache(name: str, fallback=None):
+    cached = _PLAYER_COMPONENT_CACHE.get(name)
+    if cached is None:
+        return fallback
+    return deepcopy(cached)
 
 
 def _as_int(value: Any) -> int | None:
@@ -370,11 +388,25 @@ def _history_stats(history_records: list[dict]) -> dict:
 
 def _future_result(name: str, future, warnings: list[str], fallback=None):
     try:
-        return future.result(timeout=4)
+        result = future.result(timeout=PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS)
+        _store_component_cache(name, result)
+        return result
+    except TimeoutError:
+        logger.warning(
+            "player_dashboard_query_timeout component=%s timeout_seconds=%s fallback=last_good_cache",
+            name,
+            PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS,
+        )
+        warnings.append(f"{name} fallback cache")
+        return _load_component_cache(name, fallback)
     except Exception:
-        logger.exception("player dashboard %s failed", name)
-        warnings.append(f"{name} unavailable")
-        return fallback
+        logger.warning(
+            "player_dashboard_query_failed component=%s fallback=last_good_cache",
+            name,
+            exc_info=True,
+        )
+        warnings.append(f"{name} fallback cache")
+        return _load_component_cache(name, fallback)
 
 
 def build_player_dashboard_summary() -> dict:
@@ -385,15 +417,14 @@ def build_player_dashboard_summary() -> dict:
     warnings: list[str] = []
     generated_at = _now()
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            "official_draw": executor.submit(get_latest_official_draw),
-            "latest_prediction": executor.submit(get_latest_prediction_history),
-            "prediction_history": executor.submit(lambda: get_prediction_history_records(10)),
-        }
-        official = _future_result("official_draw", futures["official_draw"], warnings)
-        latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
-        history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
+    futures = {
+        "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
+        "latest_prediction": _PLAYER_EXECUTOR.submit(get_latest_prediction_history),
+        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(10)),
+    }
+    official = _future_result("official_draw", futures["official_draw"], warnings)
+    latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
+    history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
     prediction_stats = _history_stats(history_records)
 
     current = _current_draw(official)

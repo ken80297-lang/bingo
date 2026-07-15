@@ -24,11 +24,32 @@ from database.official_draw_store import (
 )
 from services.operations_center import record_operation_event
 from services.prediction_lifecycle import verify_prediction
-from services.collector_runtime import mark_error, mark_success, official_collection_lock
+from services.collector_runtime import mark_deadline_exceeded, mark_error, mark_success, official_collection_lock
 
 logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
+COLLECTOR_JOB_TIME_BUDGET_SECONDS = 45
+
+
+def _collector_deadline_exceeded(start: float) -> bool:
+    return (time.perf_counter() - start) >= COLLECTOR_JOB_TIME_BUDGET_SECONDS
+
+
+def _collector_elapsed_seconds(start: float) -> float:
+    return round(time.perf_counter() - start, 3)
+
+
+def _log_collector_finished(result: dict) -> None:
+    logger.info(
+        "collector_job_finished duration_ms=%s processed_count=%s recovered_count=%s failed_count=%s pending_count=%s exit_reason=%s lock_released=true",
+        round(float(result.get("elapsed_seconds") or 0) * 1000, 2),
+        result.get("count", 0),
+        (result.get("saved") or {}).get("saved", 0) if isinstance(result.get("saved"), dict) else 0,
+        (result.get("saved") or {}).get("failed", 0) if isinstance(result.get("saved"), dict) else 0,
+        result.get("pending_count", 0),
+        result.get("exit_reason"),
+    )
 
 
 def _duration_ms(start: float) -> float:
@@ -324,14 +345,21 @@ def reverify_recent_draws(limit: int = 200) -> dict:
 
 def collect_official_today() -> dict:
     start = time.perf_counter()
+    logger.info("collector_job_started")
     with official_collection_lock("official_collector") as (locked, lock_payload):
         if not locked:
-            return {
+            result = {
                 "status": "skipped_due_to_lock",
                 "count": 0,
+                "elapsed_seconds": _collector_elapsed_seconds(start),
+                "exit_reason": "skipped_due_to_lock",
                 **lock_payload,
             }
-        return _collect_official_today_locked(start)
+            _log_collector_finished(result)
+            return result
+        result = _collect_official_today_locked(start)
+        _log_collector_finished(result)
+        return result
 
 
 def _collect_official_today_locked(start: float) -> dict:
@@ -347,24 +375,51 @@ def _collect_official_today_locked(start: float) -> dict:
             f"official collector saved {saved.get('saved', 0)} draws",
         )
         prediction_refresh = {"status": "unknown"}
-        try:
-            from services.prediction_refresh import ensure_next_prediction
-
-            latest_draw = get_latest_official_draw() or (draws[0] if draws else None)
-            prediction_refresh = ensure_next_prediction(latest_draw)
-        except Exception as exc:
-            logger.exception("official next prediction refresh failed")
-            prediction_refresh = {"status": "error", "message": str(exc)}
-        verification = run_official_verification(limit=10)
-        reverify = reverify_recent_draws(limit=20)
+        verification = {"status": "skipped", "reason": "collector_boundary"}
+        reverify = {"status": "skipped", "reason": "collector_boundary"}
         prediction = {"status": "unknown"}
-        try:
-            from services.prediction_tracker import evaluate_pending_predictions
+        exit_reason = "completed"
 
-            prediction = evaluate_pending_predictions(max_runs=3)
-        except Exception as exc:
-            logger.exception("official prediction evaluation failed")
-            prediction = {"status": "error", "message": str(exc)}
+        if _collector_deadline_exceeded(start):
+            exit_reason = "deadline_exceeded"
+        else:
+            try:
+                from services.prediction_refresh import ensure_next_prediction
+
+                latest_draw = get_latest_official_draw() or (draws[0] if draws else None)
+                prediction_refresh = ensure_next_prediction(latest_draw)
+            except Exception as exc:
+                logger.warning(
+                    "collector downstream prediction_refresh failed component=prediction_refresh error=%s",
+                    exc,
+                )
+                prediction_refresh = {"status": "error", "message": str(exc)}
+
+        if _collector_deadline_exceeded(start):
+            exit_reason = "deadline_exceeded"
+        else:
+            verification = run_official_verification(limit=10)
+
+        if _collector_deadline_exceeded(start):
+            exit_reason = "deadline_exceeded"
+        else:
+            reverify = reverify_recent_draws(limit=20)
+
+        if _collector_deadline_exceeded(start):
+            exit_reason = "deadline_exceeded"
+        else:
+            try:
+                from services.prediction_tracker import evaluate_pending_predictions
+
+                prediction = evaluate_pending_predictions(max_runs=3)
+            except Exception as exc:
+                logger.warning(
+                    "collector downstream prediction evaluation failed component=prediction error=%s",
+                    exc,
+                )
+                prediction = {"status": "error", "message": str(exc)}
+        if exit_reason == "deadline_exceeded":
+            mark_deadline_exceeded("official_collector")
         result = {
             "status": "ok" if saved.get("status") == "ok" else "warning",
             "count": len(draws),
@@ -373,14 +428,27 @@ def _collect_official_today_locked(start: float) -> dict:
             "reverify": reverify,
             "prediction_refresh": prediction_refresh,
             "prediction": prediction,
+            "elapsed_seconds": _collector_elapsed_seconds(start),
+            "deadline_exceeded": exit_reason == "deadline_exceeded",
+            "exit_reason": exit_reason,
         }
-        mark_success("official_collector", round((time.perf_counter() - start) * 1000, 2))
+        mark_success(
+            "official_collector",
+            round((time.perf_counter() - start) * 1000, 2),
+            exit_reason=exit_reason,
+        )
         return result
     except Exception as exc:
         logger.exception("official collector failed")
         _record_event("official_collector", "error", None, start, "official collector failed", exc)
         mark_error("official_collector", exc, round((time.perf_counter() - start) * 1000, 2))
-        return {"status": "error", "count": 0, "error": str(exc)}
+        return {
+            "status": "error",
+            "count": 0,
+            "error": str(exc),
+            "elapsed_seconds": _collector_elapsed_seconds(start),
+            "exit_reason": "exception",
+        }
 
 
 def official_latest() -> dict:
