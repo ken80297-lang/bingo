@@ -121,6 +121,23 @@ def test_writer_guard_rejects_direct_prediction_history_write(monkeypatch):
     assert events[0][1] == "unauthorized_writer"
 
 
+def test_latest_prediction_history_uses_numeric_production_order(monkeypatch):
+    captured = {}
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        captured["sql"] = sql
+        captured["sqlite_sql"] = sqlite_sql
+        return []
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    assert prediction_history_store.get_latest_prediction_history() is None
+    assert "length(prediction_issue) >= 6" in captured["sql"]
+    assert "prediction_issue::bigint desc" in captured["sql"]
+    assert "cast(prediction_issue as integer) desc" in captured["sqlite_sql"]
+
+
 def test_recommendation_api_preview_does_not_persist_prediction(monkeypatch):
     monkeypatch.setattr(
         recommendation_api,

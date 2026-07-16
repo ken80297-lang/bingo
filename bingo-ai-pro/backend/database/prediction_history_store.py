@@ -590,9 +590,22 @@ def get_latest_prediction_history() -> dict | None:
         select {columns}
         from prediction_history
         where prediction_issue is not null
+          and prediction_issue ~ '^[0-9]+$'
+          and length(prediction_issue) >= 6
           and prediction_issue not like '99%%'
           and upper(prediction_issue) not like 'TEST%%'
-        order by prediction_issue desc, updated_at desc
+        order by prediction_issue::bigint desc, updated_at desc
+        limit 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        sqlite_sql="""
+        select {columns}
+        from prediction_history
+        where prediction_issue is not null
+          and prediction_issue glob '[0-9]*'
+          and length(prediction_issue) >= 6
+          and prediction_issue not like '99%'
+          and upper(prediction_issue) not like 'TEST%'
+        order by cast(prediction_issue as integer) desc, updated_at desc
         limit 1
         """.format(columns=PREDICTION_SELECT_COLUMNS),
     )
@@ -607,9 +620,11 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
         select {columns}
         from prediction_history
         where prediction_issue is not null
+          and prediction_issue ~ '^[0-9]+$'
+          and length(prediction_issue) >= 6
           and prediction_issue not like '99%%'
           and upper(prediction_issue) not like 'TEST%%'
-        order by prediction_issue desc, updated_at desc
+        order by prediction_issue::bigint desc, updated_at desc
         limit %s
         """.format(columns=PREDICTION_SELECT_COLUMNS),
         (limit,),
@@ -617,9 +632,11 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
         select {columns}
         from prediction_history
         where prediction_issue is not null
+          and prediction_issue glob '[0-9]*'
+          and length(prediction_issue) >= 6
           and prediction_issue not like '99%'
           and upper(prediction_issue) not like 'TEST%'
-        order by prediction_issue desc, updated_at desc
+        order by cast(prediction_issue as integer) desc, updated_at desc
         limit ?
         """.format(columns=PREDICTION_SELECT_COLUMNS),
     )
