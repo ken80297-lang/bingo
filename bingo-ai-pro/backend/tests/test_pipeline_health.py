@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from api import pipeline as pipeline_api
+from services import pipeline_health
+
+
+def test_prediction_coverage_calculates_missing_between_observed(monkeypatch):
+    monkeypatch.setattr(pipeline_health, "_today_taipei", lambda: "2026-07-16")
+    monkeypatch.setattr(
+        pipeline_health,
+        "_query",
+        lambda *_args, **_kwargs: [("115000001",), ("115000003",), ("115000004",)],
+    )
+
+    result = pipeline_health.prediction_coverage()
+
+    assert result["prediction_expected_today"] == 204
+    assert result["prediction_created_today"] == 3
+    assert result["missing_prediction_count"] == 201
+    assert result["missing_target_issues"] == ["115000002"]
+
+
+def test_pipeline_alerts_marks_recovery_pending_as_critical():
+    alerts = pipeline_health.pipeline_alerts(
+        {"prediction_coverage": 98.5},
+        {"verification_pending": 0, "learning_pending": 0},
+        {"target_unconfirmed_today": 0, "null_target_today": 0},
+        {"verification": {"would_verify": 1}, "learning_sync": {"would_sync": 0}},
+    )
+
+    assert {"type": "recovery_pending", "severity": "critical", "message": "recovery dry-run is not clean"} in alerts
+    assert pipeline_health._status_from_alerts(alerts) == "critical"
+
+
+def test_build_pipeline_health_is_json_safe(monkeypatch):
+    monkeypatch.setattr(pipeline_health, "prediction_coverage", lambda: {
+        "date": "2026-07-16",
+        "prediction_expected_today": 204,
+        "prediction_created_today": 204,
+        "prediction_coverage": 100.0,
+        "missing_prediction_count": 0,
+        "missing_target_issues": [],
+    })
+    monkeypatch.setattr(pipeline_health, "lifecycle_pending_counts", lambda: {
+        "verification_pending": 0,
+        "learning_pending": 0,
+    })
+    monkeypatch.setattr(pipeline_health, "target_unconfirmed_counts", lambda: {
+        "target_unconfirmed_today": 0,
+        "null_target_today": 0,
+    })
+    monkeypatch.setattr(pipeline_health, "dry_run_all", lambda: {
+        "verification": {"would_verify": 0},
+        "learning_sync": {"would_sync": 0},
+    })
+    monkeypatch.setattr(pipeline_health, "get_prediction_lifecycle_aggregates", lambda: {
+        "total_prediction_count": 154,
+        "valid_prediction_count": 127,
+        "completed_verified_count": 112,
+        "null_target_count": 27,
+        "has_official_result_count": 112,
+    })
+    monkeypatch.setattr(pipeline_health, "get_learned_live_target_count", lambda: 63)
+    monkeypatch.setattr(pipeline_health, "latest_pipeline_times", lambda: {
+        "prediction_last_created": "2026-07-16T00:00:00",
+        "prediction_last_verified": "2026-07-16T00:05:00",
+        "prediction_last_learning": "2026-07-16T00:06:00",
+    })
+    monkeypatch.setattr(pipeline_health, "scheduler_status", lambda scheduler=None: {
+        "status": "running",
+        "jobs": [],
+        "runtime": {},
+    })
+    monkeypatch.setattr(pipeline_health, "prediction_pipeline_validation", lambda: {"status": "ok"})
+    monkeypatch.setattr(pipeline_health, "operation_event_health", lambda: {"status": "ok"})
+    monkeypatch.setattr(pipeline_health, "official_draw_time_investigation", lambda: {"missing_draw_time_count": 0})
+    monkeypatch.setattr(pipeline_health, "verification_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
+    monkeypatch.setattr(pipeline_health, "learning_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
+
+    payload = pipeline_health.build_pipeline_health()
+
+    assert payload["pipeline_status"] == "healthy"
+    assert payload["dashboard_statistics"]["learning_sample_count"] == 63
+    json.dumps(payload, allow_nan=False, default=str)
+
+
+def test_pipeline_health_api_uses_app_scheduler(monkeypatch):
+    captured = {}
+
+    def fake_build(scheduler=None):
+        captured["scheduler"] = scheduler
+        return {"status": "ok", "pipeline_status": "healthy"}
+
+    class AppState:
+        scheduler = object()
+
+    class App:
+        state = AppState()
+
+    class Request:
+        app = App()
+
+    monkeypatch.setattr(pipeline_api, "build_pipeline_health", fake_build)
+
+    result = pipeline_api.api_pipeline_health(Request())
+
+    assert result["pipeline_status"] == "healthy"
+    assert captured["scheduler"] is AppState.scheduler

@@ -652,6 +652,15 @@ def evaluate_verified_issue(issue: str) -> dict:
             message=f"learning evaluation {status}",
             duration_ms=_duration_ms(start),
         )
+        if status == "ok":
+            record_operation_event(
+                component="learning",
+                event_type="learning_completed",
+                status="ok",
+                issue=str(issue),
+                message=f"learning completed for {issue}",
+                duration_ms=_duration_ms(start),
+            )
         learning_queue = {"status": "skipped"}
         if status == "ok":
             try:

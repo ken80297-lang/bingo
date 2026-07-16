@@ -14,7 +14,9 @@ router = APIRouter(prefix="/api/recommendation-center", tags=["Recommendation Ce
 
 @router.post("/generate")
 def api_recommendation_center_generate():
-    return generate_recommendation_center()
+    payload = generate_recommendation_center(persist=False, calculate_only=True, context={"trigger": "manual_api_preview"})
+    payload["persisted"] = False
+    return payload
 
 
 @router.get("/today")
@@ -31,13 +33,19 @@ def api_recommendation_center_latest():
     if latest_issue:
         recommendation = get_recommendation_run_by_issue(latest_issue)
         if not recommendation:
-            generated = generate_recommendation_center()
-            recommendation = generated.get("recommendation") or get_recommendation_run_by_issue(latest_issue)
+            generated = generate_recommendation_center(
+                issue_override=latest_issue,
+                persist=False,
+                calculate_only=True,
+                context={"trigger": "get_latest_preview"},
+            )
+            recommendation = generated.get("recommendation")
         if recommendation:
             return {
                 "status": "ok",
                 "latest_issue": latest_issue,
                 "data": recommendation,
+                "persisted": False,
             }
         fallback = get_latest_recommendation_run()
         return {

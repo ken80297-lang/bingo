@@ -42,7 +42,7 @@ def _confidence(value: float) -> float:
     return round(max(1, min(100, float(value or 0))), 2)
 
 
-def _top_unique(values: list[int], limit: int = 10) -> list[int]:
+def _top_unique(values: list[int], limit: int = 20) -> list[int]:
     result = []
     for value in values:
         if 1 <= value <= 80 and value not in result:
@@ -52,7 +52,7 @@ def _top_unique(values: list[int], limit: int = 10) -> list[int]:
     return result
 
 
-def _candidate_from_neighbors(numbers: list[int], limit: int = 10) -> list[int]:
+def _candidate_from_neighbors(numbers: list[int], limit: int = 20) -> list[int]:
     candidates = []
     for number in numbers:
         for gap in (1, 2, 9, 10, 11):
@@ -66,7 +66,7 @@ def _model_payload(name: str, candidates: list[int], confidence: float, reason: 
     return {
         "model": name,
         "label": MODEL_NAMES.get(name, name),
-        "candidate_numbers": _top_unique(candidates, 10),
+        "candidate_numbers": _top_unique(candidates, 20),
         "confidence": _confidence(confidence),
         "reason": reason,
     }
@@ -92,12 +92,12 @@ def model_b_hotcold(draws: list[dict]) -> dict:
     scores: Counter[int] = Counter()
     for weight, window in zip((3, 2, 1), windows):
         counter = Counter(_all_numbers(window))
-        for number, _ in counter.most_common(12):
+        for number, _ in counter.most_common(20):
             scores[number] += weight
-        for number, _ in counter.most_common()[-8:]:
+        for number, _ in counter.most_common()[-12:]:
             scores[number] += max(1, weight - 1)
-    candidates = [number for number, _ in scores.most_common(10)]
-    confidence = 55 + min(40, sum(score for _, score in scores.most_common(10)))
+    candidates = [number for number, _ in scores.most_common(20)]
+    confidence = 55 + min(40, sum(score for _, score in scores.most_common(20)))
     return _model_payload("hotcold", candidates, confidence, "HotCold 模型綜合近 30/50/100 期熱門與冷門反彈。")
 
 
@@ -111,7 +111,7 @@ def model_c_missing(draws: list[dict]) -> dict:
     for number, gap in last_seen.items():
         missing_scores.append((number, 999 if gap is None else gap))
     missing_scores.sort(key=lambda item: item[1], reverse=True)
-    candidates = [number for number, _ in missing_scores[:10]]
+    candidates = [number for number, _ in missing_scores[:20]]
     max_missing = missing_scores[0][1] if missing_scores else 0
     confidence = 50 + min(45, max_missing * 1.5 if max_missing < 999 else 35)
     return _model_payload("missing", candidates, confidence, "Missing 模型依據遺漏值、平均遺漏與最大遺漏挑選補位號。")
@@ -131,7 +131,7 @@ def model_d_pattern(draws: list[dict]) -> dict:
             candidates.extend(_as_numbers(pair))
         for run in draw.get("consecutive") or []:
             candidates.extend(_as_numbers(run))
-    ranked = [number for number, _ in Counter(candidates).most_common(10)]
+    ranked = [number for number, _ in Counter(candidates).most_common(20)]
     confidence = 55 + min(40, sum(pattern_counter.values()) * 2)
     reason = "Pattern 模型觀察近 20 期大型群聚、補號、冷熱交替、雙生與連號模式。"
     return _model_payload("pattern", ranked, confidence, reason)

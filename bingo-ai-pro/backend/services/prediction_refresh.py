@@ -135,26 +135,24 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             _record_refresh_event(payload, start)
             return payload
 
-        from services.recommendation_center import generate_recommendation_center
+        from services.prediction_service import create_for_official_draw
 
-        generated = generate_recommendation_center(
-            issue_override=source_issue,
-            target_issue_override=target_issue,
+        service_result = create_for_official_draw(
+            source_issue,
+            source="official_collector",
+            trigger="draw_collected",
+            target_issue=target_issue,
+            collector_metadata={"draw_issue": source_issue, "draw_number_count": len(draw_numbers)},
         )
-        recommendation = generated.get("recommendation") or {}
-        prediction_history = recommendation.get("prediction_history") or {}
-        status = "created" if generated.get("status") == "ok" else "failed"
-        if prediction_history.get("status") == "ok" and prediction_history.get("id"):
-            status = "created"
-        elif prediction_history.get("status") in ("skipped", "error"):
-            status = "failed"
+        status = service_result.get("status")
+        refresh_ready = status in ("created", "already_exists")
         payload = {
             "status": status,
-            "refresh_status": "ready" if status in ("created", "existing") else "failed",
-            "refresh_reason": None if status in ("created", "existing") else generated.get("message") or prediction_history.get("message"),
-            "last_refresh_success": _now() if status in ("created", "existing") else None,
-            "prediction_history": prediction_history,
-            "recommendation_status": generated.get("status"),
+            "refresh_status": "ready" if refresh_ready else "failed",
+            "refresh_reason": None if refresh_ready else service_result.get("skip_reason") or service_result.get("error"),
+            "last_refresh_success": _now() if refresh_ready else None,
+            "prediction_history": service_result,
+            "recommendation_status": "single_entry_prediction_service",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
             **base_payload,
         }

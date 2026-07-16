@@ -9,7 +9,6 @@ from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import (
     get_latest_prediction_history,
     get_prediction_history_statistics,
-    save_prediction_history,
 )
 from database.recommendation_center_store import get_latest_recommendation_run
 from services.prediction_refresh import prediction_refresh_status
@@ -19,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 def _as_int_list(values: Any) -> list[int]:
     numbers = []
+    if isinstance(values, str):
+        try:
+            import json
+
+            parsed = json.loads(values)
+            values = parsed if isinstance(parsed, list) else [values]
+        except Exception:
+            values = [values]
     for value in values or []:
         try:
             number = int(value)
@@ -26,16 +33,20 @@ def _as_int_list(values: Any) -> list[int]:
             continue
         if 1 <= number <= 80 and number not in numbers:
             numbers.append(number)
-    return numbers
+    return sorted(numbers)
 
 
 def _pairs(numbers: list[int], diff: int) -> list[list[int]]:
     number_set = set(numbers)
-    return [[n, n + diff] for n in numbers if n + diff in number_set]
+    return [[n, n + diff] for n in sorted(numbers) if n + diff in number_set]
 
 
 def _tails(numbers: list[int]) -> list[int]:
     return sorted({number % 10 for number in numbers})
+
+
+def _twins(numbers: list[int]) -> list[int]:
+    return [number for number in numbers if number in {11, 22, 33, 44, 55, 66, 77}]
 
 
 def _big_small(numbers: list[int]) -> str:
@@ -65,7 +76,7 @@ def _patch_numbers(numbers: list[int]) -> list[int]:
             for value in (number - diff, number + diff):
                 if 1 <= value <= 80 and value not in numbers and value not in candidates:
                     candidates.append(value)
-    return candidates[:8]
+    return sorted(candidates[:8])
 
 
 def _super_number(recommendation: dict) -> int | None:
@@ -151,7 +162,7 @@ def build_prediction_history_record(recommendation: dict) -> dict | None:
         "super_number": _super_number(recommendation),
         "three_star": numbers[:3],
         "four_star": numbers[:4],
-        "twins": _pairs(numbers, 2),
+        "twins": _twins(numbers),
         "consecutive": _pairs(numbers, 1),
         "patch_numbers": _patch_numbers(numbers),
         "tails": _tails(numbers),
@@ -164,14 +175,12 @@ def build_prediction_history_record(recommendation: dict) -> dict | None:
 
 
 def save_recommendation_prediction_history(recommendation: dict) -> dict:
-    try:
-        record = build_prediction_history_record(recommendation)
-        if not record:
-            return {"status": "skipped", "message": "no recommendation numbers"}
-        return save_prediction_history(record)
-    except Exception as exc:
-        logger.exception("failed to save recommendation prediction history")
-        return {"status": "error", "message": str(exc)}
+    logger.warning("save_recommendation_prediction_history is deprecated; use PredictionService")
+    return {
+        "status": "skipped",
+        "message": "prediction persistence must go through PredictionService",
+        "skip_reason": "single_entry_prediction_service_required",
+    }
 
 
 def _fallback_recommendation() -> dict | None:

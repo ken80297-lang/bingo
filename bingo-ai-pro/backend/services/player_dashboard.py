@@ -7,15 +7,18 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from database.official_draw_store import get_latest_official_draw
+from database.analysis_store import get_latest_analysis_history
+from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
 from database.prediction_history_store import get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_prediction_history_statistics
+from database.prediction_history_store import get_prediction_lifecycle_aggregates
 from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 30
-PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 4
+PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 10
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
@@ -64,11 +67,19 @@ def _as_int(value: Any) -> int | None:
 
 def _as_int_list(values: Any) -> list[int]:
     result: list[int] = []
+    if isinstance(values, str):
+        try:
+            import json
+
+            parsed = json.loads(values)
+            values = parsed if isinstance(parsed, list) else [values]
+        except Exception:
+            values = [values]
     for value in values or []:
         number = _as_int(value)
         if number is not None and 1 <= number <= 80 and number not in result:
             result.append(number)
-    return result
+    return sorted(result)
 
 
 def _valid_production_issue(value: Any) -> str | None:
@@ -124,6 +135,13 @@ def _parse_draw_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _format_draw_time(value: Any) -> str | None:
+    parsed = _parse_draw_datetime(value)
+    if parsed:
+        return parsed.strftime("%Y/%m/%d %H:%M")
+    return str(value) if value else None
+
+
 def _expected_draw_time(next_data: dict, current_draw: dict | None) -> tuple[str | None, str]:
     stored = (
         next_data.get("expected_draw_time")
@@ -131,11 +149,11 @@ def _expected_draw_time(next_data: dict, current_draw: dict | None) -> tuple[str
         or next_data.get("prediction_time")
     )
     if stored:
-        return str(stored), "stored"
+        return _format_draw_time(stored), "stored"
     current_time = (current_draw or {}).get("draw_time")
     parsed = _parse_draw_datetime(current_time)
     if parsed:
-        return (parsed + timedelta(minutes=5)).isoformat(), "derived"
+        return (parsed + timedelta(minutes=5)).strftime("%Y/%m/%d %H:%M"), "derived"
     return None, "unavailable"
 
 
@@ -194,11 +212,23 @@ def _current_draw(draw: dict | None) -> dict | None:
 
 def _pairs(numbers: list[int], diff: int) -> list[list[int]]:
     number_set = set(numbers)
-    return [[n, n + diff] for n in numbers if n + diff in number_set]
+    return [[n, n + diff] for n in sorted(numbers) if n + diff in number_set]
 
 
 def _tails(numbers: list[int]) -> list[int]:
     return sorted({number % 10 for number in numbers})
+
+
+def _tail_groups(numbers: list[int]) -> list[dict]:
+    return [
+        {"tail": tail, "label": f"{tail}尾", "numbers": [number for number in numbers if number % 10 == tail]}
+        for tail in _tails(numbers)
+    ]
+
+
+def _twins(numbers: list[int]) -> list[int]:
+    twin_numbers = {11, 22, 33, 44, 55, 66, 77}
+    return [number for number in numbers if number in twin_numbers]
 
 
 def _patch_numbers(numbers: list[int]) -> list[int]:
@@ -208,7 +238,7 @@ def _patch_numbers(numbers: list[int]) -> list[int]:
             for value in (number - diff, number + diff):
                 if 1 <= value <= 80 and value not in numbers and value not in candidates:
                     candidates.append(value)
-    return candidates[:8]
+    return sorted(candidates[:8])
 
 
 def _prediction_from_history(record: dict | None, current_draw: dict | None) -> dict | None:
@@ -235,11 +265,19 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
     status = _target_status(target_issue, current_issue)
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
+    based_on_draw_time = _format_draw_time((current_draw or {}).get("draw_time"))
+    if str((current_draw or {}).get("issue")) != str(based_on_issue):
+        based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
+        based_on_draw_time = _format_draw_time((based_draw or {}).get("draw_time")) or based_on_draw_time
+    recommendation_warning = None
+    if len(numbers) < 20:
+        recommendation_warning = f"目前僅產生 {len(numbers)} 個有效推薦號碼"
     return {
         "target_issue": target_issue,
         "prediction_issue": target_issue,
         "target_issue_source": target_issue_source,
         "based_on_issue": based_on_issue,
+        "based_on_draw_time": based_on_draw_time,
         "is_current": status["is_current"],
         "status": status["status"],
         "refresh_status": refresh.get("refresh_status"),
@@ -249,15 +287,19 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "is_stale": refresh.get("is_stale"),
         "lag_issues": refresh.get("lag_issues"),
         "expected_draw_time": expected_time,
+        "target_draw_time": expected_time,
         "expected_draw_time_source": expected_source,
         "generated_at": record.get("predict_time") or record.get("created_at"),
         "main_numbers": numbers,
+        "recommend_numbers": numbers,
+        "recommendation_warning": recommendation_warning,
         "backup_numbers": [],
         "super_number": record.get("super_number"),
-        "twins": record.get("twins") or _pairs(numbers, 2),
+        "twins": _twins(numbers),
         "consecutive": record.get("consecutive") or _pairs(numbers, 1),
         "patch_numbers": record.get("patch_numbers") or _patch_numbers(numbers),
         "tails": record.get("tails") or _tails(numbers),
+        "tail_groups": _tail_groups(numbers),
         "big_small": record.get("big_small") or _big_small(numbers),
         "odd_even": record.get("odd_even") or _odd_even(numbers),
         "confidence": record.get("confidence") or 0,
@@ -295,7 +337,7 @@ def _alerts(numbers: list[int], super_number: int | None) -> dict:
 
 def _latest_verified_prediction(records: list[dict]) -> dict | None:
     for record in records:
-        if record.get("winning_numbers"):
+        if record.get("winning_numbers") or record.get("prediction_status") == "verified" or record.get("verified_at"):
             return record
     return None
 
@@ -304,7 +346,7 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
     if not record:
         return None
     predicted = _as_int_list(record.get("recommend_numbers"))
-    draw_numbers = _as_int_list((draw or {}).get("numbers") or record.get("winning_numbers"))
+    draw_numbers = _as_int_list(record.get("winning_numbers") or (draw or {}).get("numbers"))
     matched_set = set(draw_numbers)
     matched = [number for number in predicted if number in matched_set]
     missed = [number for number in predicted if number not in matched_set]
@@ -316,16 +358,19 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
         "target_issue": record.get("prediction_issue"),
         "prediction_status": record.get("prediction_status"),
         "prediction_created_at": record.get("predict_time") or record.get("created_at"),
-        "draw_time": (draw or {}).get("draw_time"),
+        "draw_time": _format_draw_time((draw or {}).get("draw_time") or record.get("draw_time")),
         "predicted_numbers": predicted,
         "draw_numbers": draw_numbers,
+        "official_numbers": draw_numbers,
         "matched_numbers": matched,
         "missed_numbers": missed,
         "hit_count": len(matched),
         "prediction_count": len(predicted),
+        "hit_denominator": len(predicted),
         "hit_label": _hit_label(len(matched)),
         "super_number_predicted": predicted_super,
         "super_number_actual": actual_super,
+        "official_super_number": actual_super,
         "super_number_hit": bool(
             predicted_super is not None
             and actual_super is not None
@@ -339,23 +384,184 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
     }
 
 
+RULE_LIBRARY_NAMES = [
+    ("hot", "熱門"),
+    ("cold", "冷門"),
+    ("missing", "缺號"),
+    ("repeat", "重號"),
+    ("tail", "尾數"),
+    ("gap", "間距"),
+    ("cluster", "群聚"),
+    ("diagonal", "斜線"),
+    ("super", "超級獎"),
+    ("laowanjia", "老玩家"),
+    ("ladder", "階梯"),
+    ("partial_ladder", "偏階"),
+    ("extended_ladder", "延階"),
+    ("reverse", "反號"),
+    ("neighbor", "隔壁號"),
+    ("guide", "引路牌"),
+    ("integrated", "整合數"),
+    ("sunset", "太陽下山"),
+    ("momentum", "盤勢動能"),
+]
+
+
+def _flatten_number_groups(groups: Any) -> list[int]:
+    values: list[Any] = []
+    if isinstance(groups, dict):
+        groups = groups.values()
+    for item in groups or []:
+        if isinstance(item, (list, tuple, set)):
+            values.extend(item)
+        else:
+            values.append(item)
+    return _as_int_list(values)
+
+
+def _rule_item(key: str, label: str, analysis: dict, prediction: dict) -> dict:
+    numbers = prediction.get("main_numbers") or []
+    status = "ready"
+    score = None
+    reason = "此項依據目前 prediction snapshot 與最新分析資料產生。"
+    impact = "中"
+    candidates: list[int] = []
+
+    if key == "hot":
+        candidates = _as_int_list(analysis.get("hot_numbers"))[:8]
+        reason = "近期熱門號碼與本期候選交集。"
+    elif key == "cold":
+        candidates = _as_int_list(analysis.get("cold_numbers"))[:8]
+        reason = "近期冷門號碼的回補觀察。"
+    elif key == "missing":
+        candidates = _as_int_list(analysis.get("missing_numbers"))[:8]
+        reason = "遺漏較久號碼的回補觀察。"
+    elif key == "repeat":
+        candidates = _as_int_list(analysis.get("repeated_numbers"))[:8]
+        reason = "重號延續觀察。"
+    elif key == "tail":
+        candidates = numbers
+        reason = "依尾數分布檢查候選是否過度集中。"
+    elif key == "gap":
+        score = analysis.get("gap_score")
+        candidates = _flatten_number_groups(analysis.get("difference_values"))[:8]
+        reason = "欄位來源為 difference_values / gap_score，正式顯示為間距分析。"
+    elif key == "cluster":
+        score = analysis.get("cluster_score")
+        candidates = numbers
+        impact = "高" if str(analysis.get("cluster_level") or "").lower() in ("high", "高") else "中"
+        reason = "依十碼區間群聚程度評估。"
+    elif key == "diagonal":
+        score = analysis.get("diagonal_score")
+        candidates = _flatten_number_groups(analysis.get("diagonal_pattern"))[:8]
+        reason = "分數來自 diagonal_pattern 命中組數加權，代表斜線型態符合度。"
+    elif key == "super":
+        super_data = ((analysis.get("ai_score") or {}).get("super_number_trajectory_recovery") or {})
+        score = super_data.get("confidence")
+        candidates = _as_int_list(super_data.get("candidate_numbers"))[:10]
+        reason = "依超級獎軌跡規則產生候選；此指標仍需持續校正。"
+    elif key == "laowanjia":
+        score = analysis.get("laowanjia_score")
+        candidates = numbers[:8]
+        try:
+            impact = "高" if float(score or 0) >= 70 else "中"
+        except Exception:
+            impact = "中"
+        reason = "目前盤勢與歷史老玩家規則的符合程度。"
+    else:
+        status = "insufficient"
+        impact = "資料不足"
+        reason = "尚未建立此項分析結果"
+
+    if status == "ready" and not candidates and score is None:
+        status = "insufficient"
+        impact = "資料不足"
+        reason = "資料不足"
+
+    return {
+        "key": key,
+        "name": label,
+        "status": status,
+        "score": score,
+        "confidence": score,
+        "reason": reason,
+        "impact": impact,
+        "candidate_numbers": candidates,
+    }
+
+
+def _rule_library(analysis: dict | None, prediction: dict) -> dict:
+    source = analysis or {}
+    rules = [_rule_item(key, label, source, prediction) for key, label in RULE_LIBRARY_NAMES]
+    completed = sum(1 for item in rules if item.get("status") == "ready")
+
+    def score_value(item: dict) -> float:
+        try:
+            return float(item.get("score") or 0)
+        except Exception:
+            return 0.0
+
+    primary = [
+        item["name"]
+        for item in sorted(
+            rules,
+            key=lambda item: (item.get("status") == "ready", score_value(item)),
+            reverse=True,
+        )
+        if item.get("status") == "ready"
+    ][:5]
+    return {
+        "title": "AI 推薦依據",
+        "completed_count": completed,
+        "total_count": len(RULE_LIBRARY_NAMES),
+        "summary": f"本期主要依據：{'、'.join(primary[:3])}" if primary else "尚未建立完整分析摘要",
+        "primary_rules": primary,
+        "rules": rules,
+        "laowanjia_index": source.get("laowanjia_score"),
+        "hot_zones": source.get("hot_zone") or [],
+        "star_prediction": {
+            "three_star": source.get("three_star"),
+            "four_star": source.get("four_star"),
+            "five_star": source.get("five_star"),
+            "six_star": source.get("six_star"),
+        },
+        "super_trajectory": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
+        "cluster_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
+    }
+
+
 def _data_counts(
     history_records: list[dict],
+    stats: dict | None = None,
+    aggregates: dict | None = None,
 ) -> dict:
-    verified_records = [item for item in history_records or [] if item.get("winning_numbers")]
+    aggregates = aggregates or {}
+    verified_records = [
+        item for item in history_records or []
+        if item.get("winning_numbers") or item.get("prediction_status") == "verified" or item.get("verified_at")
+    ]
     record_count = len(history_records or [])
     return {
         "draw_count": record_count,
         "analysis_count": record_count,
-        "prediction_count": record_count,
-        "verified_prediction_count": len(verified_records),
-        "learning_sample_count": sum(1 for item in verified_records if item.get("learning_used")),
+        "prediction_count": aggregates.get("total_prediction_count", record_count),
+        "valid_prediction_count": aggregates.get("valid_prediction_count", record_count),
+        "valid_target_count": aggregates.get("valid_target_count"),
+        "null_target_count": aggregates.get("null_target_count"),
+        "has_official_result_count": aggregates.get("has_official_result_count"),
+        "verified_prediction_count": aggregates.get("completed_verified_count", (stats or {}).get("verified_prediction_count", len(verified_records))),
+        "statistics_sample_count": aggregates.get("valid_sample_count", (stats or {}).get("sample_size", len(verified_records))),
+        "learning_sample_count": aggregates.get("learned_distinct_target_count", sum(1 for item in history_records if item.get("learning_used"))),
         "today_draw_count": 0,
+        "statistics_scope": "all_history_aggregates",
     }
 
 
 def _history_stats(history_records: list[dict]) -> dict:
-    verified = [item for item in history_records or [] if item.get("winning_numbers")]
+    verified = [
+        item for item in history_records or []
+        if item.get("winning_numbers") or item.get("prediction_status") == "verified" or item.get("verified_at")
+    ]
     total = len(verified)
     if not total:
         return {
@@ -420,20 +626,30 @@ def build_player_dashboard_summary() -> dict:
     futures = {
         "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
         "latest_prediction": _PLAYER_EXECUTOR.submit(get_latest_prediction_history),
-        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(10)),
+        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(100)),
+        "prediction_statistics": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_statistics(100)),
+        "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
+        "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
     latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
     history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
-    prediction_stats = _history_stats(history_records)
+    full_stats = _future_result("prediction_statistics", futures["prediction_statistics"], warnings, {}) or {}
+    aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
+    analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
+    prediction_stats = full_stats if full_stats.get("status") else _history_stats(history_records)
 
     current = _current_draw(official)
     next_prediction = _prediction_from_history(latest_prediction, current) or {}
     next_prediction["history"] = prediction_stats
+    next_prediction["rule_library"] = _rule_library(analysis, next_prediction)
     verified_record = _latest_verified_prediction(history_records)
     verification_draw = None
-    if verified_record and current and str(verified_record.get("prediction_issue")) == str(current.get("issue")):
-        verification_draw = current
+    if verified_record:
+        if current and str(verified_record.get("prediction_issue")) == str(current.get("issue")):
+            verification_draw = current
+        else:
+            verification_draw = get_official_draw_by_issue(verified_record.get("prediction_issue"))
     previous_verification = _verification(verified_record, verification_draw)
 
     database_issue = (current or {}).get("issue")
@@ -456,8 +672,10 @@ def build_player_dashboard_summary() -> dict:
         },
         "next_prediction": next_prediction,
         "previous_verification": previous_verification,
-        "data_counts": _data_counts(history_records),
+        "data_counts": _data_counts(history_records, full_stats, aggregates),
         "history": prediction_stats,
+        "aggregates": aggregates,
+        "rule_library": next_prediction.get("rule_library"),
         "warnings": warnings,
     }
     _store_summary_cache(payload)

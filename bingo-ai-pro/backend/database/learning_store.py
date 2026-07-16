@@ -105,6 +105,13 @@ def init_learning_tables() -> dict:
                             f"alter table learning_history add column if not exists {column} {column_type}",
                             prepare=False,
                         )
+                    cur.execute(
+                        """
+                        create index if not exists idx_learning_history_target_live_status
+                        on learning_history (target_issue, prediction_type, learned_status)
+                        """,
+                        prepare=False,
+                    )
                 conn.commit()
             results["cloud"] = "available"
         except Exception:
@@ -160,6 +167,12 @@ def init_learning_tables() -> dict:
             }.items():
                 if column not in existing:
                     conn.execute(f"alter table learning_history add column {column} {column_type}")
+            conn.execute(
+                """
+                create index if not exists idx_learning_history_target_live_status
+                on learning_history (target_issue, prediction_type, learned_status)
+                """
+            )
         results["sqlite"] = "available"
     except Exception:
         logger.exception("failed to initialize sqlite learning_history table")
@@ -494,6 +507,31 @@ def get_learned_live_target_issues(limit: int = 1000) -> set[str]:
         """,
     )
     return {str(row[0]) for row in rows if row and row[0]}
+
+
+def get_learned_live_target_count() -> int:
+    rows = _query_with_fallback(
+        """
+        select count(distinct coalesce(target_issue, issue))
+        from learning_history
+        where prediction_type = 'live_prediction'
+          and learned_status = 'learned'
+          and coalesce(target_issue, issue) is not null
+          and coalesce(target_issue, issue) not like 'pending:%%'
+        """,
+        sqlite_sql="""
+        select count(distinct coalesce(target_issue, issue))
+        from learning_history
+        where prediction_type = 'live_prediction'
+          and learned_status = 'learned'
+          and coalesce(target_issue, issue) is not null
+          and coalesce(target_issue, issue) not like 'pending:%'
+        """,
+    )
+    try:
+        return int(rows[0][0] or 0) if rows else 0
+    except Exception:
+        return 0
 
 
 def get_learning_model_performance(

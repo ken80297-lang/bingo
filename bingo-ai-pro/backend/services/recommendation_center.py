@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import random
 from collections import Counter
 
@@ -48,12 +49,186 @@ FEATURE_LABELS = {
     "twin": "twin numbers",
 }
 
+RECOMMENDATION_NUMBER_COUNT = 20
+
 
 def _safe_float(value, default: float = 0) -> float:
     try:
         return float(value)
     except Exception:
         return default
+
+
+def _recommendation_numbers(values) -> list[int]:
+    result: list[int] = []
+    for value in values or []:
+        try:
+            number = int(value)
+        except Exception:
+            continue
+        if 1 <= number <= 80 and number not in result:
+            result.append(number)
+    return result
+
+
+def _trace_step(
+    trace: list[dict],
+    *,
+    model_name: str,
+    stage: str,
+    input_count: int,
+    output_count: int,
+    reason: str,
+) -> None:
+    trace.append(
+        {
+            "model_name": model_name,
+            "stage": stage,
+            "input_count": max(0, int(input_count or 0)),
+            "output_count": max(0, int(output_count or 0)),
+            "removed_count": max(0, int(input_count or 0) - int(output_count or 0)),
+            "reason": reason,
+        }
+    )
+
+
+def _candidate_sources(voting: dict, candidates: list[dict]) -> list[tuple[str, list[int]]]:
+    sources: list[tuple[str, list[int]]] = [
+        ("Voting Engine", voting.get("final_candidates") or []),
+    ]
+    for model_name, payload in (voting.get("model_scores") or {}).items():
+        if isinstance(payload, dict):
+            sources.append((f"Model:{model_name}", payload.get("candidate_numbers") or []))
+    for index, item in enumerate(candidates or [], start=1):
+        sources.append((f"Simulation Group {index}", item.get("numbers") or []))
+    return sources
+
+
+def _build_20_number_output(
+    seed_numbers,
+    sources: list[tuple[str, list[int]]],
+    trace: list[dict] | None = None,
+) -> list[int]:
+    trace = trace if trace is not None else []
+    merged: list[int] = []
+    raw_input_count = 0
+
+    def extend_unique(values) -> None:
+        for number in _recommendation_numbers(values):
+            if number not in merged:
+                merged.append(number)
+
+    seed = _recommendation_numbers(seed_numbers)
+    raw_input_count += len(seed_numbers or [])
+    extend_unique(seed)
+    _trace_step(
+        trace,
+        model_name="Recommendation Center",
+        stage="Seed Normalize",
+        input_count=len(seed_numbers or []),
+        output_count=len(seed),
+        reason="integer_1_80_unique",
+    )
+
+    for source_name, values in sources:
+        normalized = _recommendation_numbers(values)
+        before = len(merged)
+        extend_unique(normalized)
+        raw_input_count += len(values or [])
+        _trace_step(
+            trace,
+            model_name=source_name,
+            stage="Source Normalize",
+            input_count=len(values or []),
+            output_count=len(normalized),
+            reason="integer_1_80_unique",
+        )
+        _trace_step(
+            trace,
+            model_name=source_name,
+            stage="Merge",
+            input_count=before + len(normalized),
+            output_count=len(merged),
+            reason="preserve_rank_unique_merge",
+        )
+
+    final_numbers = sorted(merged[:RECOMMENDATION_NUMBER_COUNT])
+    _trace_step(
+        trace,
+        model_name="Recommendation Center",
+        stage="Final Recommendation",
+        input_count=len(merged),
+        output_count=len(final_numbers),
+        reason=(
+            "top_20_unique_sorted"
+            if len(final_numbers) == RECOMMENDATION_NUMBER_COUNT
+            else "insufficient_unique_candidates"
+        ),
+    )
+    _trace_step(
+        trace,
+        model_name="Recommendation Center",
+        stage="Raw Input Summary",
+        input_count=raw_input_count,
+        output_count=len(final_numbers),
+        reason="audit_total_raw_candidates_to_final",
+    )
+    return final_numbers
+
+
+def _recommendation_output_status(numbers: list[int], trace: list[dict], voting: dict) -> dict:
+    raw_summary = next(
+        (step for step in reversed(trace) if step.get("stage") == "Raw Input Summary"),
+        None,
+    )
+    unique_input = (
+        int(raw_summary.get("input_count") or 0)
+        if raw_summary
+        else max((step.get("output_count") or 0 for step in trace), default=0)
+    )
+    model_count = len(voting.get("models") or [])
+    removed_count = (
+        int(raw_summary.get("removed_count") or 0)
+        if raw_summary
+        else max(0, unique_input - len(numbers))
+    )
+    is_valid = len(numbers) == RECOMMENDATION_NUMBER_COUNT
+    return {
+        "required_count": RECOMMENDATION_NUMBER_COUNT,
+        "input_count": unique_input,
+        "output_count": len(numbers),
+        "model_count": model_count,
+        "removed_count": removed_count,
+        "is_valid": is_valid,
+        "reason": "generated_20_numbers" if is_valid else "recommendation_insufficient",
+    }
+
+
+def _record_recommendation_event(event_type: str, status: str, issue: str | None, output: dict) -> None:
+    try:
+        from services.operations_center import record_operation_event
+
+        record_operation_event(
+            component="recommendation",
+            event_type=event_type,
+            status=status,
+            issue=issue,
+            message=json.dumps(
+                {
+                    "event_type": event_type,
+                    "issue": issue,
+                    "input_count": output.get("input_count"),
+                    "output_count": output.get("output_count"),
+                    "model_count": output.get("model_count"),
+                    "removed_count": output.get("removed_count"),
+                    "reason": output.get("reason"),
+                },
+                ensure_ascii=False,
+            ),
+            error_type=None if status == "ok" else output.get("reason"),
+        )
+    except Exception:
+        logger.exception("recommendation event recording failed")
 
 
 def _normalize_score(value: float, maximum: float) -> float:
@@ -406,11 +581,16 @@ def _explanation(
     )
 
 
-def generate_recommendation_center(issue_override: str | None = None, target_issue_override: str | None = None) -> dict:
+def calculate_recommendation(
+    issue: str | None,
+    target_issue: str | None,
+    context: dict | None = None,
+) -> dict:
     try:
-        issue = str(issue_override) if issue_override is not None else _latest_issue()
+        context = context or {}
+        issue = str(issue) if issue is not None else _latest_issue()
         simulation = get_simulation_run_by_issue(issue) if issue else None
-        if issue and not simulation:
+        if issue and not simulation and context.get("ensure_simulation", True):
             created = ensure_simulation_for_issue(issue, window=100, groups=5, numbers_per_group=10)
             if created.get("status") == "ok":
                 simulation = get_simulation_run_by_issue(issue)
@@ -429,11 +609,13 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
         quality = get_data_quality_status()
         quality_status = quality.get("status", "unknown")
         issue = simulation.get("source_issue") or issue
-        target_issue = target_issue_override or _target_issue(issue)
+        target_issue = target_issue
 
         candidates = simulation.get("results", [])[:5]
         voting = build_voting_result(100)
         voting_candidates = voting.get("final_candidates") or []
+        recommendation_trace = list(voting.get("trace") or [])
+        number_sources = _candidate_sources(voting, candidates)
         max_total_score = max(_safe_float(item.get("total_score")) for item in candidates) or 1
         best_strategy = best.get("strategy", "Adaptive")
         rank_score = _safe_float(best.get("rank_score"))
@@ -462,6 +644,12 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
             max_total_score = max(_safe_float(item.get("total_score")) for item in candidates) or 1
 
         for index, item in enumerate(candidates, start=1):
+            item_trace = recommendation_trace if index == 1 else []
+            item_numbers = _build_20_number_output(
+                item.get("numbers", []),
+                number_sources,
+                item_trace,
+            )
             total_score = _safe_float(item.get("total_score"))
             confidence = _confidence(
                 total_score,
@@ -482,7 +670,7 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
             results.append(
                 {
                     "rank": index,
-                    "numbers": item.get("numbers", []),
+                    "numbers": item_numbers,
                     "confidence": confidence,
                     "total_score": total_score,
                     "strategy": best_strategy,
@@ -492,6 +680,8 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
                 }
             )
 
+        first_numbers = results[0].get("numbers") if results else []
+        recommendation_output = _recommendation_output_status(first_numbers, recommendation_trace, voting)
         run_confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0
         run_explanation = _explanation(
             best_strategy,
@@ -512,16 +702,65 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
             "model_scores": voting.get("model_scores", {}),
             "winning_model": voting.get("winning_model"),
             "model_voting": voting,
+            "recommendation_trace": recommendation_trace,
+            "recommendation_output": recommendation_output,
             "explanation": run_explanation,
+            "context": context,
         }
-        saved = save_recommendation_run(run, results)
-        try:
-            from services.next_prediction_center import save_recommendation_prediction_history
+        return {
+            "status": "ok",
+            "recommendation": {
+                **run,
+                "results": results,
+            },
+            "persisted": False,
+        }
+    except Exception as exc:
+        logger.exception("recommendation calculation failed")
+        return {"status": "error", "message": str(exc), "recommendation": None, "persisted": False}
 
-            run["prediction_history"] = save_recommendation_prediction_history({**run, "results": results})
-        except Exception as exc:
-            logger.exception("prediction history save failed")
-            run["prediction_history"] = {"status": "error", "message": str(exc)}
+
+def generate_recommendation_center(
+    issue_override: str | None = None,
+    target_issue_override: str | None = None,
+    *,
+    persist: bool = False,
+    calculate_only: bool = False,
+    context: dict | None = None,
+) -> dict:
+    try:
+        issue = str(issue_override) if issue_override is not None else _latest_issue()
+        target_issue = target_issue_override or _target_issue(issue)
+        calculated = calculate_recommendation(
+            issue,
+            target_issue,
+            context={**(context or {}), "ensure_simulation": True},
+        )
+        if calculated.get("status") != "ok":
+            return calculated
+        recommendation = calculated.get("recommendation") or {}
+        results = recommendation.get("results") or []
+        if calculate_only or not persist:
+            return {
+                **calculated,
+                "persisted": False,
+                "saved": {"status": "skipped", "reason": "preview_only"},
+                "prediction_history": {"status": "skipped", "reason": "single_entry_prediction_service_required"},
+            }
+        output = recommendation.get("recommendation_output") or {}
+        if not output.get("is_valid"):
+            _record_recommendation_event("recommendation_insufficient", "warning", issue, output)
+            return {
+                **calculated,
+                "status": "skipped",
+                "persisted": False,
+                "saved": {"status": "skipped", "reason": "recommendation_insufficient"},
+                "prediction_history": {"status": "skipped", "reason": "single_entry_prediction_service_required"},
+            }
+        _record_recommendation_event("recommendation_generated", "ok", issue, output)
+        run = {key: value for key, value in recommendation.items() if key != "results"}
+        saved = save_recommendation_run(run, results)
+        run["prediction_history"] = {"status": "skipped", "reason": "single_entry_prediction_service_required"}
 
         try:
             from services.learning_engine import save_live_prediction_snapshot
@@ -550,7 +789,8 @@ def generate_recommendation_center(issue_override: str | None = None, target_iss
                 "results": results,
             },
             "saved": saved,
+            "persisted": saved.get("status") == "ok",
         }
     except Exception as exc:
         logger.exception("recommendation center generation failed")
-        return {"status": "error", "message": str(exc), "recommendation": None}
+        return {"status": "error", "message": str(exc), "recommendation": None, "persisted": False}

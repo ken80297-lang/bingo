@@ -38,6 +38,7 @@ from api.learning import router as learning_router
 from api.models import router as models_router
 from api.next_prediction import router as next_prediction_router
 from api.operations_center import router as operations_center_router
+from api.pipeline import router as pipeline_router
 from api.official_verification import router as official_verification_router
 from api.player_dashboard import router as player_dashboard_router
 from api.predictions import router as predictions_router
@@ -108,6 +109,7 @@ app.include_router(learning_router)
 app.include_router(models_router)
 app.include_router(next_prediction_router)
 app.include_router(operations_center_router)
+app.include_router(pipeline_router)
 app.include_router(official_verification_router)
 app.include_router(player_dashboard_router)
 app.include_router(predictions_router)

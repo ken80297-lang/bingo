@@ -54,17 +54,128 @@ def _json_loads(value: Any) -> Any:
         return None
     if isinstance(value, (dict, list)):
         return value
-
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
 
 def _prediction_status(value: Any, has_winning_numbers: bool = False) -> str:
     if has_winning_numbers:
         return "verified"
     text = str(value or "waiting_draw")
     return text if text in ALLOWED_PREDICTION_STATUSES else "waiting_draw"
+
+
+def _normalize_numbers(values: Any, limit: int | None = None) -> list[int]:
+    numbers: list[int] = []
+    if isinstance(values, str):
+        parsed = _json_loads(values)
+        values = parsed if isinstance(parsed, list) else [values]
+    for value in values or []:
+        try:
+            number = int(value)
+        except Exception:
+            continue
+        if 1 <= number <= 80 and number not in numbers:
+            numbers.append(number)
+    numbers.sort()
+    return numbers[:limit] if limit else numbers
+
+
+def _valid_issue(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or not text.isdigit():
+        return None
+    if text.startswith("99") or text.upper().startswith("TEST"):
+        return None
+    return text
+
+
+def _validate_prediction_item(item: dict) -> tuple[bool, str | None]:
+    based_on = _valid_issue(item.get("issue"))
+    target = _valid_issue(item.get("prediction_issue"))
+    if not based_on:
+        return False, "based_on_missing"
+    if not target:
+        return False, "target_unconfirmed"
     try:
-        return json.loads(value)
+        if int(target) != int(based_on) + 1:
+            return False, "target_unconfirmed"
     except Exception:
-        return value
+        return False, "target_unconfirmed"
+    recommended = _normalize_numbers(item.get("recommend_numbers", []))
+    if not recommended:
+        return False, "insufficient_draw_data"
+    return True, None
+
+
+def _record_prediction_event(
+    *,
+    item: dict,
+    event_type: str,
+    prediction_created: bool,
+    prediction_skipped: bool,
+    skip_reason: str | None,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+    duration_ms: float | None = None,
+) -> None:
+    try:
+        from services.operations_center import record_operation_event
+
+        based_on = item.get("issue")
+        target = item.get("prediction_issue")
+        payload = {
+            "event_type": event_type,
+            "based_on_issue": based_on,
+            "proposed_target_issue": target,
+            "confirmed_target_issue": target if not skip_reason else None,
+            "prediction_created": prediction_created,
+            "prediction_skipped": prediction_skipped,
+            "skip_reason": skip_reason,
+            "model_version": item.get("model_version") or item.get("strategy"),
+            "recommended_count": len(_normalize_numbers(item.get("recommend_numbers", []))),
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "duration_ms": duration_ms,
+        }
+        record_operation_event(
+            component="prediction",
+            event_type=event_type,
+            status="warning" if prediction_skipped else "ok",
+            issue=str(based_on) if based_on else None,
+            message=_json_dumps(payload),
+            duration_ms=duration_ms,
+            error_type=skip_reason if prediction_skipped else None,
+        )
+    except Exception:
+        logger.exception("prediction lifecycle event recording failed")
+
+
+def _record_prediction_write_rejected(item: dict, reason: str) -> None:
+    try:
+        from services.operations_center import record_operation_event
+
+        payload = {
+            "event_type": "prediction_write_rejected",
+            "based_on_issue": item.get("issue"),
+            "target_issue": item.get("prediction_issue"),
+            "source": item.get("source"),
+            "trigger": item.get("trigger"),
+            "status": "skipped",
+            "reason": reason,
+            "recommended_count": len(_normalize_numbers(item.get("recommend_numbers", []))),
+        }
+        record_operation_event(
+            component="prediction",
+            event_type="prediction_write_rejected",
+            status="warning",
+            issue=str(item.get("issue") or "") or None,
+            message=_json_dumps(payload),
+            error_type=reason,
+        )
+    except Exception:
+        logger.exception("prediction write rejection event failed")
 
 
 def _cloud_enabled() -> bool:
@@ -132,6 +243,14 @@ def init_prediction_history_tables() -> dict:
                             f"alter table prediction_history add column if not exists {column} {cloud_type}",
                             prepare=False,
                         )
+                    for index_sql in (
+                        "create index if not exists idx_prediction_history_created_at on prediction_history (created_at)",
+                        "create index if not exists idx_prediction_history_updated_at on prediction_history (updated_at)",
+                        "create index if not exists idx_prediction_history_status on prediction_history (prediction_status)",
+                        "create index if not exists idx_prediction_history_issue on prediction_history (prediction_issue)",
+                        "create unique index if not exists idx_prediction_history_unique_target on prediction_history (prediction_issue) where prediction_issue is not null",
+                    ):
+                        cur.execute(index_sql, prepare=False)
                 conn.commit()
             results["cloud"] = "available"
         except Exception:
@@ -181,6 +300,14 @@ def init_prediction_history_tables() -> dict:
             for column, (_, sqlite_type) in LIFECYCLE_COLUMNS.items():
                 if column not in existing:
                     conn.execute(f"alter table prediction_history add column {column} {sqlite_type}")
+            for index_sql in (
+                "create index if not exists idx_prediction_history_created_at on prediction_history (created_at)",
+                "create index if not exists idx_prediction_history_updated_at on prediction_history (updated_at)",
+                "create index if not exists idx_prediction_history_status on prediction_history (prediction_status)",
+                "create index if not exists idx_prediction_history_issue on prediction_history (prediction_issue)",
+                "create unique index if not exists idx_prediction_history_unique_target on prediction_history (prediction_issue) where prediction_issue is not null",
+            ):
+                conn.execute(index_sql)
         results["sqlite"] = "available"
     except Exception:
         logger.exception("failed to initialize sqlite prediction_history table")
@@ -198,7 +325,7 @@ def _ensure_initialized() -> None:
 
 
 def _prediction_params(item: dict) -> tuple:
-    recommended = item.get("recommend_numbers", [])
+    recommended = _normalize_numbers(item.get("recommend_numbers", []))
     return (
         item.get("issue"),
         item.get("prediction_issue"),
@@ -207,11 +334,11 @@ def _prediction_params(item: dict) -> tuple:
         item.get("confidence"),
         _json_dumps(recommended),
         item.get("super_number"),
-        _json_dumps(item.get("three_star", [])),
-        _json_dumps(item.get("four_star", [])),
+        _json_dumps(_normalize_numbers(item.get("three_star", []))),
+        _json_dumps(_normalize_numbers(item.get("four_star", []))),
         _json_dumps(item.get("twins", [])),
         _json_dumps(item.get("consecutive", [])),
-        _json_dumps(item.get("patch_numbers", [])),
+        _json_dumps(_normalize_numbers(item.get("patch_numbers", []))),
         _json_dumps(item.get("tails", [])),
         item.get("big_small"),
         item.get("odd_even"),
@@ -224,8 +351,29 @@ def _prediction_params(item: dict) -> tuple:
     )
 
 
-def save_prediction_history(item: dict) -> dict:
+def save_prediction_history(item: dict, *, caller_context: str | None = None) -> dict:
     _ensure_initialized()
+    if caller_context != "prediction_service":
+        _record_prediction_write_rejected(item, "unauthorized_writer")
+        return {
+            "status": "rejected",
+            "message": "prediction history writes must go through PredictionService",
+            "skip_reason": "unauthorized_writer",
+        }
+    is_valid, skip_reason = _validate_prediction_item(item)
+    if not is_valid:
+        _record_prediction_event(
+            item=item,
+            event_type="prediction_skipped",
+            prediction_created=False,
+            prediction_skipped=True,
+            skip_reason=skip_reason,
+        )
+        return {
+            "status": "skipped",
+            "message": "prediction target is not confirmed",
+            "skip_reason": skip_reason,
+        }
     cloud_error = None
     if _cloud_enabled():
         try:
@@ -276,6 +424,13 @@ def save_prediction_history(item: dict) -> dict:
                     row_id = int(cur.fetchone()[0])
                 conn.commit()
             _invalidate_prediction_stats_cache()
+            _record_prediction_event(
+                item=item,
+                event_type="prediction_created",
+                prediction_created=True,
+                prediction_skipped=False,
+                skip_reason=None,
+            )
             return {"status": "ok", "storage": "cloud", "id": row_id}
         except Exception as exc:
             logger.exception("cloud prediction_history save failed")
@@ -323,6 +478,13 @@ def save_prediction_history(item: dict) -> dict:
             )
             row_id = int(cursor.lastrowid or 0)
         _invalidate_prediction_stats_cache()
+        _record_prediction_event(
+            item=item,
+            event_type="prediction_created",
+            prediction_created=True,
+            prediction_skipped=False,
+            skip_reason=None,
+        )
         return {"status": "ok", "storage": "sqlite", "id": row_id, "cloud_error": cloud_error}
     except Exception as exc:
         logger.exception("sqlite prediction_history save failed")
@@ -355,10 +517,10 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
 
 
 def _row_to_prediction(row: Any) -> dict:
-    recommend_numbers = _json_loads(row[6]) or []
-    winning_numbers = _json_loads(row[17]) or []
-    matched_numbers = _json_loads(row[30]) if len(row) > 30 else []
-    missed_numbers = _json_loads(row[31]) if len(row) > 31 else []
+    recommend_numbers = _normalize_numbers(_json_loads(row[6]) or [])
+    winning_numbers = _normalize_numbers(_json_loads(row[17]) or [])
+    matched_numbers = _normalize_numbers(_json_loads(row[30]) if len(row) > 30 else [])
+    missed_numbers = _normalize_numbers(_json_loads(row[31]) if len(row) > 31 else [])
     if winning_numbers and not matched_numbers:
         winning_set = set(_as_int_list(winning_numbers))
         matched_numbers = [number for number in _as_int_list(recommend_numbers) if number in winning_set]
@@ -376,11 +538,11 @@ def _row_to_prediction(row: Any) -> dict:
         "confidence": row[5],
         "recommend_numbers": recommend_numbers,
         "super_number": row[7],
-        "three_star": _json_loads(row[8]) or [],
-        "four_star": _json_loads(row[9]) or [],
+        "three_star": _normalize_numbers(_json_loads(row[8]) or []),
+        "four_star": _normalize_numbers(_json_loads(row[9]) or []),
         "twins": _json_loads(row[10]) or [],
         "consecutive": _json_loads(row[11]) or [],
-        "patch_numbers": _json_loads(row[12]) or [],
+        "patch_numbers": _normalize_numbers(_json_loads(row[12]) or []),
         "tails": _json_loads(row[13]) or [],
         "big_small": row[14],
         "odd_even": row[15],
@@ -469,7 +631,144 @@ def get_prediction_history_count() -> int:
     rows = _query_with_fallback("select count(*) from prediction_history")
     if not rows:
         return 0
+    try:
+        return int(rows[0][0] or 0)
+    except Exception:
+        return 0
 
+
+def get_prediction_lifecycle_aggregates() -> dict:
+    learned_count = 0
+    try:
+        from database.learning_store import get_learned_live_target_count
+
+        learned_count = get_learned_live_target_count()
+    except Exception:
+        logger.exception("learned live target count failed")
+
+    rows = _query_with_fallback(
+        """
+        select
+            count(*) as total_prediction_count,
+            sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
+            sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
+            sum(case when prediction_issue is not null
+                      and jsonb_typeof(recommend_numbers) = 'array'
+                      and jsonb_array_length(recommend_numbers) > 0
+                     then 1 else 0 end) as valid_prediction_count,
+            sum(case when prediction_status = 'verified'
+                      and verified_at is not null
+                      and jsonb_typeof(winning_numbers) = 'array'
+                      and jsonb_array_length(winning_numbers) = 20
+                      and jsonb_typeof(matched_numbers) = 'array'
+                      and jsonb_typeof(missed_numbers) = 'array'
+                     then 1 else 0 end) as completed_verified_count,
+            sum(case when jsonb_typeof(winning_numbers) = 'array'
+                      and jsonb_array_length(winning_numbers) = 20
+                     then 1 else 0 end) as stored_official_result_count,
+            sum(case when prediction_issue is not null
+                      and prediction_status = 'verified'
+                      and verified_at is not null
+                      and jsonb_typeof(winning_numbers) = 'array'
+                      and jsonb_array_length(winning_numbers) = 20
+                      and jsonb_typeof(recommend_numbers) = 'array'
+                      and jsonb_array_length(recommend_numbers) > 0
+                     then 1 else 0 end) as valid_sample_count
+        from prediction_history
+        """,
+        sqlite_sql="""
+        select
+            count(*) as total_prediction_count,
+            sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
+            sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
+            sum(case when prediction_issue is not null
+                      and recommend_numbers is not null
+                      and recommend_numbers not in ('', '[]')
+                     then 1 else 0 end) as valid_prediction_count,
+            sum(case when prediction_status = 'verified'
+                      and verified_at is not null
+                      and winning_numbers is not null
+                      and winning_numbers not in ('', '[]')
+                      and matched_numbers is not null
+                      and missed_numbers is not null
+                     then 1 else 0 end) as completed_verified_count,
+            sum(case when winning_numbers is not null
+                      and winning_numbers not in ('', '[]')
+                     then 1 else 0 end) as stored_official_result_count,
+            sum(case when prediction_issue is not null
+                      and prediction_status = 'verified'
+                      and verified_at is not null
+                      and winning_numbers is not null
+                      and winning_numbers not in ('', '[]')
+                      and recommend_numbers is not null
+                      and recommend_numbers not in ('', '[]')
+                     then 1 else 0 end) as valid_sample_count
+        from prediction_history
+        """,
+    )
+    row = rows[0] if rows else [0] * 7
+    official_rows = _query_with_fallback(
+        """
+        select count(distinct p.prediction_issue)
+        from prediction_history p
+        join official_draw_history o on o.issue = p.prediction_issue
+        where p.prediction_issue is not null
+          and jsonb_typeof(o.numbers) = 'array'
+          and jsonb_array_length(o.numbers) = 20
+        """,
+        sqlite_sql="""
+        select count(distinct p.prediction_issue)
+        from prediction_history p
+        join official_draw_history o on o.issue = p.prediction_issue
+        where p.prediction_issue is not null
+          and o.numbers is not null
+          and o.numbers not in ('', '[]')
+        """,
+    )
+    return {
+        "total_prediction_count": int(row[0] or 0),
+        "valid_target_count": int(row[1] or 0),
+        "null_target_count": int(row[2] or 0),
+        "valid_prediction_count": int(row[3] or 0),
+        "completed_verified_count": int(row[4] or 0),
+        "stored_official_result_count": int(row[5] or 0),
+        "has_official_result_count": int(official_rows[0][0] or 0) if official_rows else 0,
+        "valid_sample_count": int(row[6] or 0),
+        "learned_distinct_target_count": learned_count,
+    }
+
+
+def get_prediction_daily_aggregation() -> list[dict]:
+    rows = _query_with_fallback(
+        """
+        select date(created_at), count(*)
+        from prediction_history
+        group by date(created_at)
+        order by date(created_at)
+        """,
+    )
+    return [{"date": str(row[0]), "prediction_count": int(row[1] or 0)} for row in rows]
+
+
+def get_prediction_hourly_aggregation() -> list[dict]:
+    rows = _query_with_fallback(
+        """
+        select extract(hour from created_at)::int as hour, count(*)
+        from prediction_history
+        where created_at is not null
+        group by hour
+        order by hour
+        """,
+        sqlite_sql="""
+        select cast(strftime('%H', created_at) as integer) as hour, count(*)
+        from prediction_history
+        where created_at is not null
+        group by hour
+        order by hour
+        """,
+    )
+    values = {int(row[0]): int(row[1] or 0) for row in rows if row[0] is not None}
+    return [{"hour": hour, "prediction_count": values.get(hour, 0)} for hour in range(24)]
 
 def mark_prediction_learning_used(issue: str, used: bool = True) -> dict:
     _ensure_initialized()
@@ -687,6 +986,25 @@ def update_prediction_history_result(actual: dict) -> dict:
             logger.exception("sqlite prediction_history result update failed")
     if updated:
         _invalidate_prediction_stats_cache()
+        try:
+            from services.operations_center import record_operation_event
+
+            record_operation_event(
+                component="prediction",
+                event_type="prediction_verified",
+                status="ok",
+                issue=issue,
+                message=_json_dumps(
+                    {
+                        "event_type": "prediction_verified",
+                        "target_issue": issue,
+                        "updated": updated,
+                        "verified_count": len(verified_items),
+                    }
+                ),
+            )
+        except Exception:
+            logger.exception("prediction verified event recording failed")
     return {
         "status": "ok",
         "updated": updated,
@@ -769,15 +1087,7 @@ def _verification_summary(
 
 
 def _as_int_list(values: Any) -> list[int]:
-    numbers = []
-    for value in values or []:
-        try:
-            number = int(value)
-        except Exception:
-            continue
-        if 1 <= number <= 80:
-            numbers.append(number)
-    return numbers
+    return _normalize_numbers(values)
 
 
 def get_prediction_history_statistics(limit: int = 100) -> dict:

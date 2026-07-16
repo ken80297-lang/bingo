@@ -4,10 +4,14 @@ import logging
 from typing import Any
 
 from database.prediction_history_store import (
+    get_prediction_lifecycle_aggregates,
+    get_prediction_daily_aggregation,
     get_prediction_history_records,
     get_prediction_history_statistics,
+    get_prediction_hourly_aggregation,
     update_prediction_history_result,
 )
+from services.prediction_lifecycle_repair import dry_run_all
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +48,22 @@ def prediction_lifecycle_history(limit: int = 50) -> dict:
 
 def prediction_lifecycle_statistics(limit: int = 100) -> dict:
     stats = get_prediction_history_statistics(limit)
+    aggregates = get_prediction_lifecycle_aggregates()
+    time_distribution = {
+        "daily": get_prediction_daily_aggregation(),
+        "hourly": get_prediction_hourly_aggregation(),
+    }
     return {
         "status": "ok",
         **stats,
+        "scope": f"recent_{limit}_records",
+        "aggregates": aggregates,
+        "time_distribution": time_distribution,
     }
+
+
+def prediction_lifecycle_repair_dry_run() -> dict:
+    return {"status": "ok", "repair": dry_run_all()}
 
 
 def _history_item(item: dict[str, Any]) -> dict:
