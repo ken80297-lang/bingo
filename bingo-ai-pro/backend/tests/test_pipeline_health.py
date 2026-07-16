@@ -79,6 +79,13 @@ def test_build_pipeline_health_is_json_safe(monkeypatch):
     })
     monkeypatch.setattr(pipeline_health, "prediction_pipeline_validation", lambda: {"status": "ok"})
     monkeypatch.setattr(pipeline_health, "operation_event_health", lambda: {"status": "ok"})
+    monkeypatch.setattr(pipeline_health, "prediction_trigger_event_counts", lambda: {
+        "prediction_trigger_count_today": 1,
+        "prediction_service_call_count_today": 1,
+        "prediction_create_started_count_today": 1,
+        "prediction_created_count_today": 1,
+        "prediction_skipped_count_today": 0,
+    })
     monkeypatch.setattr(pipeline_health, "official_draw_time_investigation", lambda: {"missing_draw_time_count": 0})
     monkeypatch.setattr(pipeline_health, "verification_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
     monkeypatch.setattr(pipeline_health, "learning_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
@@ -87,6 +94,7 @@ def test_build_pipeline_health_is_json_safe(monkeypatch):
 
     assert payload["pipeline_status"] == "healthy"
     assert payload["dashboard_statistics"]["learning_sample_count"] == 63
+    assert payload["prediction_service_call_count_today"] == 1
     json.dumps(payload, allow_nan=False, default=str)
 
 

@@ -508,9 +508,19 @@ def scheduler_status(scheduler: Any | None = None) -> dict:
                 )
         except Exception:
             logger.exception("scheduler status inspection failed")
+    prediction_jobs = [
+        job for job in jobs
+        if "prediction" in str(job.get("scheduler_name") or "").lower()
+    ]
     return {
         "status": "running" if scheduler is not None and getattr(scheduler, "running", False) else "unknown",
         "jobs": jobs,
+        "prediction_job_registered": bool(prediction_jobs),
+        "prediction_job_id": prediction_jobs[0].get("scheduler_name") if prediction_jobs else None,
+        "prediction_job_next_run": prediction_jobs[0].get("next_run") if prediction_jobs else None,
+        "prediction_job_last_run": None,
+        "prediction_job_last_status": (runtime.get("last_scheduler_event") or {}).get("type"),
+        "prediction_job_last_error": runtime.get("last_scheduler_error"),
         "runtime": {
             "last_scheduler_event": runtime.get("last_scheduler_event"),
             "success_count": runtime.get("scheduler_success_count", 0),
@@ -518,6 +528,49 @@ def scheduler_status(scheduler: Any | None = None) -> dict:
             "skipped_count": runtime.get("scheduler_skipped_count", 0),
             "missed_count": runtime.get("scheduler_missed_count", 0),
         },
+    }
+
+
+def prediction_trigger_event_counts() -> dict:
+    today_sql, today_sqlite, params = _today_clause("created_at")
+    rows = _query(
+        f"""
+        select
+            sum(case when event_type in (
+                'next_prediction_trigger_started',
+                'ensure_next_prediction_started',
+                'refresh_next_prediction_started'
+            ) then 1 else 0 end),
+            sum(case when event_type = 'prediction_service_called' then 1 else 0 end),
+            sum(case when event_type = 'prediction_create_started' then 1 else 0 end),
+            sum(case when event_type = 'prediction_created' then 1 else 0 end),
+            sum(case when event_type = 'prediction_skipped' then 1 else 0 end)
+        from operation_events
+        where {today_sql}
+        """,
+        params,
+        sqlite_sql=f"""
+        select
+            sum(case when event_type in (
+                'next_prediction_trigger_started',
+                'ensure_next_prediction_started',
+                'refresh_next_prediction_started'
+            ) then 1 else 0 end),
+            sum(case when event_type = 'prediction_service_called' then 1 else 0 end),
+            sum(case when event_type = 'prediction_create_started' then 1 else 0 end),
+            sum(case when event_type = 'prediction_created' then 1 else 0 end),
+            sum(case when event_type = 'prediction_skipped' then 1 else 0 end)
+        from operation_events
+        where {today_sqlite}
+        """,
+    )
+    row = rows[0] if rows else [0, 0, 0, 0, 0]
+    return {
+        "prediction_trigger_count_today": int(row[0] or 0),
+        "prediction_service_call_count_today": int(row[1] or 0),
+        "prediction_create_started_count_today": int(row[2] or 0),
+        "prediction_created_count_today": int(row[3] or 0),
+        "prediction_skipped_count_today": int(row[4] or 0),
     }
 
 
@@ -564,6 +617,7 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
     validation = prediction_pipeline_validation()
     event_health = operation_event_health()
     official_time = official_draw_time_investigation()
+    trigger_counts = prediction_trigger_event_counts()
     payload = {
         "status": "ok",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -573,6 +627,7 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
         **pending,
         **target_counts,
         "prediction_scheduler_status": scheduler_payload.get("status"),
+        **trigger_counts,
         "prediction_validation": validation,
         "verification_delay": verification_delay(),
         "learning_delay": learning_delay(),

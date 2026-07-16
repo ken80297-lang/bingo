@@ -608,7 +608,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             saved = upsert_learning_record(record)
             return {"status": "missing_snapshot", "issue": issue, "saved": [saved]}
 
-        official = get_official_draw_by_issue(str(issue), verified_only=True)
+        official = get_official_draw_by_issue(str(issue), verified_only=False)
         existing_records = snapshot.get("learning_records") or []
         if existing_records:
             official_numbers = _as_int_list((official or {}).get("numbers"))

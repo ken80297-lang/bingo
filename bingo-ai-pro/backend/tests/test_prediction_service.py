@@ -136,8 +136,10 @@ def test_recommendation_api_preview_does_not_persist_prediction(monkeypatch):
 
 def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     calls = []
+    events = []
     monkeypatch.setattr(prediction_refresh, "_existing_prediction", lambda source_issue, target_issue: None)
     monkeypatch.setattr(prediction_refresh, "_record_refresh_event", lambda payload, start: None)
+    monkeypatch.setattr(prediction_refresh, "_record_trigger_event", lambda event_type, **kwargs: events.append((event_type, kwargs)))
 
     def fake_create(based_on_issue, **kwargs):
         calls.append((based_on_issue, kwargs))
@@ -161,3 +163,5 @@ def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     assert calls[0][0] == "115000100"
     assert calls[0][1]["target_issue"] == "115000101"
     assert calls[0][1]["source"] == "official_collector"
+    assert calls[0][1]["trigger"] == "official_draw_saved"
+    assert "prediction_service_called" in [event[0] for event in events]

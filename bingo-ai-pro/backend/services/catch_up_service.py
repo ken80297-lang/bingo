@@ -165,6 +165,92 @@ def _record_event(status: str, issue: str | None, start: float, message: str, er
         logger.exception("failed to record catch-up operation event")
 
 
+def _record_structured_event(
+    event_type: str,
+    *,
+    status: str,
+    issue: str | None,
+    start: float,
+    message: str,
+    payload: dict | None = None,
+    error: Exception | None = None,
+) -> None:
+    try:
+        import json
+
+        record_operation_event(
+            component="official_catch_up",
+            event_type=event_type,
+            status=status,
+            issue=issue,
+            message=json.dumps(
+                {
+                    "event_type": event_type,
+                    "issue": issue,
+                    "status": status,
+                    "message": message,
+                    **(payload or {}),
+                },
+                ensure_ascii=False,
+            ),
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            error_type=type(error).__name__ if error else None,
+            error_message=str(error) if error else None,
+        )
+    except Exception:
+        logger.exception("failed to record structured catch-up operation event")
+
+
+def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) -> dict:
+    issue = str((draw or {}).get("issue") or "").strip() or None
+    if not draw or not issue:
+        return {
+            "verification": {"status": "skipped", "reason": "missing_draw"},
+            "prediction": {"status": "skipped", "reason": "missing_draw"},
+        }
+
+    _record_structured_event(
+        "official_draw_saved",
+        status="ok",
+        issue=issue,
+        start=start,
+        message="official draw available for live downstream",
+        payload={"caller": caller},
+    )
+
+    verification = {"status": "skipped", "reason": "not_started"}
+    try:
+        verification = run_official_verification(limit=10)
+    except Exception as exc:
+        logger.exception("catch-up downstream verification failed")
+        verification = {"status": "error", "message": str(exc)}
+
+    prediction = {"status": "skipped", "reason": "not_started"}
+    _record_structured_event(
+        "next_prediction_trigger_started",
+        status="ok",
+        issue=issue,
+        start=start,
+        message="official catch-up triggering next prediction",
+        payload={
+            "based_on_issue": issue,
+            "proposed_target_issue": str(int(issue) + 1) if issue.isdigit() else None,
+            "source": "official_collector",
+            "trigger": "official_draw_saved",
+            "caller": caller,
+        },
+    )
+    try:
+        from services.prediction_refresh import ensure_next_prediction
+
+        prediction = ensure_next_prediction(draw)
+    except Exception as exc:
+        logger.exception("catch-up downstream prediction refresh failed")
+        prediction = {"status": "error", "message": str(exc)}
+
+    return {"verification": verification, "prediction": prediction}
+
+
 def _log_job_finished(result: dict) -> None:
     logger.info(
         "catch_up_job_finished duration_ms=%s processed_count=%s recovered_count=%s failed_count=%s pending_count=%s exit_reason=%s lock_released=true",
@@ -239,7 +325,10 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             return result
 
         if database_number is not None and source_number <= database_number:
+            downstream = _run_live_downstream_for_draw(get_latest_official_draw(), start, "catch_up_already_synced")
             result = _empty_result(start, database_issue, source_issue)
+            result["verification"] = downstream.get("verification")
+            result["prediction"] = downstream.get("prediction")
             LAST_CATCH_UP_RESULT.update(result)
             result["exit_reason"] = "completed"
             mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="completed")
@@ -268,14 +357,13 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         success_count = int(saved.get("saved") or 0) if saved.get("status") == "ok" else 0
         failed_count = max(0, len(missing) - success_count)
         deadline_hit = _deadline_exceeded(start)
-        verification = {
-            "status": "skipped",
-            "reason": "deadline_exceeded" if deadline_hit else "deferred_to_official_verification_job",
-        }
-        prediction = {
-            "status": "skipped",
-            "reason": "deadline_exceeded" if deadline_hit else "deferred_to_prediction_job",
-        }
+        verification = {"status": "skipped", "reason": "deadline_exceeded"}
+        prediction = {"status": "skipped", "reason": "deadline_exceeded"}
+        if not deadline_hit and success_count:
+            latest_saved_draw = missing[min(success_count, len(missing)) - 1]
+            downstream = _run_live_downstream_for_draw(latest_saved_draw, start, "catch_up_saved_draw")
+            verification = downstream.get("verification") or verification
+            prediction = downstream.get("prediction") or prediction
 
         elapsed = _elapsed_seconds(start)
         exit_reason = "deadline_exceeded" if deadline_hit else "completed"

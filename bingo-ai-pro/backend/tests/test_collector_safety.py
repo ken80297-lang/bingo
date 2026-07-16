@@ -30,6 +30,7 @@ def test_official_draw_validation_rejects_invalid_numbers():
 def test_catch_up_limits_batch(monkeypatch):
     source_draws = [_draw(issue) for issue in range(101, 125)]
     saved_batches = []
+    prediction_calls = []
 
     monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "100")
     monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: source_draws)
@@ -41,6 +42,15 @@ def test_catch_up_limits_batch(monkeypatch):
         return {"status": "ok", "saved": len(draws), "storage": "test"}
 
     monkeypatch.setattr(catch_up_service, "save_official_draws", fake_save)
+    monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
+
+    import services.prediction_refresh as prediction_refresh
+
+    monkeypatch.setattr(
+        prediction_refresh,
+        "ensure_next_prediction",
+        lambda draw: prediction_calls.append(draw) or {"status": "created", "target_issue": str(int(draw["issue"]) + 1)},
+    )
 
     result = catch_up_service.catch_up_missing_issues()
 
@@ -49,6 +59,33 @@ def test_catch_up_limits_batch(monkeypatch):
     assert result["catch_count"] == 20
     assert result["success_count"] == 20
     assert len(saved_batches[0]) == 20
+    assert prediction_calls[0]["issue"] == "120"
+    assert result["prediction"]["status"] == "created"
+
+
+def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
+    prediction_calls = []
+
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115039887")
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: [_draw(115039887)])
+    monkeypatch.setattr(catch_up_service, "get_latest_official_draw", lambda: _draw(115039887))
+    monkeypatch.setattr(catch_up_service, "run_official_verification", lambda limit=10: {"status": "ok"})
+    monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
+
+    import services.prediction_refresh as prediction_refresh
+
+    monkeypatch.setattr(
+        prediction_refresh,
+        "ensure_next_prediction",
+        lambda draw: prediction_calls.append(draw) or {"status": "created", "target_issue": "115039888"},
+    )
+
+    result = catch_up_service.catch_up_missing_issues()
+
+    assert result["status"] == "ok"
+    assert result["catch_count"] == 0
+    assert prediction_calls[0]["issue"] == "115039887"
+    assert result["prediction"]["target_issue"] == "115039888"
 
 
 def test_catch_up_deadline_skips_downstream(monkeypatch):

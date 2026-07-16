@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -77,9 +78,56 @@ def _record_refresh_event(payload: dict, start: float) -> None:
         logger.exception("failed to record next prediction refresh event")
 
 
+def _record_trigger_event(
+    event_type: str,
+    *,
+    status: str,
+    based_on_issue: str | None,
+    proposed_target_issue: str | None,
+    source: str = "official_collector",
+    trigger: str = "official_draw_saved",
+    skip_reason: str | None = None,
+    caller: str = "prediction_refresh",
+    start: float | None = None,
+) -> None:
+    try:
+        from services.operations_center import record_operation_event
+
+        payload = {
+            "event_type": event_type,
+            "based_on_issue": based_on_issue,
+            "proposed_target_issue": proposed_target_issue,
+            "source": source,
+            "trigger": trigger,
+            "status": status,
+            "skip_reason": skip_reason,
+            "caller": caller,
+            "duration_ms": round((time.perf_counter() - start) * 1000, 2) if start else None,
+        }
+        record_operation_event(
+            component="prediction",
+            event_type=event_type,
+            status=status,
+            issue=based_on_issue,
+            message=json.dumps(payload, ensure_ascii=False),
+            duration_ms=payload["duration_ms"],
+            error_type=skip_reason if status in ("warning", "error") else None,
+        )
+    except Exception:
+        logger.exception("failed to record prediction trigger event")
+
+
 def refresh_next_prediction_for_draw(draw: dict) -> dict:
     start = time.perf_counter()
     source_issue = _valid_issue((draw or {}).get("issue"))
+    proposed_target = _next_issue(source_issue) if source_issue else None
+    _record_trigger_event(
+        "refresh_next_prediction_started",
+        status="ok",
+        based_on_issue=source_issue,
+        proposed_target_issue=proposed_target,
+        start=start,
+    )
     if not source_issue:
         payload = {
             "status": "skipped_incomplete_draw",
@@ -93,11 +141,19 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "lag_issues": None,
             "elapsed_ms": 0,
         }
+        _record_trigger_event(
+            "prediction_trigger_skipped",
+            status="warning",
+            based_on_issue=None,
+            proposed_target_issue=None,
+            skip_reason=payload["refresh_reason"],
+            start=start,
+        )
         _record_refresh_event(payload, start)
         return payload
 
     draw_numbers = _numbers(draw)
-    target_issue = _next_issue(source_issue)
+    target_issue = proposed_target
     attempt = _now()
     base_payload = {
         "last_refresh_attempt": attempt,
@@ -116,6 +172,14 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
             **base_payload,
         }
+        _record_trigger_event(
+            "prediction_trigger_skipped",
+            status="warning",
+            based_on_issue=source_issue,
+            proposed_target_issue=target_issue,
+            skip_reason=payload["refresh_reason"],
+            start=start,
+        )
         _record_refresh_event(payload, start)
         return payload
 
@@ -132,15 +196,30 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                 "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
                 **base_payload,
             }
+            _record_trigger_event(
+                "prediction_trigger_skipped",
+                status="ok",
+                based_on_issue=source_issue,
+                proposed_target_issue=target_issue,
+                skip_reason="existing_prediction",
+                start=start,
+            )
             _record_refresh_event(payload, start)
             return payload
 
         from services.prediction_service import create_for_official_draw
 
+        _record_trigger_event(
+            "prediction_service_called",
+            status="ok",
+            based_on_issue=source_issue,
+            proposed_target_issue=target_issue,
+            start=start,
+        )
         service_result = create_for_official_draw(
             source_issue,
             source="official_collector",
-            trigger="draw_collected",
+            trigger="official_draw_saved",
             target_issue=target_issue,
             collector_metadata={"draw_issue": source_issue, "draw_number_count": len(draw_numbers)},
         )
@@ -156,6 +235,15 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
             **base_payload,
         }
+        if not refresh_ready:
+            _record_trigger_event(
+                "prediction_trigger_skipped",
+                status="warning",
+                based_on_issue=source_issue,
+                proposed_target_issue=target_issue,
+                skip_reason=payload["refresh_reason"],
+                start=start,
+            )
         _record_refresh_event(payload, start)
         return payload
     except Exception as exc:
@@ -168,11 +256,30 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
             **base_payload,
         }
+        _record_trigger_event(
+            "prediction_trigger_failed",
+            status="error",
+            based_on_issue=source_issue,
+            proposed_target_issue=target_issue,
+            skip_reason=str(exc),
+            start=start,
+        )
         _record_refresh_event(payload, start)
         return payload
 
 
 def ensure_next_prediction(latest_draw: dict | None) -> dict:
+    start = time.perf_counter()
+    based_on_issue = _valid_issue((latest_draw or {}).get("issue")) if latest_draw else None
+    _record_trigger_event(
+        "ensure_next_prediction_started",
+        status="ok" if latest_draw else "warning",
+        based_on_issue=based_on_issue,
+        proposed_target_issue=_next_issue(based_on_issue) if based_on_issue else None,
+        skip_reason=None if latest_draw else "missing_latest_draw",
+        caller="ensure_next_prediction",
+        start=start,
+    )
     if not latest_draw:
         return {
             "status": "skipped_incomplete_draw",
