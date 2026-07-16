@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from database import official_draw_store
 from database.official_draw_store import _valid_draw
 from services import catch_up_service
 from services import official_verification
@@ -25,6 +26,40 @@ def test_official_draw_validation_rejects_invalid_numbers():
     assert _valid_draw(_draw(101, list(range(1, 20)) + [81])) is False
     assert _valid_draw(_draw(101, list(range(1, 20)) + [0])) is False
     assert _valid_draw(_draw(101, list(range(1, 20)) + [19])) is False
+
+
+def test_latest_official_draw_uses_numeric_production_order(monkeypatch):
+    captured = {}
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        captured["sql"] = sql
+        captured["sqlite_sql"] = sqlite_sql
+        return [
+            (
+                1,
+                "115039895",
+                "2026-07-16",
+                None,
+                list(range(1, 21)),
+                list(range(1, 21)),
+                1,
+                True,
+                "taiwan_lottery",
+                False,
+                {},
+                "2026-07-16T00:00:00",
+                "2026-07-16T00:00:00",
+            )
+        ]
+
+    monkeypatch.setattr(official_draw_store, "_query_with_fallback", fake_query)
+
+    result = official_draw_store.get_latest_official_draw()
+
+    assert result["issue"] == "115039895"
+    assert "length(issue) >= 6" in captured["sql"]
+    assert "issue::bigint desc" in captured["sql"]
+    assert "cast(issue as integer) desc" in captured["sqlite_sql"]
 
 
 def test_catch_up_limits_batch(monkeypatch):

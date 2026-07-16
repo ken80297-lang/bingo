@@ -376,7 +376,22 @@ def get_latest_official_draw() -> dict | None:
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
                super_number, win_no_only, source, verified, raw_json, created_at, updated_at
         from official_draw_history
-        order by issue desc
+        where issue ~ '^[0-9]+$'
+          and length(issue) >= 6
+          and issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+        order by issue::bigint desc
+        limit 1
+        """,
+        sqlite_sql="""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+        from official_draw_history
+        where issue glob '[0-9]*'
+          and length(issue) >= 6
+          and issue not like '99%'
+          and upper(issue) not like 'TEST%'
+        order by cast(issue as integer) desc
         limit 1
         """,
     )
@@ -390,7 +405,11 @@ def get_official_draw_history(limit: int = 30) -> list[dict]:
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
                super_number, win_no_only, source, verified, raw_json, created_at, updated_at
         from official_draw_history
-        order by issue desc
+        where issue ~ '^[0-9]+$'
+          and length(issue) >= 6
+          and issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+        order by issue::bigint desc
         limit %s
         """,
         (limit,),
@@ -398,7 +417,11 @@ def get_official_draw_history(limit: int = 30) -> list[dict]:
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
                super_number, win_no_only, source, verified, raw_json, created_at, updated_at
         from official_draw_history
-        order by issue desc
+        where issue glob '[0-9]*'
+          and length(issue) >= 6
+          and issue not like '99%'
+          and upper(issue) not like 'TEST%'
+        order by cast(issue as integer) desc
         limit ?
         """,
     )
