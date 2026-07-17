@@ -86,7 +86,7 @@ def test_build_pipeline_health_is_json_safe(monkeypatch):
         "prediction_created_count_today": 1,
         "prediction_skipped_count_today": 0,
     })
-    monkeypatch.setattr(pipeline_health, "official_draw_time_investigation", lambda: {"missing_draw_time_count": 0})
+    monkeypatch.setattr(pipeline_health, "official_draw_time_health", lambda: {"missing_draw_time_count": 0})
     monkeypatch.setattr(pipeline_health, "verification_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
     monkeypatch.setattr(pipeline_health, "learning_delay", lambda: {"sample_size": 1, "average_delay_minutes": 1, "p95_delay_minutes": 1, "status": "ok"})
 
@@ -127,7 +127,7 @@ def test_build_pipeline_health_returns_partial_when_component_fails(monkeypatch)
     monkeypatch.setattr(pipeline_health, "prediction_pipeline_validation", lambda: {"status": "ok"})
     monkeypatch.setattr(pipeline_health, "operation_event_health", lambda: {"status": "ok"})
     monkeypatch.setattr(pipeline_health, "prediction_trigger_event_counts", lambda: {})
-    monkeypatch.setattr(pipeline_health, "official_draw_time_investigation", lambda: {})
+    monkeypatch.setattr(pipeline_health, "official_draw_time_health", lambda: {})
     monkeypatch.setattr(pipeline_health, "verification_delay", lambda: {"status": "ok"})
     monkeypatch.setattr(pipeline_health, "learning_delay", lambda: {"status": "ok"})
 

@@ -603,6 +603,62 @@ def _row_to_prediction(row: Any) -> dict:
     }
 
 
+def _prediction_event_metadata(record: dict) -> dict:
+    based_on = str(record.get("issue") or "")
+    target = str(record.get("prediction_issue") or "")
+    if not based_on and not target:
+        return {}
+    rows = _query_with_fallback(
+        """
+        select message
+        from operation_events
+        where event_type = 'prediction_created'
+          and (
+            issue = %s
+            or message like %s
+          )
+        order by created_at desc, id desc
+        limit 1
+        """,
+        (based_on, f"%{target}%"),
+        sqlite_sql="""
+        select message
+        from operation_events
+        where event_type = 'prediction_created'
+          and (
+            issue = ?
+            or message like ?
+          )
+        order by created_at desc, id desc
+        limit 1
+        """,
+    )
+    if not rows:
+        return {}
+    payload = _json_loads(rows[0][0])
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "source": payload.get("source"),
+        "trigger": payload.get("trigger"),
+        "operation_event": {
+            "event_type": payload.get("event_type") or "prediction_created",
+            "based_on_issue": payload.get("based_on_issue"),
+            "target_issue": payload.get("target_issue"),
+            "recommended_count": payload.get("recommended_count"),
+        },
+    }
+
+
+def _enrich_prediction_metadata(record: dict) -> dict:
+    metadata = _prediction_event_metadata(record)
+    record["source"] = metadata.get("source") or "production_history"
+    record["trigger"] = metadata.get("trigger") or "production_read_layer"
+    if metadata.get("operation_event"):
+        record["operation_event"] = metadata.get("operation_event")
+    return record
+
+
 PREDICTION_SELECT_COLUMNS = """
         id, issue, prediction_issue, predict_time, strategy, confidence,
         recommend_numbers, super_number, three_star, four_star, twins,
@@ -689,7 +745,7 @@ def get_latest_prediction_history() -> dict | None:
         "query_name": PRODUCTION_PREDICTION_QUERY_NAME,
         "production_filtered": True,
     }
-    return record
+    return _enrich_prediction_metadata(record)
 
 
 def get_prediction_history_records(limit: int = 100) -> list[dict]:
@@ -757,7 +813,7 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
             "query_name": "production_prediction_history_v2",
             "production_filtered": True,
         }
-        records.append(record)
+        records.append(_enrich_prediction_metadata(record))
     return records
 
 

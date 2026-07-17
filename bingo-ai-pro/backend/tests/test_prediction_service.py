@@ -190,6 +190,16 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
                 model_score real
             );
             create table official_draw_history (issue text primary key);
+            create table operation_events (
+                id integer primary key,
+                issue text,
+                component text,
+                event_type text,
+                status text,
+                message text,
+                duration_ms real,
+                created_at text
+            );
             """
         )
         numbers = "[" + ",".join(str(n) for n in range(1, 21)) + "]"
@@ -224,6 +234,17 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
                 (row_id, issue, target, created_at, strategy, numbers, created_at, created_at),
             )
             conn.execute("insert into official_draw_history (issue) values (?)", (target,))
+        conn.execute(
+            """
+            insert into operation_events (
+                id, issue, component, event_type, status, message, duration_ms, created_at
+            ) values (
+                1, '115039899', 'prediction', 'prediction_created', 'ok',
+                '{"event_type":"prediction_created","based_on_issue":"115039899","target_issue":"115039900","source":"official_collector","trigger":"official_draw_saved","recommended_count":20}',
+                1, '2026-07-17T09:01:00'
+            )
+            """
+        )
 
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: False)
@@ -234,6 +255,8 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
 
     assert latest["issue"] == "115039899"
     assert latest["prediction_issue"] == "115039900"
+    assert latest["source"] == "official_collector"
+    assert latest["trigger"] == "official_draw_saved"
     assert latest["read_layer"]["production_filtered"] is True
     assert [record["prediction_issue"] for record in records] == ["115039900"]
 

@@ -30,6 +30,8 @@ EXPECTED_PREDICTIONS_PER_DAY = int(
 )
 RECOVERY_DRY_RUN_HEALTH_TTL_SECONDS = 60
 _RECOVERY_DRY_RUN_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
+OFFICIAL_DRAW_TIME_HEALTH_TTL_SECONDS = 300
+_OFFICIAL_DRAW_TIME_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 
 
 def _today_taipei() -> str:
@@ -582,6 +584,25 @@ def recovery_dry_run_health() -> dict:
     return payload
 
 
+def official_draw_time_health() -> dict:
+    cached = _OFFICIAL_DRAW_TIME_CACHE.get("payload")
+    if isinstance(cached, dict) and time.monotonic() < float(_OFFICIAL_DRAW_TIME_CACHE.get("expires_at") or 0):
+        payload = dict(cached)
+        payload["cache_source"] = "memory"
+        return payload
+    if os.getenv("PIPELINE_HEALTH_INLINE_DRAW_TIME", "").lower() not in ("1", "true", "yes"):
+        return {
+            "status": "skipped",
+            "reason": "request_time_draw_time_investigation_disabled",
+            "cache_source": "not_run",
+        }
+    payload = official_draw_time_investigation()
+    if isinstance(payload, dict):
+        _OFFICIAL_DRAW_TIME_CACHE["payload"] = dict(payload)
+        _OFFICIAL_DRAW_TIME_CACHE["expires_at"] = time.monotonic() + OFFICIAL_DRAW_TIME_HEALTH_TTL_SECONDS
+    return payload
+
+
 def pipeline_alerts(coverage: dict, pending: dict, target_counts: dict, recovery: dict) -> list[dict]:
     alerts = []
     schedule_coverage = float(coverage.get("schedule_coverage") or 0)
@@ -686,7 +707,7 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
         "message": "latest prediction validation unavailable",
     })
     event_health = component("operation_events", operation_event_health, {"status": "unavailable"})
-    official_time = component("official_draw_time", official_draw_time_investigation, {"status": "unavailable"})
+    official_time = component("official_draw_time", official_draw_time_health, {"status": "unavailable"})
     trigger_counts = component("operation_counters", prediction_trigger_event_counts, {
         "prediction_trigger_count_today": 0,
         "prediction_service_call_count_today": 0,
