@@ -14,7 +14,10 @@ def test_core_status_route_functions(monkeypatch):
     monkeypatch.setattr(collector_api, "collector_runtime_status", lambda: {"collector_running": False})
     monkeypatch.setattr(collector_api, "scan_collector_gaps", lambda: {"status": "ok", "missing_count": 0})
 
-    assert app_module.api_health()["status"] == "ok"
+    health = app_module.api_health()
+    assert health["status"] == "ok"
+    assert "startup_time" in health
+    assert health["build_time_source"] in ("environment", "unavailable")
     assert collector_api.api_collector_status()["status"] == "ok"
     assert collector_api.api_collector_gaps()["missing_count"] == 0
     assert app_module.dashboard_page().status_code == 200

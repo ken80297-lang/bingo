@@ -218,14 +218,6 @@ def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) 
         payload={"caller": caller},
     )
 
-    verification = {"status": "skipped", "reason": "not_started"}
-    try:
-        verification = run_official_verification(limit=10)
-    except Exception as exc:
-        logger.exception("catch-up downstream verification failed")
-        verification = {"status": "error", "message": str(exc)}
-
-    prediction = {"status": "skipped", "reason": "not_started"}
     _record_structured_event(
         "next_prediction_trigger_started",
         status="ok",
@@ -241,14 +233,25 @@ def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) 
         },
     )
     try:
-        from services.prediction_refresh import ensure_next_prediction
+        from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
 
-        prediction = ensure_next_prediction(draw)
+        lifecycle = process_official_draw_lifecycle(
+            draw,
+            source="official_collector",
+            trigger="official_draw_saved",
+            caller=caller,
+            create_next_prediction=True,
+        )
     except Exception as exc:
-        logger.exception("catch-up downstream prediction refresh failed")
-        prediction = {"status": "error", "message": str(exc)}
+        logger.exception("catch-up downstream lifecycle failed")
+        lifecycle = {"status": "error", "message": str(exc)}
 
-    return {"verification": verification, "prediction": prediction}
+    return {
+        "lifecycle": lifecycle,
+        "verification": lifecycle.get("verification") if isinstance(lifecycle, dict) else {"status": "error"},
+        "learning": lifecycle.get("learning") if isinstance(lifecycle, dict) else {"status": "error"},
+        "prediction": lifecycle.get("prediction") if isinstance(lifecycle, dict) else {"status": "error"},
+    }
 
 
 def _log_job_finished(result: dict) -> None:

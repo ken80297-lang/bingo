@@ -688,7 +688,7 @@ def get_latest_prediction_history() -> dict | None:
         """
         select {columns}
         from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
+        left join official_draw_history o on o.issue = p.prediction_issue
         where p.issue is not null
           and p.prediction_issue is not null
           and p.issue ~ '^[0-9]+$'
@@ -713,7 +713,7 @@ def get_latest_prediction_history() -> dict | None:
         sqlite_sql="""
         select {columns}
         from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
+        left join official_draw_history o on o.issue = p.prediction_issue
         where p.issue is not null
           and p.prediction_issue is not null
           and p.issue not glob '*[^0-9]*'
@@ -755,7 +755,7 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
         """
         select {columns}
         from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
+        left join official_draw_history o on o.issue = p.prediction_issue
         where p.issue is not null
           and p.prediction_issue is not null
           and p.issue ~ '^[0-9]+$'
@@ -781,7 +781,7 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
         sqlite_sql="""
         select {columns}
         from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
+        left join official_draw_history o on o.issue = p.prediction_issue
         where p.issue is not null
           and p.prediction_issue is not null
           and p.issue not glob '*[^0-9]*'

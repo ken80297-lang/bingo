@@ -79,12 +79,17 @@ def test_catch_up_limits_batch(monkeypatch):
     monkeypatch.setattr(catch_up_service, "save_official_draws", fake_save)
     monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
 
-    import services.prediction_refresh as prediction_refresh
+    import services.prediction_lifecycle_orchestrator as lifecycle_orchestrator
 
     monkeypatch.setattr(
-        prediction_refresh,
-        "ensure_next_prediction",
-        lambda draw: prediction_calls.append(draw) or {"status": "created", "target_issue": str(int(draw["issue"]) + 1)},
+        lifecycle_orchestrator,
+        "process_official_draw_lifecycle",
+        lambda draw, **kwargs: prediction_calls.append(draw) or {
+            "status": "ok",
+            "verification": {"status": "ok"},
+            "learning": {"status": "ok"},
+            "prediction": {"status": "created", "target_issue": str(int(draw["issue"]) + 1)},
+        },
     )
 
     result = catch_up_service.catch_up_missing_issues()
@@ -107,12 +112,17 @@ def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
     monkeypatch.setattr(catch_up_service, "run_official_verification", lambda limit=10: {"status": "ok"})
     monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
 
-    import services.prediction_refresh as prediction_refresh
+    import services.prediction_lifecycle_orchestrator as lifecycle_orchestrator
 
     monkeypatch.setattr(
-        prediction_refresh,
-        "ensure_next_prediction",
-        lambda draw: prediction_calls.append(draw) or {"status": "created", "target_issue": "115039888"},
+        lifecycle_orchestrator,
+        "process_official_draw_lifecycle",
+        lambda draw, **kwargs: prediction_calls.append(draw) or {
+            "status": "ok",
+            "verification": {"status": "ok"},
+            "learning": {"status": "ok"},
+            "prediction": {"status": "created", "target_issue": "115039888"},
+        },
     )
 
     result = catch_up_service.catch_up_missing_issues()

@@ -134,7 +134,7 @@ def test_latest_prediction_history_uses_numeric_production_order(monkeypatch):
     monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
 
     assert prediction_history_store.get_latest_prediction_history() is None
-    assert "join official_draw_history" in captured["sql"]
+    assert "left join official_draw_history" in captured["sql"]
     assert "length(p.prediction_issue) >=" in captured["sql"]
     assert "p.prediction_issue::bigint desc" in captured["sql"]
     assert "cast(p.prediction_issue as integer) desc" in captured["sqlite_sql"]
@@ -259,6 +259,105 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
     assert latest["trigger"] == "official_draw_saved"
     assert latest["read_layer"]["production_filtered"] is True
     assert [record["prediction_issue"] for record in records] == ["115039900"]
+
+
+def test_latest_prediction_history_includes_waiting_draw_without_official_result(monkeypatch, tmp_path):
+    db_path = tmp_path / "prediction_latest_waiting.db"
+
+    def connect():
+        return sqlite3.connect(db_path)
+
+    with connect() as conn:
+        conn.executescript(
+            """
+            create table prediction_history (
+                id integer primary key,
+                issue text,
+                prediction_issue text,
+                predict_time text,
+                strategy text,
+                confidence real,
+                recommend_numbers text,
+                super_number integer,
+                three_star text,
+                four_star text,
+                twins text,
+                consecutive text,
+                patch_numbers text,
+                tails text,
+                big_small text,
+                odd_even text,
+                reasons text,
+                winning_numbers text,
+                hit_count integer,
+                super_hit integer,
+                three_star_hit integer,
+                four_star_hit integer,
+                accuracy real,
+                created_at text,
+                updated_at text,
+                model_scores text,
+                winning_model text,
+                prediction_status text,
+                verified_issue text,
+                verified_at text,
+                matched_numbers text,
+                missed_numbers text,
+                prediction_count integer,
+                hit_rate real,
+                super_number_hit integer,
+                verification_version text,
+                learning_used integer,
+                model_score real
+            );
+            create table official_draw_history (issue text primary key);
+            create table operation_events (
+                id integer primary key,
+                issue text,
+                component text,
+                event_type text,
+                status text,
+                message text,
+                duration_ms real,
+                created_at text
+            );
+            """
+        )
+        numbers = "[" + ",".join(str(n) for n in range(1, 21)) + "]"
+        conn.execute(
+            """
+            insert into prediction_history (
+                id, issue, prediction_issue, predict_time, strategy, confidence,
+                recommend_numbers, super_number, three_star, four_star, twins,
+                consecutive, patch_numbers, tails, big_small, odd_even, reasons,
+                winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
+                accuracy, created_at, updated_at, model_scores, winning_model,
+                prediction_status, verified_issue, verified_at, matched_numbers,
+                missed_numbers, prediction_count, hit_rate, super_number_hit,
+                verification_version, learning_used, model_score
+            ) values (
+                1, '115040100', '115040101', '2026-07-17T09:00:00', 'V7', 88,
+                ?, 7, '[1,2,3]', '[1,2,3,4]', '[]',
+                '[]', '[]', '[]', 'balanced', 'balanced', '[]',
+                '[]', 0, 0, 0, 0,
+                0, '2026-07-17T09:00:00', '2026-07-17T09:00:00', '{}', null,
+                'waiting_draw', null, null, '[]',
+                '[]', 20, 0, 0,
+                null, 0, 0
+            )
+            """,
+            (numbers,),
+        )
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: False)
+    monkeypatch.setattr(prediction_history_store, "_sqlite_connection", connect)
+
+    latest = prediction_history_store.get_latest_prediction_history()
+
+    assert latest["issue"] == "115040100"
+    assert latest["prediction_issue"] == "115040101"
+    assert latest["prediction_status"] == "waiting_draw"
 
 
 def test_is_production_prediction_allows_legacy_source_null_with_official_shape():

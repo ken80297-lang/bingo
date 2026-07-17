@@ -23,7 +23,6 @@ from database.official_draw_store import (
     save_official_draws,
 )
 from services.operations_center import record_operation_event
-from services.prediction_lifecycle import verify_prediction
 from services.collector_runtime import mark_deadline_exceeded, mark_error, mark_success, official_collection_lock
 
 logger = logging.getLogger(__name__)
@@ -198,6 +197,51 @@ def _load_local_draw_map(limit: int = 50) -> dict[str, dict]:
     return draws
 
 
+def _pending_prediction_official_draws(limit: int = 50) -> list[dict]:
+    try:
+        from database.prediction_history_store import get_prediction_history_records
+    except Exception:
+        logger.exception("failed to import prediction history records for pending verification")
+        return []
+
+    draws: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for prediction in get_prediction_history_records(500):
+            target_issue = str(prediction.get("prediction_issue") or "").strip()
+            if not target_issue or target_issue in seen:
+                continue
+            if prediction.get("prediction_status") == "verified" and prediction.get("verified_at"):
+                continue
+            official = get_official_draw_by_issue(target_issue)
+            if not official or len(_as_int_list(official.get("numbers"))) != 20:
+                continue
+            seen.add(target_issue)
+            draws.append(official)
+            if len(draws) >= limit:
+                break
+    except Exception:
+        logger.exception("failed to load pending prediction official draws")
+    return draws
+
+
+def _verification_candidates(limit: int) -> list[dict]:
+    by_issue: dict[str, dict] = {}
+    for official in get_official_draw_history(limit):
+        issue = str(official.get("issue") or "").strip()
+        if issue:
+            by_issue[issue] = official
+    for official in _pending_prediction_official_draws(limit=50):
+        issue = str(official.get("issue") or "").strip()
+        if issue:
+            by_issue.setdefault(issue, official)
+    return sorted(
+        by_issue.values(),
+        key=lambda item: int(str(item.get("issue") or "0")) if str(item.get("issue") or "").isdigit() else 0,
+        reverse=True,
+    )
+
+
 def _verification_payload(issue: str, local_draw: dict | None, official_draw: dict | None) -> dict:
     if not official_draw:
         local_numbers = _as_int_list((local_draw or {}).get("numbers", []))
@@ -252,29 +296,28 @@ def run_official_verification(limit: int = 10) -> dict:
     try:
         saved = []
         limit = max(1, min(int(limit or 10), 10))
-        local_draws = _load_local_draw_map(30)
-        for official in get_official_draw_history(limit):
+        local_draws = _load_local_draw_map(max(30, limit))
+        candidates = _verification_candidates(limit)
+        for official in candidates:
             local_draw = local_draws.get(str(official.get("issue")))
             payload = _verification_payload(official.get("issue"), local_draw, official)
             payload["saved"] = save_draw_verification(payload)
             try:
-                payload["prediction_history"] = verify_prediction(
-                    {
-                        "issue": official.get("issue"),
-                        "numbers": official.get("numbers"),
-                        "super_number": official.get("super_number"),
-                    }
+                from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
+
+                lifecycle = process_official_draw_lifecycle(
+                    official,
+                    source="official_verification",
+                    trigger="verification_job",
+                    caller="run_official_verification",
+                    create_next_prediction=False,
                 )
+                payload["lifecycle"] = lifecycle
+                payload["prediction_history"] = lifecycle.get("verification")
+                payload["learning"] = lifecycle.get("learning")
             except Exception as exc:
                 logger.exception("prediction_history update failed during official verification")
                 payload["prediction_history"] = {"status": "error", "message": str(exc)}
-            try:
-                from services.learning_engine import evaluate_verified_issue
-
-                payload["learning"] = evaluate_verified_issue(str(official.get("issue")))
-            except Exception as exc:
-                logger.exception("learning evaluation failed during official verification")
-                payload["learning"] = {"status": "error", "message": str(exc)}
             try:
                 from services.analysis_engine import analyze_official_draw
 
@@ -374,8 +417,10 @@ def _collect_official_today_locked(start: float) -> dict:
             start,
             f"official collector saved {saved.get('saved', 0)} draws",
         )
+        lifecycle = {"status": "skipped", "reason": "collector_boundary"}
         prediction_refresh = {"status": "unknown"}
         verification = {"status": "skipped", "reason": "collector_boundary"}
+        learning = {"status": "skipped", "reason": "collector_boundary"}
         reverify = {"status": "skipped", "reason": "collector_boundary"}
         prediction = {"status": "unknown"}
         exit_reason = "completed"
@@ -384,16 +429,25 @@ def _collect_official_today_locked(start: float) -> dict:
             exit_reason = "deadline_exceeded"
         else:
             try:
-                from services.prediction_refresh import ensure_next_prediction
+                from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
 
                 latest_draw = get_latest_official_draw() or (draws[0] if draws else None)
-                prediction_refresh = ensure_next_prediction(latest_draw)
+                lifecycle = process_official_draw_lifecycle(
+                    latest_draw,
+                    source="official_collector",
+                    trigger="official_draw_saved",
+                    caller="official_collector",
+                    create_next_prediction=True,
+                )
+                verification = lifecycle.get("verification") or verification
+                learning = lifecycle.get("learning") or learning
+                prediction_refresh = lifecycle.get("prediction") or prediction_refresh
             except Exception as exc:
                 logger.warning(
-                    "collector downstream prediction_refresh failed component=prediction_refresh error=%s",
+                    "collector downstream lifecycle failed component=prediction_lifecycle error=%s",
                     exc,
                 )
-                prediction_refresh = {"status": "error", "message": str(exc)}
+                lifecycle = {"status": "error", "message": str(exc)}
 
         if _collector_deadline_exceeded(start):
             exit_reason = "deadline_exceeded"
@@ -424,7 +478,9 @@ def _collect_official_today_locked(start: float) -> dict:
             "status": "ok" if saved.get("status") == "ok" else "warning",
             "count": len(draws),
             "saved": saved,
+            "lifecycle": lifecycle,
             "verification": verification,
+            "learning": learning,
             "reverify": reverify,
             "prediction_refresh": prediction_refresh,
             "prediction": prediction,

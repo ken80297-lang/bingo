@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -94,6 +94,7 @@ DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
 
 app = FastAPI(title="Bingo AI Pro API")
+STARTUP_TIME = datetime.now(timezone.utc).isoformat()
 print("startup_import_completed host=0.0.0.0 port_env=PORT")
 
 app.include_router(adaptive_weight_router)
@@ -458,11 +459,14 @@ def api_update() -> JSONResponse:
 
 @app.get("/api/health")
 def api_health() -> dict[str, str | None]:
+    build_time = os.getenv("BUILD_TIME") or os.getenv("RENDER_BUILD_TIME")
     return {
         "status": "ok",
         "app_version": os.getenv("APP_VERSION") or "V1-RC",
         "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
-        "build_time": os.getenv("BUILD_TIME") or os.getenv("RENDER_BUILD_TIME"),
+        "build_time": build_time,
+        "build_time_source": "environment" if build_time else "unavailable",
+        "startup_time": STARTUP_TIME,
         "instance_id": os.getenv("RENDER_INSTANCE_ID"),
     }
 
