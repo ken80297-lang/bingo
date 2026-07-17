@@ -395,6 +395,16 @@
       incomplete: "不完整"
     };
 
+    Object.assign(zhStatus, {
+      ready: "等待開獎",
+      waiting_draw: "等待開獎",
+      waiting_refresh: "等待同步",
+      verified: "已驗證",
+      learned: "已學習",
+      expired: "已過期",
+      unavailable: "尚無資料"
+    });
+
     const safe = (value, fallback = "尚無資料") => {
       if (value === null || value === undefined || value === "" || Number.isNaN(value)) return fallback;
       return String(value);
@@ -471,18 +481,40 @@
 
     const formatDateTime = (value) => {
       if (!value) return "尚無資料";
-      const normalized = String(value).includes(" ") ? String(value).replace(" ", "T") : String(value);
+      const rawText = String(value).trim();
+      const slashDate = rawText.match(/^(\d{4})\/(\d{2})\/(\d{2})\s+(.+)$/);
+      const normalized = slashDate
+        ? `${slashDate[1]}-${slashDate[2]}-${slashDate[3]}T${slashDate[4]}`
+        : (rawText.includes(" ") ? rawText.replace(" ", "T") : rawText);
       const date = new Date(normalized);
       if (Number.isNaN(date.getTime())) return safe(value);
-      return date.toLocaleString("zh-TW", {
+      const parts = new Intl.DateTimeFormat("zh-TW", {
         timeZone: "Asia/Taipei",
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
-        hour: "2-digit",
+        hour: "numeric",
         minute: "2-digit",
-        hour12: false
-      }).replace(/\//g, "-");
+        second: "2-digit",
+        hour12: true
+      }).formatToParts(date).reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return `${parts.year}/${parts.month}/${parts.day} ${parts.dayPeriod || ""}${parts.hour}:${parts.minute}:${parts.second}`;
+    };
+
+    const staleStatusText = (status, lag) => {
+      if (status === "normal" || Number(lag) === 0) return "正常";
+      if (status === "waiting_sync" || Number(lag) === 1) return "等待同步";
+      if (status === "possibly_expired") return "可能過期";
+      return safe(status, "尚無資料");
+    };
+
+    const staleStatusClass = (status, lag) => {
+      if (status === "normal" || Number(lag) === 0) return "status-ok";
+      if (status === "waiting_sync" || Number(lag) === 1) return "status-warning";
+      return "status-error";
     };
 
     const metric = (label, value, extraClass = "") => `
@@ -594,7 +626,12 @@
         target_issue_source: raw.target_issue_source,
         based_on_issue: raw.based_on_issue || raw.source_issue,
         based_on_draw_time: raw.based_on_draw_time,
+        based_on_draw_exists: raw.based_on_draw_exists,
+        latest_official_issue: raw.latest_official_issue,
+        expected_target_issue: raw.expected_target_issue,
         status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
+        stale_status: raw.stale_status,
+        lag_issues: raw.lag_issues,
         expected_draw_time: raw.expected_draw_time,
         target_draw_time: raw.target_draw_time || raw.expected_draw_time,
         generated_at: raw.generated_at,
@@ -691,11 +728,11 @@
         <div class="grid">
           ${metric("下一期期號", `第${safe(next.prediction_issue)}期`)}
           ${metric("依據期號", `第${safe(next.based_on_issue)}期`)}
-          ${metric("依據開獎時間", formatDateTime(next.based_on_draw_time))}
+          ${metric("依據開獎時間", next.based_on_draw_exists === false ? "尚無資料" : formatDateTime(next.based_on_draw_time))}
           ${metric("Prediction 狀態", statusText(status), statusClass(status))}
           ${metric("資料來源", sourceText(next.source))}
           ${metric("Trigger", triggerText(next.trigger))}
-          ${metric("Stale 狀態", next.is_stale ? "可能過期" : "正常", next.is_stale ? "status-warning" : "status-ok")}
+          ${metric("Stale 狀態", staleStatusText(next.stale_status, next.lag_issues), staleStatusClass(next.stale_status, next.lag_issues))}
           ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
           ${metric("AI 信心值", `${fmtNumber(next.confidence)}%`)}
         </div>

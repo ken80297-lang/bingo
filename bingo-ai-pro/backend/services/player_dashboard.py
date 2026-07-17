@@ -133,6 +133,49 @@ def _target_status(target_issue: Any, current_issue: Any) -> dict:
     return {"is_current": False, "status": "expired"}
 
 
+def _dashboard_prediction_freshness(target_issue: Any, current_issue: Any) -> dict:
+    target_int = _as_int(_valid_production_issue(target_issue))
+    current_int = _as_int(_valid_production_issue(current_issue))
+    if target_int is None or current_int is None:
+        return {
+            "dashboard_status": "unavailable",
+            "stale_status": "unknown",
+            "stale_status_label": "unknown",
+            "is_stale": True,
+            "lag_issues": None,
+            "expected_target_issue": None,
+        }
+
+    expected_target = current_int + 1
+    lag = max(expected_target - target_int, 0)
+    if lag == 0:
+        return {
+            "dashboard_status": "waiting_draw",
+            "stale_status": "normal",
+            "stale_status_label": "normal",
+            "is_stale": False,
+            "lag_issues": 0,
+            "expected_target_issue": str(expected_target),
+        }
+    if lag == 1:
+        return {
+            "dashboard_status": "waiting_refresh",
+            "stale_status": "waiting_sync",
+            "stale_status_label": "waiting_sync",
+            "is_stale": True,
+            "lag_issues": 1,
+            "expected_target_issue": str(expected_target),
+        }
+    return {
+        "dashboard_status": "expired",
+        "stale_status": "possibly_expired",
+        "stale_status_label": "possibly_expired",
+        "is_stale": True,
+        "lag_issues": lag,
+        "expected_target_issue": str(expected_target),
+    }
+
+
 def _parse_draw_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -154,7 +197,7 @@ def _parse_draw_datetime(value: Any) -> datetime | None:
 def _format_draw_time(value: Any) -> str | None:
     parsed = _parse_draw_datetime(value)
     if parsed:
-        return parsed.strftime("%Y/%m/%d %H:%M")
+        return parsed.strftime("%Y/%m/%d %H:%M:%S")
     return str(value) if value else None
 
 
@@ -169,7 +212,7 @@ def _expected_draw_time(next_data: dict, current_draw: dict | None) -> tuple[str
     current_time = (current_draw or {}).get("draw_time")
     parsed = _parse_draw_datetime(current_time)
     if parsed:
-        return (parsed + timedelta(minutes=5)).strftime("%Y/%m/%d %H:%M"), "derived"
+        return (parsed + timedelta(minutes=5)).strftime("%Y/%m/%d %H:%M:%S"), "derived"
     return None, "unavailable"
 
 
@@ -279,12 +322,11 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         target_issue = derived
         target_issue_source = "derived_from_source_issue" if derived else "unavailable"
     status = _target_status(target_issue, current_issue)
+    freshness = _dashboard_prediction_freshness(target_issue, current_issue)
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
-    based_on_draw_time = _format_draw_time((current_draw or {}).get("draw_time"))
-    if str((current_draw or {}).get("issue")) != str(based_on_issue):
-        based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
-        based_on_draw_time = _format_draw_time((based_draw or {}).get("draw_time")) or based_on_draw_time
+    based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
+    based_on_draw_time = _format_draw_time((based_draw or {}).get("draw_time"))
     recommendation_warning = None
     if len(numbers) < 20:
         recommendation_warning = f"目前僅產生 {len(numbers)} 個有效推薦號碼"
@@ -294,14 +336,20 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "target_issue_source": target_issue_source,
         "based_on_issue": based_on_issue,
         "based_on_draw_time": based_on_draw_time,
+        "based_on_draw_exists": bool(based_draw),
+        "latest_official_issue": current_issue,
+        "expected_target_issue": freshness.get("expected_target_issue") or refresh.get("expected_target_issue"),
         "is_current": status["is_current"],
-        "status": status["status"],
+        "status": freshness["dashboard_status"],
+        "target_status": status["status"],
+        "stale_status": freshness["stale_status"],
+        "stale_status_label": freshness["stale_status_label"],
         "refresh_status": refresh.get("refresh_status"),
         "refresh_reason": refresh.get("refresh_reason"),
         "last_refresh_attempt": refresh.get("last_refresh_attempt"),
         "last_refresh_success": refresh.get("last_refresh_success"),
-        "is_stale": refresh.get("is_stale"),
-        "lag_issues": refresh.get("lag_issues"),
+        "is_stale": freshness["is_stale"],
+        "lag_issues": freshness["lag_issues"],
         "expected_draw_time": expected_time,
         "target_draw_time": expected_time,
         "expected_draw_time_source": expected_source,
@@ -359,6 +407,21 @@ def _latest_verified_prediction(records: list[dict]) -> dict | None:
     for record in records:
         if record.get("winning_numbers") or record.get("prediction_status") == "verified" or record.get("verified_at"):
             return record
+    return None
+
+
+def _prediction_by_target_issue(target_issue: Any) -> dict | None:
+    issue = _valid_production_issue(target_issue)
+    if not issue:
+        return None
+    try:
+        from database.prediction_history_store import _prediction_records_for_target_issue
+
+        for record in _prediction_records_for_target_issue(issue):
+            if is_production_prediction(record):
+                return record
+    except Exception:
+        logger.exception("dashboard direct prediction lookup failed target_issue=%s", issue)
     return None
 
 
@@ -755,13 +818,9 @@ def build_player_dashboard_summary() -> dict:
     next_prediction = _prediction_from_history(latest_prediction, current) or {}
     next_prediction["history"] = prediction_stats
     next_prediction["rule_library"] = _rule_library(analysis, next_prediction)
-    verified_record = _latest_verified_prediction(history_records)
-    verification_draw = None
-    if verified_record:
-        if current and str(verified_record.get("prediction_issue")) == str(current.get("issue")):
-            verification_draw = current
-        else:
-            verification_draw = get_official_draw_by_issue(verified_record.get("prediction_issue"))
+    previous_target_issue = next_prediction.get("based_on_issue")
+    verified_record = _prediction_by_target_issue(previous_target_issue)
+    verification_draw = get_official_draw_by_issue(previous_target_issue) if previous_target_issue else None
     previous_verification = _verification(verified_record, verification_draw)
 
     database_issue = (current or {}).get("issue")
