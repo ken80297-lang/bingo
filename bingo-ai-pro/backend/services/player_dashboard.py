@@ -13,6 +13,7 @@ from database.prediction_history_store import get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
+from database.prediction_history_store import is_production_prediction
 from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "latest_prediction": None,
     "prediction_history": [],
 }
+PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
 _PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="player-dashboard")
 
 
@@ -36,6 +38,12 @@ def _cached_summary() -> dict | None:
     payload = _PLAYER_SUMMARY_CACHE.get("payload")
     expires_at = float(_PLAYER_SUMMARY_CACHE.get("expires_at") or 0)
     if isinstance(payload, dict) and time.monotonic() < expires_at:
+        if payload.get("cache_filter_version") != PLAYER_CACHE_FILTER_VERSION:
+            return None
+        latest = ((payload.get("next_prediction") or {}).get("prediction_issue"))
+        based_on = ((payload.get("next_prediction") or {}).get("based_on_issue"))
+        if latest and not is_production_prediction({"issue": based_on, "prediction_issue": latest, "recommend_numbers": (payload.get("next_prediction") or {}).get("recommend_numbers")}):
+            return None
         cached = deepcopy(payload)
         cached["cached"] = True
         return cached
@@ -48,6 +56,10 @@ def _store_summary_cache(payload: dict) -> None:
 
 
 def _store_component_cache(name: str, payload: Any) -> None:
+    if name == "latest_prediction" and payload and not is_production_prediction(payload):
+        return
+    if name == "prediction_history" and isinstance(payload, list):
+        payload = [item for item in payload if is_production_prediction(item)]
     _PLAYER_COMPONENT_CACHE[name] = deepcopy(payload)
 
 
@@ -55,6 +67,10 @@ def _load_component_cache(name: str, fallback=None):
     cached = _PLAYER_COMPONENT_CACHE.get(name)
     if cached is None:
         return fallback
+    if name == "latest_prediction" and cached and not is_production_prediction(cached):
+        return fallback
+    if name == "prediction_history" and isinstance(cached, list):
+        cached = [item for item in cached if is_production_prediction(item)]
     return deepcopy(cached)
 
 
@@ -306,6 +322,10 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "model_version": "V7",
         "model_scores": record.get("model_scores") or {},
         "winning_model": record.get("winning_model"),
+        "source": record.get("source") or "production_history",
+        "trigger": record.get("trigger") or "production_read_layer",
+        "production_valid": is_production_prediction(record),
+        "read_layer": record.get("read_layer") or {},
         "reasons": record.get("reasons") or [],
         "alerts": _alerts(numbers, record.get("super_number")),
         "history": {},
@@ -380,7 +400,51 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
         "verified_at": record.get("verified_at") or (record.get("updated_at") if draw_numbers else None),
         "learning_used": bool(record.get("learning_used")),
         "learning_status": "completed" if record.get("learning_used") else "waiting",
+        "learned_at": record.get("learned_at"),
+        "source": record.get("source") or "production_history",
+        "trigger": record.get("trigger") or "production_read_layer",
+        "production_valid": is_production_prediction(record),
         "verification_status": "verified" if draw_numbers else "pending",
+    }
+
+
+def _history_item(record: dict) -> dict:
+    predicted = _as_int_list(record.get("recommend_numbers"))
+    official = _as_int_list(record.get("winning_numbers"))
+    matched = _as_int_list(record.get("matched_numbers"))
+    if official and not matched:
+        official_set = set(official)
+        matched = [number for number in predicted if number in official_set]
+    missed = _as_int_list(record.get("missed_numbers"))
+    if official and not missed:
+        official_set = set(official)
+        missed = [number for number in predicted if number not in official_set]
+    return {
+        "id": record.get("id"),
+        "issue": record.get("issue"),
+        "based_on_issue": record.get("issue"),
+        "target_issue": record.get("prediction_issue"),
+        "prediction_issue": record.get("prediction_issue"),
+        "created_at": record.get("predict_time") or record.get("created_at"),
+        "prediction_created_at": record.get("predict_time") or record.get("created_at"),
+        "verified_at": record.get("verified_at"),
+        "learning_used": bool(record.get("learning_used")),
+        "learned_at": record.get("learned_at"),
+        "recommend_numbers": predicted,
+        "winning_numbers": official,
+        "matched_numbers": matched,
+        "missed_numbers": missed,
+        "hit_count": record.get("hit_count") if record.get("hit_count") is not None else len(matched),
+        "prediction_count": record.get("prediction_count") or len(predicted),
+        "super_number": record.get("super_number"),
+        "official_super_number": record.get("actual_super"),
+        "super_number_hit": bool(record.get("super_number_hit") or record.get("super_hit")),
+        "prediction_status": record.get("prediction_status"),
+        "verification_status": "verified" if official or record.get("prediction_status") == "verified" else "pending",
+        "learning_status": "completed" if record.get("learning_used") else "waiting",
+        "source": record.get("source") or "production_history",
+        "trigger": record.get("trigger") or "production_read_layer",
+        "production_valid": is_production_prediction(record),
     }
 
 
@@ -404,6 +468,17 @@ RULE_LIBRARY_NAMES = [
     ("integrated", "整合數"),
     ("sunset", "太陽下山"),
     ("momentum", "盤勢動能"),
+    ("super_number_trajectory_recovery", "超獎軌跡回補"),
+    ("cluster_aftershock_recovery", "群聚後連號回補"),
+    ("twins", "雙生"),
+    ("consecutive", "連號"),
+    ("patch", "補號"),
+    ("hot_zone", "熱區"),
+    ("cold_zone", "冷區"),
+    ("three_star", "三星"),
+    ("four_star", "四星"),
+    ("five_star", "五星"),
+    ("six_star", "六星"),
 ]
 
 
@@ -460,6 +535,16 @@ def _rule_item(key: str, label: str, analysis: dict, prediction: dict) -> dict:
         score = super_data.get("confidence")
         candidates = _as_int_list(super_data.get("candidate_numbers"))[:10]
         reason = "依超級獎軌跡規則產生候選；此指標仍需持續校正。"
+    elif key == "super_number_trajectory_recovery":
+        super_data = ((analysis.get("ai_score") or {}).get("super_number_trajectory_recovery") or {})
+        score = super_data.get("confidence")
+        candidates = _as_int_list(super_data.get("candidate_numbers"))[:10]
+        reason = "觀察超級獎號近期移動、距離、反轉與可能回補位置。"
+    elif key == "cluster_aftershock_recovery":
+        cluster_data = ((analysis.get("ai_score") or {}).get("cluster_aftershock_recovery") or {})
+        score = cluster_data.get("confidence")
+        candidates = _as_int_list(cluster_data.get("candidate_numbers") or cluster_data.get("patch_candidates"))[:10]
+        reason = "觀察大群聚後的小連號與回補候選。"
     elif key == "laowanjia":
         score = analysis.get("laowanjia_score")
         candidates = numbers[:8]
@@ -468,6 +553,31 @@ def _rule_item(key: str, label: str, analysis: dict, prediction: dict) -> dict:
         except Exception:
             impact = "中"
         reason = "目前盤勢與歷史老玩家規則的符合程度。"
+    elif key == "twins":
+        candidates = _twins(numbers)
+        reason = "候選中出現的雙生號。"
+    elif key == "consecutive":
+        candidates = sorted({number for pair in _pairs(numbers, 1) for number in pair})
+        reason = "候選中出現的連號群。"
+    elif key == "patch":
+        candidates = _patch_numbers(numbers)
+        reason = "依相鄰、間隔與十位補位產生的補號候選。"
+    elif key == "hot_zone":
+        zones = analysis.get("hot_zone") or []
+        candidates = []
+        if zones:
+            try:
+                start = int(zones[0])
+                candidates = [number for number in numbers if start <= number <= start + 9]
+            except Exception:
+                candidates = []
+        reason = "近期最明顯的熱區觀察。"
+    elif key == "cold_zone":
+        candidates = _as_int_list(analysis.get("cold_numbers"))[:8]
+        reason = "近期最明顯的冷區觀察。"
+    elif key in {"three_star", "four_star", "five_star", "six_star"}:
+        candidates = _as_int_list(analysis.get(key))[:10]
+        reason = f"{label}候選觀察。"
     else:
         status = "insufficient"
         impact = "資料不足"
@@ -519,6 +629,7 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         "rules": rules,
         "laowanjia_index": source.get("laowanjia_score"),
         "hot_zones": source.get("hot_zone") or [],
+        "cold_zone": source.get("cold_zone"),
         "star_prediction": {
             "three_star": source.get("three_star"),
             "four_star": source.get("four_star"),
@@ -638,6 +749,7 @@ def build_player_dashboard_summary() -> dict:
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
     prediction_stats = full_stats if full_stats.get("status") else _history_stats(history_records)
+    production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
 
     current = _current_draw(official)
     next_prediction = _prediction_from_history(latest_prediction, current) or {}
@@ -661,6 +773,8 @@ def build_player_dashboard_summary() -> dict:
     payload = {
         "status": "ok",
         "generated_at": generated_at,
+        "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
+        "production_filtered": True,
         "current_draw": current,
         "sync": {
             "database_latest_issue": database_issue,
@@ -672,6 +786,7 @@ def build_player_dashboard_summary() -> dict:
         },
         "next_prediction": next_prediction,
         "previous_verification": previous_verification,
+        "prediction_history": production_history,
         "data_counts": _data_counts(history_records, full_stats, aggregates),
         "history": prediction_stats,
         "aggregates": aggregates,

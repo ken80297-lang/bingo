@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import sqlite3
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -133,9 +134,123 @@ def test_latest_prediction_history_uses_numeric_production_order(monkeypatch):
     monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
 
     assert prediction_history_store.get_latest_prediction_history() is None
-    assert "length(prediction_issue) >= 6" in captured["sql"]
-    assert "prediction_issue::bigint desc" in captured["sql"]
-    assert "cast(prediction_issue as integer) desc" in captured["sqlite_sql"]
+    assert "join official_draw_history" in captured["sql"]
+    assert "length(p.prediction_issue) >=" in captured["sql"]
+    assert "p.prediction_issue::bigint desc" in captured["sql"]
+    assert "cast(p.prediction_issue as integer) desc" in captured["sqlite_sql"]
+
+
+def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch, tmp_path):
+    db_path = tmp_path / "prediction_latest.db"
+
+    def connect():
+        return sqlite3.connect(db_path)
+
+    with connect() as conn:
+        conn.executescript(
+            """
+            create table prediction_history (
+                id integer primary key,
+                issue text,
+                prediction_issue text,
+                predict_time text,
+                strategy text,
+                confidence real,
+                recommend_numbers text,
+                super_number integer,
+                three_star text,
+                four_star text,
+                twins text,
+                consecutive text,
+                patch_numbers text,
+                tails text,
+                big_small text,
+                odd_even text,
+                reasons text,
+                winning_numbers text,
+                hit_count integer,
+                super_hit integer,
+                three_star_hit integer,
+                four_star_hit integer,
+                accuracy real,
+                created_at text,
+                updated_at text,
+                model_scores text,
+                winning_model text,
+                prediction_status text,
+                verified_issue text,
+                verified_at text,
+                matched_numbers text,
+                missed_numbers text,
+                prediction_count integer,
+                hit_rate real,
+                super_number_hit integer,
+                verification_version text,
+                learning_used integer,
+                model_score real
+            );
+            create table official_draw_history (issue text primary key);
+            """
+        )
+        numbers = "[" + ",".join(str(n) for n in range(1, 21)) + "]"
+        rows = [
+            (1, "120", "121", "unit", "2026-07-17T10:00:00"),
+            (2, "115039899", "115039900", "V7", "2026-07-17T09:00:00"),
+            (3, "215039999", "215040000", "simulation", "2026-07-17T11:00:00"),
+        ]
+        for row_id, issue, target, strategy, created_at in rows:
+            conn.execute(
+                """
+                insert into prediction_history (
+                    id, issue, prediction_issue, predict_time, strategy, confidence,
+                    recommend_numbers, super_number, three_star, four_star, twins,
+                    consecutive, patch_numbers, tails, big_small, odd_even, reasons,
+                    winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
+                    accuracy, created_at, updated_at, model_scores, winning_model,
+                    prediction_status, verified_issue, verified_at, matched_numbers,
+                    missed_numbers, prediction_count, hit_rate, super_number_hit,
+                    verification_version, learning_used, model_score
+                ) values (
+                    ?, ?, ?, ?, ?, 88,
+                    ?, 7, '[1,2,3]', '[1,2,3,4]', '[]',
+                    '[]', '[]', '[]', 'balanced', 'balanced', '[]',
+                    '[]', 0, 0, 0, 0,
+                    0, ?, ?, '{}', null,
+                    'waiting_draw', null, null, '[]',
+                    '[]', 20, 0, 0,
+                    null, 0, 0
+                )
+                """,
+                (row_id, issue, target, created_at, strategy, numbers, created_at, created_at),
+            )
+            conn.execute("insert into official_draw_history (issue) values (?)", (target,))
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: False)
+    monkeypatch.setattr(prediction_history_store, "_sqlite_connection", connect)
+
+    latest = prediction_history_store.get_latest_prediction_history()
+    records = prediction_history_store.get_prediction_history_records(10)
+
+    assert latest["issue"] == "115039899"
+    assert latest["prediction_issue"] == "115039900"
+    assert latest["read_layer"]["production_filtered"] is True
+    assert [record["prediction_issue"] for record in records] == ["115039900"]
+
+
+def test_is_production_prediction_allows_legacy_source_null_with_official_shape():
+    assert prediction_history_store.is_production_prediction({
+        "issue": "115039899",
+        "prediction_issue": "115039900",
+        "recommend_numbers": list(range(1, 21)),
+        "source": None,
+        "trigger": None,
+    })
+    assert not prediction_history_store.is_production_prediction({
+        "issue": "120",
+        "prediction_issue": "121",
+        "recommend_numbers": list(range(1, 21)),
+    })
 
 
 def test_recommendation_api_preview_does_not_persist_prediction(monkeypatch):

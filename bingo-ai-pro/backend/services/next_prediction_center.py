@@ -9,6 +9,7 @@ from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import (
     get_latest_prediction_history,
     get_prediction_history_statistics,
+    is_production_prediction,
 )
 from database.recommendation_center_store import get_latest_recommendation_run
 from services.prediction_refresh import prediction_refresh_status
@@ -196,7 +197,10 @@ def _fallback_recommendation() -> dict | None:
 
 def build_next_prediction_dashboard() -> dict:
     latest_history = get_latest_prediction_history()
-    fallback = None if latest_history else _fallback_recommendation()
+    fallback = None
+    if not latest_history:
+        candidate = _fallback_recommendation()
+        fallback = candidate if is_production_prediction(candidate) else None
     prediction = latest_history or fallback
     latest_draw = get_latest_official_draw()
     refresh = prediction_refresh_status(latest_draw, prediction)

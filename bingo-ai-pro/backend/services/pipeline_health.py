@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
@@ -11,6 +13,7 @@ from database.prediction_history_store import (
     _json_loads,
     _normalize_numbers,
     _query_with_fallback,
+    get_latest_prediction_history,
     get_prediction_lifecycle_aggregates,
 )
 from services.collector_runtime import collector_runtime_status
@@ -25,6 +28,8 @@ PREDICTION_INTERVAL_MINUTES = 5
 EXPECTED_PREDICTIONS_PER_DAY = int(
     ((ACTIVE_WINDOW_END_HOUR - ACTIVE_WINDOW_START_HOUR) * 60) / PREDICTION_INTERVAL_MINUTES
 )
+RECOVERY_DRY_RUN_HEALTH_TTL_SECONDS = 60
+_RECOVERY_DRY_RUN_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 
 
 def _today_taipei() -> str:
@@ -103,39 +108,19 @@ def _query(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[
 
 
 def prediction_pipeline_validation() -> dict:
-    latest_rows = _query(
-        """
-        select issue, prediction_issue, recommend_numbers, prediction_status, created_at, updated_at
-        from prediction_history
-        where prediction_issue is not null
-          and prediction_issue not like '99%%'
-          and upper(prediction_issue) not like 'TEST%%'
-        order by prediction_issue desc, updated_at desc
-        limit 1
-        """,
-        sqlite_sql="""
-        select issue, prediction_issue, recommend_numbers, prediction_status, created_at, updated_at
-        from prediction_history
-        where prediction_issue is not null
-          and prediction_issue not like '99%'
-          and upper(prediction_issue) not like 'TEST%'
-        order by prediction_issue desc, updated_at desc
-        limit 1
-        """,
-    )
-    if not latest_rows:
+    latest = get_latest_prediction_history()
+    if not latest:
         return {"status": "warning", "message": "no live prediction history found"}
-    row = latest_rows[0]
-    based_on = _valid_issue(row[0])
-    target = _valid_issue(row[1])
-    numbers = _normalize_numbers(_json_loads(row[2]))
+    based_on = _valid_issue(latest.get("issue"))
+    target = _valid_issue(latest.get("prediction_issue"))
+    numbers = _normalize_numbers(latest.get("recommend_numbers"))
     target_matches = False
     try:
         target_matches = bool(based_on and target and int(target) == int(based_on) + 1)
     except Exception:
         target_matches = False
     numbers_valid = bool(numbers and len(numbers) == len(set(numbers)) and all(1 <= n <= 80 for n in numbers))
-    status_ok = row[3] in ("waiting_draw", "verified")
+    status_ok = latest.get("prediction_status") in ("waiting_draw", "verified")
     checks = {
         "based_on_issue_valid": bool(based_on),
         "prediction_issue_valid": bool(target),
@@ -144,8 +129,8 @@ def prediction_pipeline_validation() -> dict:
         "recommend_numbers_valid": numbers_valid,
         "recommend_numbers_count": len(numbers),
         "recommend_numbers_has_20": len(numbers) == 20,
-        "prediction_status": row[3],
-        "prediction_status_expected_for_live": row[3] == "waiting_draw",
+        "prediction_status": latest.get("prediction_status"),
+        "prediction_status_expected_for_live": latest.get("prediction_status") == "waiting_draw",
         "prediction_status_acceptable": status_ok,
     }
     hard_failures = [
@@ -164,8 +149,10 @@ def prediction_pipeline_validation() -> dict:
         "latest": {
             "based_on_issue": based_on,
             "prediction_issue": target,
-            "created_at": str(row[4]) if row[4] is not None else None,
-            "updated_at": str(row[5]) if row[5] is not None else None,
+            "created_at": latest.get("created_at"),
+            "updated_at": latest.get("updated_at"),
+            "record_id": latest.get("id"),
+            "read_layer": latest.get("read_layer"),
         },
         "checks": checks,
         "warnings": hard_failures,
@@ -574,6 +561,27 @@ def prediction_trigger_event_counts() -> dict:
     }
 
 
+def recovery_dry_run_health() -> dict:
+    cached = _RECOVERY_DRY_RUN_CACHE.get("payload")
+    if isinstance(cached, dict) and time.monotonic() < float(_RECOVERY_DRY_RUN_CACHE.get("expires_at") or 0):
+        payload = dict(cached)
+        payload["cache_source"] = "memory"
+        return payload
+    if os.getenv("PIPELINE_HEALTH_INLINE_DRY_RUN", "").lower() not in ("1", "true", "yes"):
+        return {
+            "status": "skipped",
+            "reason": "request_time_dry_run_disabled",
+            "verification": {"would_verify": None},
+            "learning_sync": {"would_sync": None},
+            "cache_source": "not_run",
+        }
+    payload = dry_run_all()
+    if isinstance(payload, dict):
+        _RECOVERY_DRY_RUN_CACHE["payload"] = dict(payload)
+        _RECOVERY_DRY_RUN_CACHE["expires_at"] = time.monotonic() + RECOVERY_DRY_RUN_HEALTH_TTL_SECONDS
+    return payload
+
+
 def pipeline_alerts(coverage: dict, pending: dict, target_counts: dict, recovery: dict) -> list[dict]:
     alerts = []
     schedule_coverage = float(coverage.get("schedule_coverage") or 0)
@@ -605,23 +613,118 @@ def _status_from_alerts(alerts: list[dict]) -> str:
     return "healthy"
 
 
+def _safe_error_code(name: str) -> str:
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in str(name).lower()).strip("_")
+    return f"{normalized or 'component'}_unavailable"
+
+
+def _safe_component(name: str, loader, fallback: Any) -> tuple[Any, dict]:
+    started = time.monotonic()
+    try:
+        value = loader()
+        duration_ms = round((time.monotonic() - started) * 1000, 2)
+        return value, {"status": "ok", "duration_ms": duration_ms}
+    except Exception as exc:
+        logger.exception("pipeline health component failed: %s", name)
+        duration_ms = round((time.monotonic() - started) * 1000, 2)
+        return fallback, {
+            "status": "unavailable",
+            "duration_ms": duration_ms,
+            "error_code": _safe_error_code(name),
+            "error_type": exc.__class__.__name__,
+        }
+
+
 def build_pipeline_health(scheduler: Any | None = None) -> dict:
-    coverage = prediction_coverage()
-    pending = lifecycle_pending_counts()
-    target_counts = target_unconfirmed_counts()
-    recovery = dry_run_all()
+    health_started = time.monotonic()
+    component_status: dict[str, dict] = {}
+
+    def component(name: str, loader, fallback: Any) -> Any:
+        value, status = _safe_component(name, loader, fallback)
+        component_status[name] = status
+        return value
+
+    coverage = component("coverage", prediction_coverage, {
+        "date": _today_taipei(),
+        "prediction_expected_today": EXPECTED_PREDICTIONS_PER_DAY,
+        "schedule_expected_count": _expected_so_far(),
+        "prediction_created_today": 0,
+        "prediction_coverage": 0.0,
+        "schedule_coverage": 0.0,
+        "missing_prediction_count": 0,
+        "missing_prediction_so_far": 0,
+        "missing_target_issues": [],
+    })
+    pending = component("pending", lifecycle_pending_counts, {
+        "verification_pending": 0,
+        "learning_pending": 0,
+        "live_verification_pending": 0,
+        "legacy_verification_incomplete": 0,
+        "live_learning_pending": 0,
+        "legacy_learning_incomplete": 0,
+    })
+    target_counts = component("target_counts", target_unconfirmed_counts, {
+        "target_unconfirmed_today": 0,
+        "null_target_today": 0,
+    })
+    recovery = component("recovery_dry_run", recovery_dry_run_health, {
+        "verification": {"would_verify": None},
+        "learning_sync": {"would_sync": None},
+        "status": "unavailable",
+    })
     alerts = pipeline_alerts(coverage, pending, target_counts, recovery)
-    aggregates = get_prediction_lifecycle_aggregates()
-    times = latest_pipeline_times()
-    scheduler_payload = scheduler_status(scheduler)
-    validation = prediction_pipeline_validation()
-    event_health = operation_event_health()
-    official_time = official_draw_time_investigation()
-    trigger_counts = prediction_trigger_event_counts()
+    aggregates = component("lifecycle_aggregates", get_prediction_lifecycle_aggregates, {})
+    times = component("latest_pipeline_times", latest_pipeline_times, {})
+    scheduler_payload = component("scheduler", lambda: scheduler_status(scheduler), {
+        "status": "unavailable",
+        "jobs": [],
+        "prediction_job_registered": False,
+        "runtime": {},
+    })
+    validation = component("latest_prediction", prediction_pipeline_validation, {
+        "status": "warning",
+        "message": "latest prediction validation unavailable",
+    })
+    event_health = component("operation_events", operation_event_health, {"status": "unavailable"})
+    official_time = component("official_draw_time", official_draw_time_investigation, {"status": "unavailable"})
+    trigger_counts = component("operation_counters", prediction_trigger_event_counts, {
+        "prediction_trigger_count_today": 0,
+        "prediction_service_call_count_today": 0,
+        "prediction_create_started_count_today": 0,
+        "prediction_created_count_today": 0,
+        "prediction_skipped_count_today": 0,
+    })
+    verification_delay_payload = component("verification_delay", verification_delay, {
+        "sample_size": 0,
+        "average_delay_minutes": 0.0,
+        "p95_delay_minutes": 0.0,
+        "status": "unavailable",
+    })
+    learning_delay_payload = component("learning_delay", learning_delay, {
+        "sample_size": 0,
+        "average_delay_minutes": 0.0,
+        "p95_delay_minutes": 0.0,
+        "status": "unavailable",
+    })
+    learned_count = component("learning_sample_count", get_learned_live_target_count, None)
+    failed_components = [
+        name for name, status in component_status.items()
+        if status.get("status") != "ok"
+    ]
+    if failed_components:
+        alerts.append({
+            "type": "health_component_unavailable",
+            "severity": "warning",
+            "message": "one or more health components are unavailable",
+            "components": failed_components,
+        })
+    pipeline_status = _status_from_alerts(alerts)
+    response_status = "partial" if failed_components else "ok"
     payload = {
-        "status": "ok",
+        "status": response_status,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "pipeline_status": _status_from_alerts(alerts),
+        "total_duration_ms": None,
+        "pipeline_status": "warning" if response_status == "partial" and pipeline_status == "healthy" else pipeline_status,
         **coverage,
         **times,
         **pending,
@@ -629,18 +732,19 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
         "prediction_scheduler_status": scheduler_payload.get("status"),
         **trigger_counts,
         "prediction_validation": validation,
-        "verification_delay": verification_delay(),
-        "learning_delay": learning_delay(),
+        "verification_delay": verification_delay_payload,
+        "learning_delay": learning_delay_payload,
         "dashboard_statistics": {
             "prediction_count": aggregates.get("total_prediction_count"),
             "valid_prediction_count": aggregates.get("valid_prediction_count"),
             "verified_prediction_count": aggregates.get("completed_verified_count"),
-            "learning_sample_count": get_learned_live_target_count(),
+            "learning_sample_count": learned_count,
             "null_target_count": aggregates.get("null_target_count"),
             "has_official_result_count": aggregates.get("has_official_result_count"),
         },
         "operation_events": event_health,
         "scheduler": scheduler_payload,
+        "components": component_status,
         "alerts": alerts,
         "recovery_dry_run": {
             "verification_would_verify": (recovery.get("verification") or {}).get("would_verify", 0),
@@ -652,5 +756,6 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
         },
         "official_draw_time": official_time,
     }
+    payload["total_duration_ms"] = round((time.monotonic() - health_started) * 1000, 2)
     json.dumps(payload, allow_nan=False, default=str)
     return payload

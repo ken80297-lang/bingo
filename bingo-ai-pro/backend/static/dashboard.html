@@ -368,7 +368,7 @@
       next: "/api/next-prediction",
       system: "/api/system/status",
       official: "/api/official/statistics",
-      health: "/api/system-health",
+      health: "/api/pipeline/health",
       operations: "/api/operations/summary",
       evolution: "/api/strategy-evolution/latest",
       evolutionHistory: "/api/strategy-evolution/history",
@@ -445,6 +445,18 @@
     };
 
     const labelZh = (value) => zhMap[value] || safe(value);
+    const numberLabel = (value) => String(Number(value)).padStart(2, "0");
+    const sourceText = (value) => ({
+      official_collector: "官方 Collector",
+      production_history: "正式歷史資料",
+      production_read_layer: "正式讀取層",
+      database: "正式資料庫"
+    }[value] || safe(value, "正式資料"));
+    const triggerText = (value) => ({
+      official_draw_saved: "官方開獎儲存完成",
+      production_read_layer: "正式讀取層",
+      scheduler: "排程觸發"
+    }[value] || safe(value, "正式讀取層"));
 
     const normalizeNumbers = (values) => {
       const source = Array.isArray(values) ? values : [];
@@ -457,7 +469,21 @@
       .filter((pair) => pair.length === 2)
       .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 
-    const formatDateTime = (value) => safe(value);
+    const formatDateTime = (value) => {
+      if (!value) return "尚無資料";
+      const normalized = String(value).includes(" ") ? String(value).replace(" ", "T") : String(value);
+      const date = new Date(normalized);
+      if (Number.isNaN(date.getTime())) return safe(value);
+      return date.toLocaleString("zh-TW", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      }).replace(/\//g, "-");
+    };
 
     const metric = (label, value, extraClass = "") => `
       <div class="metric">
@@ -470,13 +496,13 @@
       const hits = new Set(normalizeNumbers(hitValues));
       const items = normalizeNumbers(values);
       if (!items.length) return `<div class="empty">尚無資料</div>`;
-      return `<div class="balls">${items.map((n) => `<span class="ball ${type} ${hits.has(Number(n)) ? "hit" : ""}">${safe(n)}</span>`).join("")}</div>`;
+      return `<div class="balls">${items.map((n) => `<span class="ball ${type} ${hits.has(Number(n)) ? "hit" : ""}">${numberLabel(n)}</span>`).join("")}</div>`;
     };
 
     const chips = (values) => {
       const items = asList(values).filter((item) => item !== null && item !== undefined && item !== "");
       if (!items.length) return `<div class="empty">尚無資料</div>`;
-      return `<div class="chips">${items.map((item) => `<span class="chip">${Array.isArray(item) ? item.join(" - ") : safe(item)}</span>`).join("")}</div>`;
+      return `<div class="chips">${items.map((item) => `<span class="chip">${Array.isArray(item) ? item.map(numberLabel).join("、") : safe(item)}</span>`).join("")}</div>`;
     };
 
     const textList = (values) => {
@@ -571,11 +597,14 @@
         status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
         expected_draw_time: raw.expected_draw_time,
         target_draw_time: raw.target_draw_time || raw.expected_draw_time,
+        generated_at: raw.generated_at,
         confidence: raw.confidence,
         candidates: normalizeNumbers(raw.candidates || raw.main_numbers || raw.recommend_numbers || []),
         super_number: raw.super_number || raw.recommended_super_number,
         three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
         four_star: normalizeNumbers(raw.four_star || asList(raw.main_numbers).slice(0, 4)),
+        five_star: normalizeNumbers(raw.five_star || []),
+        six_star: normalizeNumbers(raw.six_star || []),
         twins: normalizeNumbers(raw.twins || []),
         consecutive: sortPairs(raw.consecutive || []),
         patch_numbers: normalizeNumbers(raw.patch_numbers || []),
@@ -585,6 +614,10 @@
         odd_even: raw.odd_even,
         model_scores: raw.model_scores || {},
         winning_model: raw.winning_model,
+        source: raw.source,
+        trigger: raw.trigger,
+        production_valid: raw.production_valid !== false,
+        is_stale: raw.is_stale,
         reasons: raw.reasons || [],
         recommendation_warning: raw.recommendation_warning,
         rule_library: raw.rule_library || (player && player.rule_library) || {}
@@ -613,7 +646,7 @@
       renderLaowanjia(next.rule_library || (player && player.rule_library) || {}, next);
       renderReasons(next.reasons, data.next || {}, previousVerification, next);
       renderAlerts(alerts, data.analysisLatest || {});
-      renderHistory(history, previousVerification, counts);
+      renderHistory(history, previousVerification, counts, player ? (player.prediction_history || []) : []);
       renderSync(sync, currentDraw, counts, data.collectorStatus || {});
       renderContinuity(data.collectorGaps || {});
       renderPipeline(data.health || {}, data.collectorStatus || {});
@@ -644,6 +677,9 @@
       const status = next.status || "unknown";
       const verification = window.__previousVerification || {};
       const verified = verification && verification.verification_status === "verified";
+      const numbers = normalizeNumbers(next.candidates);
+      const numberWarning = numbers.length === 20 ? "" : `<div class="notice warn">資料異常：目前正式 snapshot 為 ${fmtNumber(numbers.length)} 碼，未達固定 20 碼。</div>`;
+      const rules = asList((next.rule_library || {}).rules);
       const hitText = verified
         ? `${fmtNumber(verification.hit_count)} / ${fmtNumber(verification.hit_denominator || verification.prediction_count || 20)}`
         : statusText(verification.verification_status || "waiting_draw");
@@ -651,28 +687,37 @@
         ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
         : "尚未驗證";
       document.getElementById("cardNext").innerHTML = `
-        <h2>1. 下一期 AI 推薦</h2>
+        <h2>下一期 AI 推薦<br><span class="muted">第${safe(next.prediction_issue)}期</span></h2>
         <div class="grid">
-          ${metric("下一期期號", safe(next.prediction_issue))}
-          ${metric("預估開獎時間", formatDateTime(next.target_draw_time))}
-          ${metric("依據期號", safe(next.based_on_issue))}
+          ${metric("下一期期號", `第${safe(next.prediction_issue)}期`)}
+          ${metric("依據期號", `第${safe(next.based_on_issue)}期`)}
           ${metric("依據開獎時間", formatDateTime(next.based_on_draw_time))}
+          ${metric("Prediction 狀態", statusText(status), statusClass(status))}
+          ${metric("資料來源", sourceText(next.source))}
+          ${metric("Trigger", triggerText(next.trigger))}
+          ${metric("Stale 狀態", next.is_stale ? "可能過期" : "正常", next.is_stale ? "status-warning" : "status-ok")}
+          ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
           ${metric("AI 信心值", `${fmtNumber(next.confidence)}%`)}
-          ${metric("狀態", statusText(status), statusClass(status))}
-          ${metric("最佳模型", labelZh(next.winning_model))}
         </div>
-        <h3>AI 推薦 20 碼</h3>
+        <h3>AI推薦20碼</h3>
+        <div class="summary-line">實際 count：${fmtNumber(numbers.length)} / 20</div>
         ${next.recommendation_warning ? `<div class="notice warn">${safe(next.recommendation_warning)}</div>` : ""}
-        ${balls(next.candidates)}
+        ${numberWarning}
+        ${balls(numbers)}
         <h3>超級獎號</h3>${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超級獎號推薦</div>`}
         <div class="section">
-          <p class="mini-title">三星</p>${balls(next.three_star)}
-          <p class="mini-title">四星</p>${balls(next.four_star)}
+          <p class="mini-title">星數預測</p>
+          ${rows([
+            row("三星候選", normalizeNumbers(next.three_star).length ? normalizeNumbers(next.three_star).map(numberLabel).join("、") : "尚待分析"),
+            row("四星候選", normalizeNumbers(next.four_star).length ? normalizeNumbers(next.four_star).map(numberLabel).join("、") : "尚待分析"),
+            row("五星候選", normalizeNumbers(next.five_star).length ? normalizeNumbers(next.five_star).map(numberLabel).join("、") : "尚待分析"),
+            row("六星候選", normalizeNumbers(next.six_star).length ? normalizeNumbers(next.six_star).map(numberLabel).join("、") : "尚待分析")
+          ])}
         </div>
         <div class="section">
           <p class="mini-title">雙生號</p>${balls(next.twins)}
-          <p class="mini-title">連號</p>${textList(sortPairs(next.consecutive).map((pair) => `${pair[0]}-${pair[1]}`))}
-          <p class="mini-title">補號</p>${balls(next.patch_numbers)}
+          <p class="mini-title">連號</p>${textList(sortPairs(next.consecutive).map((pair) => pair.map(numberLabel).join("、")))}
+          <p class="mini-title">補號候選</p>${balls(next.patch_numbers)}
           <p class="mini-title">尾數</p>${renderTailGroups(next)}
         </div>
         <div class="grid">
@@ -684,17 +729,26 @@
           ${textList([labelZh(next.big_small), labelZh(next.odd_even), next.twins.length ? "雙生模式" : "", next.patch_numbers.length ? "補號模式" : "", next.super_number ? "超級獎模式" : ""].filter(Boolean))}
         </div>
         <div class="section">
-          <h3>上一期 AI 驗證</h3>
+          <h3>上一期推薦結果</h3>
           <div class="grid">
+            ${metric("上一期 target", safe(verification.target_issue || verification.verified_issue))}
             ${metric("命中", hitText)}
             ${metric("超級獎", superText, verification.super_number_hit ? "status-ok" : "")}
+            ${metric("Verified", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
+            ${metric("Learned", verification.learning_used ? "已完成學習" : "尚未完成", verification.learning_used ? "status-ok" : "status-warning")}
           </div>
-          <div class="summary-line">查看完整驗證結果 → AI 驗證中心</div>
+          <div class="summary-line">完整內容請見「上一期命中結果」與「歷史推薦紀錄」。</div>
         </div>
-        <button class="collapse-button" type="button" aria-expanded="false" onclick="toggleSection('modelVotesBody', this)">
+        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="modelVotesBody" onclick="toggleSection('modelVotesBody', this)">
           <span>模型投票</span><span>${Object.keys(next.model_scores || {}).length ? "展開各模型評分" : "尚無資料"}</span>
         </button>
         <div id="modelVotesBody" hidden>${renderModelVotes(next.model_scores)}</div>
+        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="nextRuleLibraryBody" onclick="toggleSection('nextRuleLibraryBody', this)">
+          <span>完整 Rule Library 摘要</span><span>${rules.length ? "展開查看" : "尚無資料"}</span>
+        </button>
+        <div id="nextRuleLibraryBody" hidden>
+          <div class="rule-list">${rules.length ? rules.map(renderRuleItem).join("") : `<div class="empty">尚無資料</div>`}</div>
+        </div>
       `;
     }
 
@@ -705,7 +759,7 @@
       if (!groups.length) return `<div class="empty">尚無資料</div>`;
       return groups.map((group) => `
         <div class="rule-item">
-          <div class="rule-head"><span>${safe(group.label || `${group.tail}尾`)}</span></div>
+          <div class="rule-head"><span>尾${safe(group.tail, String(group.label || "").replace("尾", ""))}</span></div>
           ${balls(group.numbers)}
         </div>
       `).join("");
@@ -730,52 +784,88 @@
       const hotZones = asList(data.hot_zones);
       const firstHotZone = hotZones[0];
       const hotZoneLabel = firstHotZone ? `${firstHotZone}～${Number(firstHotZone) + 9}` : "尚無資料";
+      const coldZone = data.cold_zone || "尚無資料";
+      const diagonalRule = rules.find((rule) => rule.key === "diagonal") || {};
+      const gapRule = rules.find((rule) => rule.key === "gap") || {};
       document.getElementById("cardLaowanjia").innerHTML = `
-        <h2>2. AI 推薦依據</h2>
-        <div class="summary-line">已完成 ${fmtNumber(data.completed_count)} 項 Rule Library 分析</div>
-        <div class="summary-line">${safe(data.summary)}</div>
-        <button class="collapse-button" type="button" aria-expanded="false" onclick="toggleSection('ruleLibraryBody', this)">
-          <span>展開完整分析</span><span>展開查看</span>
+        <h2>老玩家分析</h2>
+        <div class="grid">
+          ${metric("分析依據期號", `第${safe(next.based_on_issue)}期`)}
+          ${metric("分析時間", formatDateTime(next.generated_at))}
+          ${metric("老玩家指數", `${fmtNumber(data.laowanjia_index)} / 100`)}
+          ${metric("AI 信心", `${fmtNumber(next.confidence)}%`)}
+          ${metric("資料狀態", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
+        </div>
+        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="ruleLibraryBody" onclick="toggleSection('ruleLibraryBody', this)">
+          <span>展開老玩家分析</span><span>展開查看</span>
         </button>
         <div id="ruleLibraryBody" hidden>
+          <div class="notice">老玩家指數是整合熱門、冷門、缺號、重號、連號、群聚、尾數、斜線、間距與其他規則後的綜合強度指標，不代表中獎保證。</div>
           <div class="section">
             <p class="mini-title">本期主要依據</p>${textList(primary)}
           </div>
           <div class="grid">
             ${metric("Rule Library", `${fmtNumber(data.completed_count)} / ${fmtNumber(data.total_count || 19)}`)}
             ${metric("老玩家指數", `${fmtNumber(data.laowanjia_index)} / 100`)}
-            ${metric("第一熱區", hotZoneLabel)}
+            ${metric("最高熱區", hotZoneLabel)}
+            ${metric("最高冷區", safe(coldZone))}
           </div>
-          <div class="notice">老玩家指數說明：目前盤勢與歷史老玩家規則的符合程度。</div>
           <div class="section">
-            <p class="mini-title">熱區</p>
+            <p class="mini-title">熱區／冷區</p>
             <div class="grid">
-              ${metric("第一熱區", hotZoneLabel)}
-              ${metric("區內重點候選", normalizeNumbers(next.candidates).filter((number) => firstHotZone && number >= Number(firstHotZone) && number <= Number(firstHotZone) + 9).join("、") || "尚無資料")}
+              ${metric("最高熱區", hotZoneLabel)}
+              ${metric("熱區信心", `${fmtNumber(data.laowanjia_index)}分`)}
+              ${metric("最高冷區", safe(coldZone))}
             </div>
-            ${hotZones.length > 1 ? `<details style="margin-top:10px"><summary>查看更多熱區</summary>${textList(hotZones.slice(1).map((zone) => `${zone}～${Number(zone) + 9}`))}</details>` : ""}
           </div>
           <div class="section">
-            <p class="mini-title">可能星數</p>${renderStarPrediction(data.star_prediction)}
+            <p class="mini-title">星數分析</p>${renderStarPrediction(data.star_prediction)}
           </div>
           <div class="section">
-            <p class="mini-title">補號</p>${balls(next.patch_numbers)}
-            <p class="mini-title">雙生號</p>${balls(next.twins)}
-            <p class="mini-title">連號</p>${textList(sortPairs(next.consecutive).map((pair) => `${pair[0]}-${pair[1]}`))}
-            <p class="mini-title">尾數</p>${renderTailGroups(next)}
-          </div>
-          <div class="section">
-            <p class="mini-title">超級獎號軌跡</p>
+            <p class="mini-title">斜線分析</p>
+            <div class="notice">斜線分析是觀察歷期號碼在賓果盤面斜向排列的延伸與回補強度。</div>
             <div class="grid">
-              ${metric("趨勢", labelZh(superTrajectory.trend) || "此指標尚待校正")}
-              ${metric("軌跡信心", superTrajectory.confidence === undefined ? "此指標尚待校正" : `${fmtNumber(superTrajectory.confidence)}%`)}
-              ${metric("群聚復原程度", labelZh(clusterAftershock.warning_level || clusterAftershock.status) || "此指標尚待校正")}
+              ${metric("斜線強度", diagonalRule.score === undefined || diagonalRule.score === null ? "尚待分析" : `${fmtNumber(diagonalRule.score)}分`)}
+              ${metric("說明", safe(diagonalRule.reason, "尚待分析"))}
             </div>
-            <p class="mini-title">超級獎軌跡候選</p>${balls(superTrajectory.candidate_numbers)}
-            <p class="mini-title">群聚復原候選</p>${balls(clusterAftershock.candidate_numbers)}
+            ${balls(diagonalRule.candidate_numbers)}
           </div>
           <div class="section">
-            <p class="mini-title">正式 Rule Library 19 項</p>
+            <p class="mini-title">差值／間距分析</p>
+            <div class="notice">差值分析用於觀察號碼之間的主要間距與可能回補強度。</div>
+            <div class="grid">
+              ${metric("差值強度", gapRule.score === undefined || gapRule.score === null ? "尚待分析" : `${fmtNumber(gapRule.score)}分`)}
+              ${metric("主要差距", safe(gapRule.impact, "尚待分析"))}
+            </div>
+            ${balls(gapRule.candidate_numbers)}
+          </div>
+          <div class="section">
+            <p class="mini-title">超獎軌跡回補</p>
+            <div class="notice">用於觀察超級獎號在近期區間中的移動與可能回補位置。</div>
+            <div class="grid">
+              ${metric("軌跡方向", labelZh(superTrajectory.trend || superTrajectory.direction) || "尚待分析")}
+              ${metric("距離", safe(superTrajectory.distance))}
+              ${metric("反轉", safe(superTrajectory.reversal))}
+              ${metric("區域跳動", safe(superTrajectory.zone_jump))}
+              ${metric("信心", superTrajectory.confidence === undefined ? "尚待分析" : `${fmtNumber(superTrajectory.confidence)}%`)}
+              ${metric("10期觀察", safe(superTrajectory.window_10 || superTrajectory.ten_window))}
+              ${metric("20期觀察", safe(superTrajectory.window_20 || superTrajectory.twenty_window))}
+            </div>
+            <p class="mini-title">候選號碼</p>${balls(superTrajectory.candidate_numbers)}
+          </div>
+          <div class="section">
+            <p class="mini-title">群聚後連號回補</p>
+            <div class="grid">
+              ${metric("大群聚發生期數", safe(clusterAftershock.cluster_issue || clusterAftershock.issue))}
+              ${metric("已間隔期數", safe(clusterAftershock.elapsed_issues))}
+              ${metric("10期窗口", safe(clusterAftershock.window_10 || clusterAftershock.ten_window))}
+              ${metric("信心", clusterAftershock.confidence === undefined ? "尚待分析" : `${fmtNumber(clusterAftershock.confidence)}%`)}
+            </div>
+            <p class="mini-title">小連號候選</p>${balls(clusterAftershock.consecutive_candidates || clusterAftershock.candidate_numbers)}
+            <p class="mini-title">回補候選</p>${balls(clusterAftershock.patch_candidates || clusterAftershock.candidate_numbers)}
+          </div>
+          <div class="section">
+            <p class="mini-title">完整老玩家規則</p>
             <div class="rule-list">${rules.map(renderRuleItem).join("")}</div>
           </div>
         </div>
@@ -789,7 +879,7 @@
         ["四星可能性", data.four_star],
         ["五星可能性", data.five_star],
         ["六星可能性", data.six_star]
-      ].map(([label, value]) => row(label, Array.isArray(value) && value.length ? normalizeNumbers(value).join("、") : "尚未建立星數預測"));
+      ].map(([label, value]) => row(label, Array.isArray(value) && value.length ? `${normalizeNumbers(value).map(numberLabel).join("、")} 候選` : "尚待分析"));
       return rows(items);
     }
 
@@ -808,27 +898,40 @@
     }
 
     function renderReasons(reasons, nextPayload, verification, next) {
-      const listItems = asList(reasons).length
-        ? asList(reasons).map((reason) => `<li class="row"><span>✓</span><span>${safe(reason)}</span></li>`).join("")
-        : `<li class="row"><span>✓</span><span>系統已整合老玩家、冷熱、遺漏、型態與平衡模型。</span></li>`;
-      const predictionStatus = verification.prediction_status || next.status || "waiting_draw";
-      const learningStatus = verification.learning_used ? "已學習" : "尚未學習";
+      const predicted = normalizeNumbers(verification.predicted_numbers);
+      const official = normalizeNumbers(verification.official_numbers || verification.draw_numbers);
+      const matched = normalizeNumbers(verification.matched_numbers);
+      const denominator = verification.hit_denominator || verification.prediction_count || predicted.length || 20;
+      const verified = verification.verification_status === "verified";
+      const learned = Boolean(verification.learning_used);
+      const superResult = verified
+        ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
+        : "尚未完成";
       document.getElementById("cardReasons").innerHTML = `
-        <h2>3. AI 推薦原因</h2>
+        <h2>上一期命中結果</h2>
         <div class="grid">
-          ${metric("AI 信心值", `${fmtNumber(nextPayload.confidence || next.confidence)}%`)}
-          ${metric("目前狀態摘要", `${statusText(predictionStatus)} / ${learningStatus}`)}
+          ${metric("比對期號", `第${safe(verification.target_issue || verification.verified_issue)}期`)}
+          ${metric("開獎時間", formatDateTime(verification.draw_time))}
+          ${metric("命中", verified ? `${fmtNumber(verification.hit_count)} / ${fmtNumber(denominator)}` : "尚未完成", verified ? "status-ok" : "status-warning")}
+          ${metric("Verified 狀態", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
+          ${metric("Learned 狀態", learned ? "已完成學習" : "尚未完成", learned ? "status-ok" : "status-warning")}
         </div>
-        <button class="collapse-button" type="button" aria-expanded="false" onclick="toggleSection('reasonsBody', this)">
-          <span>展開查看</span><span>展開查看</span>
+        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="reasonsBody" onclick="toggleSection('reasonsBody', this)">
+          <span>展開上一期完整結果</span><span>展開查看</span>
         </button>
         <div id="reasonsBody" hidden>
-        <div class="grid">
-          ${metric("預測狀態", statusText(predictionStatus), statusClass(predictionStatus))}
-          ${metric("學習狀態", learningStatus, verification.learning_used ? "status-ok" : "status-warning")}
-          ${metric("AI 信心值", `${fmtNumber(nextPayload.confidence || next.confidence)}%`)}
-        </div>
-        <ul class="list" style="margin-top:12px">${listItems}</ul>
+          <h3>推薦20碼</h3>${predicted.length ? balls(predicted, "", matched) : `<div class="empty">尚無資料</div>`}
+          <h3>官方開獎20碼</h3>${official.length ? balls(official, "", matched) : `<div class="empty">尚未完成</div>`}
+          <div class="grid section">
+            ${metric("官方超級獎號", verification.official_super_number ? numberLabel(verification.official_super_number) : "尚無資料")}
+            ${metric("推薦超級獎號", verification.super_number_predicted ? numberLabel(verification.super_number_predicted) : "尚無資料")}
+            ${metric("超級獎", superResult, verification.super_number_hit ? "status-ok" : "")}
+            ${metric("已建立推薦", formatDateTime(verification.prediction_created_at))}
+            ${metric("已完成驗證", verified ? formatDateTime(verification.verified_at) : "尚未完成")}
+            ${metric("已完成學習", learned ? formatDateTime(verification.learned_at) : "尚未完成")}
+            ${metric("來源", sourceText(verification.source))}
+            ${metric("Trigger", triggerText(verification.trigger))}
+          </div>
         </div>
       `;
     }
@@ -862,57 +965,77 @@
       `;
     }
 
-    function renderHistory(history, verification, counts) {
-      if ((!history || history.status === "empty") && !asList(verification && verification.predicted_numbers).length) {
-        document.getElementById("cardHistory").innerHTML = `<h2>5. AI 驗證中心</h2><div class="empty">${safe(history && history.message, "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。")}</div>`;
+    function renderHistory(history, verification, counts, historyRecords = []) {
+      const records = asList(historyRecords).filter((item) => item && item.production_valid !== false && item.prediction_issue);
+      if (!records.length) {
+        document.getElementById("cardHistory").innerHTML = `<h2>歷史推薦紀錄</h2><div class="empty">${safe(history && history.message, "尚未累積正式推薦紀錄，系統會持續保存後續推薦。")}</div>`;
         return;
       }
-      const hitCount = Number(verification.hit_count || 0);
-      const predictionCount = Number(verification.prediction_count || 0);
-      const official = normalizeNumbers(verification.official_numbers || verification.draw_numbers);
-      const predicted = normalizeNumbers(verification.predicted_numbers);
-      const matched = normalizeNumbers(verification.matched_numbers);
-      const missed = normalizeNumbers(verification.missed_numbers);
-      const verified = verification && verification.verification_status === "verified" && official.length;
-      const denominator = predictionCount || predicted.length || 20;
       const sampleSize = Number(history.sample_size || counts.statistics_sample_count || 0);
       const sampleHint = sampleSize > 0 && sampleSize < 20 ? `<div class="notice warn">樣本數較少，結果僅供參考。</div>` : "";
-      const superResult = verified
-        ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
-        : "尚未驗證";
-      document.getElementById("cardHistory").innerHTML = `
-        <h2>5. AI 驗證中心</h2>
-        <div class="section">
-          <p class="mini-title">上一期驗證結果</p>
-          <div class="grid">
-            ${metric("比對期數", safe(verification.target_issue || verification.verified_issue))}
-            ${metric("開獎時間", safe(verification.draw_time))}
-            ${metric("命中", verified ? `${fmtNumber(hitCount)} / ${fmtNumber(denominator)}` : "尚未驗證", hitCount >= 5 ? "status-ok" : hitCount >= 3 ? "status-warning" : "")}
-            ${metric("命中等級", labelZh(verification.hit_label))}
-            ${metric("官方超級獎號", safe(verification.official_super_number))}
-            ${metric("AI 超級獎預測", verification.super_number_predicted ? safe(verification.super_number_predicted) : "當期未保存超級獎預測")}
-            ${metric("超級獎結果", superResult, verification.super_number_hit ? "status-ok" : "")}
+      const verifiedCount = records.filter((item) => item.verification_status === "verified" || item.prediction_status === "verified").length;
+      const learnedCount = records.filter((item) => item.learning_used).length;
+      const waitingCount = records.filter((item) => item.prediction_status === "waiting_draw").length;
+      const averageHits = records.length
+        ? records.reduce((sum, item) => sum + Number(item.hit_count || 0), 0) / records.length
+        : 0;
+      const recordHtml = records.slice(0, 20).map((item, index) => {
+        const predicted = normalizeNumbers(item.recommend_numbers);
+        const official = normalizeNumbers(item.winning_numbers);
+        const matched = normalizeNumbers(item.matched_numbers);
+        const denominator = item.prediction_count || predicted.length || 20;
+        const verified = item.verification_status === "verified" || item.prediction_status === "verified";
+        const learned = Boolean(item.learning_used);
+        return `
+          <div class="rule-item">
+            <button class="collapse-button" type="button" aria-expanded="${index === 0 ? "true" : "false"}" aria-controls="historyItem${index}" onclick="toggleSection('historyItem${index}', this)">
+              <span>預測期號：第${safe(item.prediction_issue)}期</span><span>${index === 0 ? "收合" : "展開查看"}</span>
+            </button>
+            <div id="historyItem${index}" ${index === 0 ? "" : "hidden"}>
+              <div class="grid section">
+                ${metric("預測期號", `第${safe(item.prediction_issue)}期`)}
+                ${metric("依據期號", `第${safe(item.based_on_issue || item.issue)}期`)}
+                ${metric("依據開獎時間", formatDateTime(item.based_on_draw_time))}
+                ${metric("推薦建立時間", formatDateTime(item.prediction_created_at || item.created_at))}
+                ${metric("命中", verified ? `${fmtNumber(item.hit_count)} / ${fmtNumber(denominator)}` : "等待開獎", verified ? "status-ok" : "status-warning")}
+                ${metric("Prediction 狀態", statusText(item.prediction_status), statusClass(item.prediction_status))}
+              </div>
+              <h3>推薦20碼</h3>${balls(predicted, "", matched)}
+              ${predicted.length !== 20 ? `<div class="notice warn">此筆保存 ${fmtNumber(predicted.length)} 碼，分母使用實際保存數量。</div>` : ""}
+              <h3>官方20碼</h3>${official.length ? balls(official, "", matched) : `<div class="empty">尚待開獎</div>`}
+              <div class="grid section">
+                ${metric("官方超級獎號", item.official_super_number ? numberLabel(item.official_super_number) : "尚無資料")}
+                ${metric("超級獎命中", item.super_number_hit ? "命中" : "未命中", item.super_number_hit ? "status-ok" : "")}
+                ${metric("Verified", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
+                ${metric("Learned", learned ? "已完成學習" : "尚未完成", learned ? "status-ok" : "status-warning")}
+                ${metric("來源", sourceText(item.source))}
+                ${metric("Trigger", triggerText(item.trigger))}
+                ${metric("驗證時間", verified ? formatDateTime(item.verified_at) : "尚未完成")}
+                ${metric("學習時間", learned ? formatDateTime(item.learned_at) : "尚未完成")}
+              </div>
+            </div>
           </div>
-          <h3>AI 推薦 ${fmtNumber(predicted.length)} 碼</h3>${balls(predicted)}
-          ${predicted.length && predicted.length !== 20 ? `<div class="notice warn">當期保存 ${fmtNumber(predicted.length)} 個推薦號碼，分母使用實際保存數量。</div>` : ""}
-          <h3>官方開獎 20 碼</h3>${verified ? balls(official, "", matched) : `<div class="empty">尚未驗證</div>`}
-          <h3>命中號碼</h3>${balls(matched, "hit")}
-          <h3>未命中號碼</h3>${balls(missed)}
+        `;
+      }).join("");
+      document.getElementById("cardHistory").innerHTML = `
+        <h2>歷史推薦紀錄</h2>
+        <div class="section">
+          <p class="mini-title">正式推薦統計</p>
+          <div class="grid">
+            ${metric("正式推薦總數", fmtNumber(counts.valid_prediction_count || records.length))}
+            ${metric("已驗證數", fmtNumber(counts.verified_prediction_count || verifiedCount))}
+            ${metric("已學習數", fmtNumber(counts.learning_sample_count || learnedCount))}
+            ${metric("等待開獎數", fmtNumber(waitingCount))}
+            ${metric("平均命中", `${fmtNumber(history.average_hits || averageHits)} / 20`)}
+            ${metric("統計樣本", `${fmtNumber(sampleSize)}期`)}
+            ${metric("20碼命中分布", `五星率 ${fmtNumber(history.five_star_rate)}%`)}
+            ${metric("Cache 狀態", history.cache ? `${safe(history.cache.status)} / ${fmtNumber(history.cache.ttl_seconds)}秒` : "即時資料")}
+          </div>
+          ${sampleHint}
         </div>
         <div class="section">
-          <p class="mini-title">AI 長期成績</p>
-        <div class="grid">
-          ${metric("三星命中率", `${fmtNumber(history.three_star_rate)}%`)}
-          ${metric("四星命中率", `${fmtNumber(history.four_star_rate)}%`)}
-          ${metric("五星命中率", `${fmtNumber(history.five_star_rate)}%`)}
-          ${metric("超級獎命中率", `${fmtNumber(history.super_hit_rate)}%`)}
-          ${metric("平均命中顆數", fmtNumber(history.average_hits))}
-          ${metric("AI 預測紀錄", fmtNumber(counts.prediction_count))}
-          ${metric("已驗證", fmtNumber(counts.verified_prediction_count))}
-          ${metric("統計樣本", `${fmtNumber(sampleSize)}期`)}
-          ${metric("學習樣本數", fmtNumber(counts.learning_sample_count))}
-        </div>
-        ${sampleHint}
+          <p class="mini-title">最近正式推薦</p>
+          <div class="rule-list">${recordHtml}</div>
         </div>
       `;
     }
@@ -960,22 +1083,26 @@
     }
 
     function renderPipeline(health, collectorStatus) {
-      const components = ["collector", "simulation", "recommendation", "prediction", "official_verification", "evolution"];
-      const rowsHtml = components.map((name) => {
-        const item = health[name] || {};
-        return row(name, `${statusText(item.status || "unknown")} / lag ${fmtNumber(item.lag)}`, statusClass(item.status));
-      });
+      const components = Object.entries(health.components || {}).map(([name, item]) =>
+        row(name, `${statusText(item.status || "unknown")} / ${fmtNumber(item.duration_ms)}ms`, statusClass(item.status))
+      );
       document.getElementById("cardPipeline").innerHTML = `
         <h2>Pipeline 同步狀態</h2>
         <div class="grid">
           ${metric("整體狀態", statusText(health.status || "unknown"), statusClass(health.status))}
-          ${metric("快取來源", safe(health.source))}
-          ${metric("快取年齡", `${fmtNumber(health.cache_age_seconds)} 秒`)}
-          ${metric("Collector Lock", safe(collectorStatus.official_lock_owner || "空閒"))}
-          ${metric("跳過次數", fmtNumber(collectorStatus.scheduler_skipped_count))}
-          ${metric("連續失敗", fmtNumber(collectorStatus.consecutive_failures))}
+          ${metric("Pipeline", statusText(health.pipeline_status || "unknown"), statusClass(health.pipeline_status))}
+          ${metric("總耗時", `${fmtNumber(health.total_duration_ms)} ms`)}
+          ${metric("Trigger 今日", fmtNumber(health.prediction_trigger_count_today))}
+          ${metric("Service Call 今日", fmtNumber(health.prediction_service_call_count_today))}
+          ${metric("排程註冊", health.prediction_job_registered ? "已註冊" : "尚未註冊", health.prediction_job_registered ? "status-ok" : "status-warning")}
+          ${metric("排程最後狀態", safe(health.prediction_job_last_status))}
+          ${metric("排程最後錯誤", safe(health.prediction_job_last_error, "無"))}
+          ${metric("等待驗證", fmtNumber(health.live_verification_pending))}
+          ${metric("等待學習", fmtNumber(health.live_learning_pending))}
+          ${metric("Null Target", fmtNumber(health.null_target_count || health.null_target_today))}
+          ${metric("Schedule Coverage", `${fmtNumber(health.schedule_coverage)}%`)}
         </div>
-        <h3>各模組</h3>${rows(rowsHtml)}
+        <h3>Components</h3>${components.length ? rows(components) : `<div class="empty">尚無資料</div>`}
       `;
     }
 

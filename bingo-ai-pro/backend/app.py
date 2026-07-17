@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -456,8 +457,14 @@ def api_update() -> JSONResponse:
 
 
 @app.get("/api/health")
-def api_health() -> dict[str, str]:
-    return {"status": "ok"}
+def api_health() -> dict[str, str | None]:
+    return {
+        "status": "ok",
+        "app_version": os.getenv("APP_VERSION") or "V1-RC",
+        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
+        "build_time": os.getenv("BUILD_TIME") or os.getenv("RENDER_BUILD_TIME"),
+        "instance_id": os.getenv("RENDER_INSTANCE_ID"),
+    }
 
 
 @app.get("/dashboard")
