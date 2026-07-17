@@ -211,7 +211,7 @@ def _pending_prediction_official_draws(limit: int = 50) -> list[dict]:
             target_issue = str(prediction.get("prediction_issue") or "").strip()
             if not target_issue or target_issue in seen:
                 continue
-            if prediction.get("prediction_status") == "verified" and prediction.get("verified_at"):
+            if _complete_verified_prediction(prediction):
                 continue
             official = get_official_draw_by_issue(target_issue)
             if not official or len(_as_int_list(official.get("numbers"))) != 20:
@@ -223,6 +223,16 @@ def _pending_prediction_official_draws(limit: int = 50) -> list[dict]:
     except Exception:
         logger.exception("failed to load pending prediction official draws")
     return draws
+
+
+def _complete_verified_prediction(prediction: dict) -> bool:
+    return bool(
+        prediction.get("prediction_status") == "verified"
+        and prediction.get("verified_at")
+        and len(_as_int_list(prediction.get("winning_numbers"))) == 20
+        and prediction.get("matched_numbers") is not None
+        and prediction.get("missed_numbers") is not None
+    )
 
 
 def _verification_candidates(limit: int) -> list[dict]:

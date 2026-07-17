@@ -57,3 +57,26 @@ def test_pending_prediction_official_draws_skip_verified_and_missing_official(mo
     draws = official_verification._pending_prediction_official_draws()
 
     assert [item["issue"] for item in draws] == ["115000101"]
+
+
+def test_pending_prediction_official_draws_includes_incomplete_verified(monkeypatch):
+    predictions = [
+        {
+            "prediction_issue": "115000104",
+            "prediction_status": "verified",
+            "verified_at": "2026-07-17T00:00:00",
+            "winning_numbers": [],
+            "matched_numbers": [],
+            "missed_numbers": [],
+        },
+    ]
+
+    monkeypatch.setattr(
+        "database.prediction_history_store.get_prediction_history_records",
+        lambda limit: predictions,
+    )
+    monkeypatch.setattr(official_verification, "get_official_draw_by_issue", lambda issue: _draw(issue))
+
+    draws = official_verification._pending_prediction_official_draws()
+
+    assert [item["issue"] for item in draws] == ["115000104"]
