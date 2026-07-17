@@ -1013,6 +1013,29 @@ def mark_prediction_learning_used(issue: str, used: bool = True) -> dict:
         return 0
 
 
+def _prediction_records_for_target_issue(issue: str) -> list[dict]:
+    rows = _query_with_fallback(
+        """
+        select {columns}
+        from prediction_history
+        where prediction_issue = %s
+          and issue is not null
+          and prediction_issue is not null
+        order by created_at desc, id desc
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        (str(issue),),
+        sqlite_sql="""
+        select {columns}
+        from prediction_history
+        where prediction_issue = ?
+          and issue is not null
+          and prediction_issue is not null
+        order by created_at desc, id desc
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+    )
+    return [_row_to_prediction(row) for row in rows]
+
+
 def update_prediction_history_result(actual: dict) -> dict:
     _ensure_initialized()
     issue = str(actual.get("issue"))
@@ -1023,9 +1046,7 @@ def update_prediction_history_result(actual: dict) -> dict:
     updated = 0
     verified_items = []
     learned_issues = _learned_prediction_issues()
-    for item in get_prediction_history_records(200):
-        if str(item.get("prediction_issue")) != issue:
-            continue
+    for item in _prediction_records_for_target_issue(issue):
         recommended = [int(n) for n in item.get("recommend_numbers") or []]
         matched_numbers = sorted(set(recommended) & set(winning_numbers))
         missed_numbers = [number for number in recommended if number not in set(winning_numbers)]

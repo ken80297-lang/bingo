@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import sqlite3
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -118,3 +119,100 @@ def test_save_prediction_history_skips_unconfirmed_target(monkeypatch):
     }
     assert events[0]["event_type"] == "prediction_skipped"
     assert events[0]["prediction_skipped"] is True
+
+
+def test_live_verification_updates_by_target_issue_without_history_selector(monkeypatch, tmp_path):
+    db_path = tmp_path / "live_verify.db"
+
+    def connect():
+        return sqlite3.connect(db_path)
+
+    with connect() as conn:
+        conn.executescript(
+            """
+            create table prediction_history (
+                id integer primary key,
+                issue text,
+                prediction_issue text,
+                predict_time text,
+                strategy text,
+                confidence real,
+                recommend_numbers text,
+                super_number integer,
+                three_star text,
+                four_star text,
+                twins text,
+                consecutive text,
+                patch_numbers text,
+                tails text,
+                big_small text,
+                odd_even text,
+                reasons text,
+                winning_numbers text,
+                hit_count integer,
+                super_hit integer,
+                three_star_hit integer,
+                four_star_hit integer,
+                accuracy real,
+                created_at text,
+                updated_at text,
+                model_scores text,
+                winning_model text,
+                prediction_status text,
+                verified_issue text,
+                verified_at text,
+                matched_numbers text,
+                missed_numbers text,
+                prediction_count integer,
+                hit_rate real,
+                super_number_hit integer,
+                verification_version text,
+                learning_used integer,
+                model_score real
+            );
+            """
+        )
+        conn.execute(
+            """
+            insert into prediction_history (
+                id, issue, prediction_issue, predict_time, strategy, confidence,
+                recommend_numbers, super_number, three_star, four_star, twins,
+                consecutive, patch_numbers, tails, big_small, odd_even, reasons,
+                winning_numbers, hit_count, super_hit, three_star_hit, four_star_hit,
+                accuracy, created_at, updated_at, model_scores, winning_model,
+                prediction_status, verified_issue, verified_at, matched_numbers,
+                missed_numbers, prediction_count, hit_rate, super_number_hit,
+                verification_version, learning_used, model_score
+            ) values (
+                1, '115000100', '115000101', '2026-07-17T00:00:00', 'V7', 88,
+                '[1,2,3,4,5]', 7, '[1,2,3]', '[1,2,3,4]', '[]',
+                '[]', '[]', '[]', 'balanced', 'balanced', '[]',
+                '[]', 0, 0, 0, 0,
+                0, '2026-07-17T00:00:00', '2026-07-17T00:00:00', '{}', null,
+                'waiting_draw', null, null, '[]',
+                '[]', 5, 0, 0,
+                null, 0, 0
+            )
+            """
+        )
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: False)
+    monkeypatch.setattr(prediction_history_store, "_sqlite_connection", connect)
+    monkeypatch.setattr(prediction_history_store, "get_prediction_history_records", lambda limit: [])
+
+    result = prediction_history_store.update_prediction_history_result(
+        {"issue": "115000101", "numbers": list(range(1, 21)), "super_number": 7}
+    )
+
+    assert result["updated"] == 1
+    assert result["prediction_status"] == "verified"
+    with connect() as conn:
+        row = conn.execute(
+            "select prediction_status, verified_issue, winning_numbers, matched_numbers, missed_numbers, hit_count from prediction_history where id = 1"
+        ).fetchone()
+    assert row[0] == "verified"
+    assert row[1] == "115000101"
+    assert row[5] == 5
+    assert row[2] != "[]"
+    assert row[3] != "[]"
