@@ -246,9 +246,17 @@ def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) 
         logger.exception("catch-up downstream lifecycle failed")
         lifecycle = {"status": "error", "message": str(exc)}
 
+    verification_scan = {"status": "skipped", "reason": "not_started"}
+    try:
+        verification_scan = run_official_verification(limit=10)
+    except Exception as exc:
+        logger.exception("catch-up downstream verification scan failed")
+        verification_scan = {"status": "error", "message": str(exc)}
+
     return {
         "lifecycle": lifecycle,
         "verification": lifecycle.get("verification") if isinstance(lifecycle, dict) else {"status": "error"},
+        "verification_scan": verification_scan,
         "learning": lifecycle.get("learning") if isinstance(lifecycle, dict) else {"status": "error"},
         "prediction": lifecycle.get("prediction") if isinstance(lifecycle, dict) else {"status": "error"},
     }
