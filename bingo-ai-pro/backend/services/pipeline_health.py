@@ -665,6 +665,95 @@ def build_pipeline_health(scheduler: Any | None = None) -> dict:
         component_status[name] = status
         return value
 
+    if os.getenv("PIPELINE_HEALTH_FULL_MODE", "").lower() not in ("1", "true", "yes"):
+        scheduler_payload = component("scheduler", lambda: scheduler_status(scheduler), {
+            "status": "unavailable",
+            "jobs": [],
+            "prediction_job_registered": False,
+            "runtime": {},
+        })
+        validation = component("latest_prediction", prediction_pipeline_validation, {
+            "status": "warning",
+            "message": "latest prediction validation unavailable",
+        })
+        trigger_counts = component("operation_counters", prediction_trigger_event_counts, {
+            "prediction_trigger_count_today": 0,
+            "prediction_service_call_count_today": 0,
+            "prediction_create_started_count_today": 0,
+            "prediction_created_count_today": 0,
+            "prediction_skipped_count_today": 0,
+        })
+        recovery = component("recovery_dry_run", recovery_dry_run_health, {
+            "verification": {"would_verify": None},
+            "learning_sync": {"would_sync": None},
+            "status": "unavailable",
+        })
+        official_time = component("official_draw_time", official_draw_time_health, {"status": "unavailable"})
+        skipped = {
+            "coverage": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "pending": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "target_counts": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "lifecycle_aggregates": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "operation_events": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "verification_delay": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "learning_delay": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+            "learning_sample_count": {"status": "skipped", "duration_ms": 0, "error_code": "full_mode_disabled"},
+        }
+        component_status.update(skipped)
+        payload = {
+            "status": "partial",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_duration_ms": None,
+            "pipeline_status": "warning",
+            "health_mode": "fast",
+            "date": _today_taipei(),
+            "schedule_expected_count": _expected_so_far(),
+            "schedule_coverage": None,
+            "prediction_expected_today": EXPECTED_PREDICTIONS_PER_DAY,
+            "prediction_created_today": None,
+            "missing_prediction_count": None,
+            "missing_prediction_so_far": None,
+            "missing_target_issues": [],
+            "verification_pending": None,
+            "learning_pending": None,
+            "live_verification_pending": None,
+            "legacy_verification_incomplete": None,
+            "live_learning_pending": None,
+            "legacy_learning_incomplete": None,
+            "target_unconfirmed_today": None,
+            "null_target_today": None,
+            "prediction_scheduler_status": scheduler_payload.get("status"),
+            **trigger_counts,
+            "prediction_validation": validation,
+            "verification_delay": {"status": "skipped", "reason": "full_mode_disabled"},
+            "learning_delay": {"status": "skipped", "reason": "full_mode_disabled"},
+            "dashboard_statistics": {
+                "prediction_count": None,
+                "valid_prediction_count": None,
+                "verified_prediction_count": None,
+                "learning_sample_count": None,
+                "null_target_count": None,
+                "has_official_result_count": None,
+            },
+            "operation_events": {"status": "skipped", "reason": "full_mode_disabled"},
+            "scheduler": scheduler_payload,
+            "components": component_status,
+            "alerts": [{
+                "type": "health_fast_mode",
+                "severity": "warning",
+                "message": "heavy health components are deferred in request-time fast mode",
+            }],
+            "recovery_dry_run": {
+                "verification_would_verify": (recovery.get("verification") or {}).get("would_verify"),
+                "learning_would_sync": (recovery.get("learning_sync") or {}).get("would_sync"),
+                "clean": None,
+            },
+            "official_draw_time": official_time,
+        }
+        payload["total_duration_ms"] = round((time.monotonic() - health_started) * 1000, 2)
+        json.dumps(payload, allow_nan=False, default=str)
+        return payload
+
     coverage = component("coverage", prediction_coverage, {
         "date": _today_taipei(),
         "prediction_expected_today": EXPECTED_PREDICTIONS_PER_DAY,

@@ -39,6 +39,7 @@ def test_pipeline_alerts_marks_recovery_pending_as_critical():
 
 
 def test_build_pipeline_health_is_json_safe(monkeypatch):
+    monkeypatch.setenv("PIPELINE_HEALTH_FULL_MODE", "1")
     monkeypatch.setattr(pipeline_health, "prediction_coverage", lambda: {
         "date": "2026-07-16",
         "prediction_expected_today": 204,
@@ -99,6 +100,7 @@ def test_build_pipeline_health_is_json_safe(monkeypatch):
 
 
 def test_build_pipeline_health_returns_partial_when_component_fails(monkeypatch):
+    monkeypatch.setenv("PIPELINE_HEALTH_FULL_MODE", "1")
     monkeypatch.setattr(pipeline_health, "prediction_coverage", lambda: {
         "date": "2026-07-16",
         "schedule_expected_count": 1,
@@ -141,6 +143,39 @@ def test_build_pipeline_health_returns_partial_when_component_fails(monkeypatch)
     assert payload["components"]["scheduler"]["status"] == "unavailable"
     assert "password leaked" not in serialized
     assert "Traceback" not in serialized
+
+
+def test_build_pipeline_health_fast_mode_skips_heavy_components(monkeypatch):
+    monkeypatch.delenv("PIPELINE_HEALTH_FULL_MODE", raising=False)
+    monkeypatch.setattr(pipeline_health, "scheduler_status", lambda scheduler=None: {
+        "status": "running",
+        "jobs": [],
+        "prediction_job_registered": False,
+        "runtime": {},
+    })
+    monkeypatch.setattr(pipeline_health, "prediction_pipeline_validation", lambda: {"status": "ok"})
+    monkeypatch.setattr(pipeline_health, "prediction_trigger_event_counts", lambda: {
+        "prediction_trigger_count_today": 1,
+        "prediction_service_call_count_today": 1,
+        "prediction_create_started_count_today": 1,
+        "prediction_created_count_today": 1,
+        "prediction_skipped_count_today": 0,
+    })
+    monkeypatch.setattr(pipeline_health, "recovery_dry_run_health", lambda: {
+        "verification": {"would_verify": None},
+        "learning_sync": {"would_sync": None},
+        "status": "skipped",
+    })
+    monkeypatch.setattr(pipeline_health, "official_draw_time_health", lambda: {"status": "skipped"})
+
+    payload = pipeline_health.build_pipeline_health()
+
+    assert payload["status"] == "partial"
+    assert payload["pipeline_status"] == "warning"
+    assert payload["health_mode"] == "fast"
+    assert payload["components"]["coverage"]["status"] == "skipped"
+    assert payload["prediction_service_call_count_today"] == 1
+    json.dumps(payload, allow_nan=False, default=str)
 
 
 def test_pipeline_health_api_uses_app_scheduler(monkeypatch):
