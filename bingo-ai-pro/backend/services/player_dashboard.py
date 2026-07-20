@@ -9,8 +9,10 @@ from typing import Any
 
 from database.analysis_store import get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
+from database.operations_store import get_latest_operation_event
 from database.prediction_history_store import get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_latest_verified_prediction_at_or_before
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
 from database.prediction_history_store import is_production_prediction
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 30
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 10
+PLAYER_DASHBOARD_HISTORY_LIMIT = 10
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
@@ -201,6 +204,26 @@ def _format_draw_time(value: Any) -> str | None:
     return str(value) if value else None
 
 
+def _based_on_time(based_on_issue: Any, based_draw: dict | None) -> dict:
+    draw_time = _format_draw_time((based_draw or {}).get("draw_time"))
+    if draw_time:
+        return {
+            "based_on_draw_time": draw_time,
+            "based_on_time_source": "official_draw_time",
+        }
+    event = get_latest_operation_event("official_draw_saved", str(based_on_issue)) if based_on_issue else None
+    event_time = _format_draw_time((event or {}).get("created_at"))
+    if event_time:
+        return {
+            "based_on_draw_time": event_time,
+            "based_on_time_source": "official_draw_saved_event",
+        }
+    return {
+        "based_on_draw_time": None,
+        "based_on_time_source": "unavailable",
+    }
+
+
 def _expected_draw_time(next_data: dict, current_draw: dict | None) -> tuple[str | None, str]:
     stored = (
         next_data.get("expected_draw_time")
@@ -326,7 +349,7 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
     based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
-    based_on_draw_time = _format_draw_time((based_draw or {}).get("draw_time"))
+    based_time = _based_on_time(based_on_issue, based_draw)
     recommendation_warning = None
     if len(numbers) < 20:
         recommendation_warning = f"目前僅產生 {len(numbers)} 個有效推薦號碼"
@@ -335,7 +358,8 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "prediction_issue": target_issue,
         "target_issue_source": target_issue_source,
         "based_on_issue": based_on_issue,
-        "based_on_draw_time": based_on_draw_time,
+        "based_on_draw_time": based_time["based_on_draw_time"],
+        "based_on_time_source": based_time["based_on_time_source"],
         "based_on_draw_exists": bool(based_draw),
         "latest_official_issue": current_issue,
         "expected_target_issue": freshness.get("expected_target_issue") or refresh.get("expected_target_issue"),
@@ -425,6 +449,38 @@ def _prediction_by_target_issue(target_issue: Any) -> dict | None:
     return None
 
 
+def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
+    exact = _prediction_by_target_issue(target_issue)
+    if exact:
+        return exact, "exact_previous"
+    fallback = get_latest_verified_prediction_at_or_before(str(target_issue)) if target_issue else None
+    if fallback:
+        return fallback, "latest_available_verified"
+    return None, "unavailable"
+
+
+def _unavailable_previous_result(requested_target_issue: Any) -> dict:
+    return {
+        "previous_result_mode": "unavailable",
+        "requested_target_issue": requested_target_issue,
+        "displayed_target_issue": None,
+        "target_issue": None,
+        "verified_issue": None,
+        "predicted_numbers": [],
+        "draw_numbers": [],
+        "official_numbers": [],
+        "matched_numbers": [],
+        "missed_numbers": [],
+        "hit_count": 0,
+        "prediction_count": 0,
+        "hit_denominator": 20,
+        "prediction_status": "unavailable",
+        "verification_status": "unavailable",
+        "learning_used": False,
+        "learning_status": "unavailable",
+    }
+
+
 def _verification(record: dict | None, draw: dict | None) -> dict | None:
     if not record:
         return None
@@ -437,11 +493,13 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
     actual_super = _as_int((draw or {}).get("super_number"))
     if actual_super is None:
         actual_super = _as_int(record.get("actual_super"))
+    draw_time_payload = _based_on_time(record.get("prediction_issue"), draw)
     return {
         "target_issue": record.get("prediction_issue"),
         "prediction_status": record.get("prediction_status"),
         "prediction_created_at": record.get("predict_time") or record.get("created_at"),
-        "draw_time": _format_draw_time((draw or {}).get("draw_time") or record.get("draw_time")),
+        "draw_time": draw_time_payload["based_on_draw_time"] or _format_draw_time(record.get("draw_time")),
+        "draw_time_source": draw_time_payload["based_on_time_source"],
         "predicted_numbers": predicted,
         "draw_numbers": draw_numbers,
         "official_numbers": draw_numbers,
@@ -800,28 +858,39 @@ def build_player_dashboard_summary() -> dict:
     futures = {
         "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
         "latest_prediction": _PLAYER_EXECUTOR.submit(get_latest_prediction_history),
-        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(100)),
-        "prediction_statistics": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_statistics(100)),
+        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT)),
         "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
         "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
     latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
     history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
-    full_stats = _future_result("prediction_statistics", futures["prediction_statistics"], warnings, {}) or {}
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
-    prediction_stats = full_stats if full_stats.get("status") else _history_stats(history_records)
+    prediction_stats = _history_stats(history_records)
+    prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
 
     current = _current_draw(official)
+    if current and analysis and str(analysis.get("issue") or "") != str(current.get("issue") or ""):
+        warnings.append("analysis_pending")
+        analysis = {
+            "status": "analysis_pending",
+            "issue": current.get("issue"),
+            "source_issue": current.get("issue"),
+            "message": "analysis_history is pending for latest official draw",
+        }
     next_prediction = _prediction_from_history(latest_prediction, current) or {}
     next_prediction["history"] = prediction_stats
     next_prediction["rule_library"] = _rule_library(analysis, next_prediction)
     previous_target_issue = next_prediction.get("based_on_issue")
-    verified_record = _prediction_by_target_issue(previous_target_issue)
-    verification_draw = get_official_draw_by_issue(previous_target_issue) if previous_target_issue else None
-    previous_verification = _verification(verified_record, verification_draw)
+    verified_record, previous_result_mode = _previous_result_for_based_on(previous_target_issue)
+    displayed_target_issue = (verified_record or {}).get("prediction_issue")
+    verification_draw = get_official_draw_by_issue(displayed_target_issue) if displayed_target_issue else None
+    previous_verification = _verification(verified_record, verification_draw) if verified_record else _unavailable_previous_result(previous_target_issue)
+    previous_verification["previous_result_mode"] = previous_result_mode
+    previous_verification["requested_target_issue"] = previous_target_issue
+    previous_verification["displayed_target_issue"] = displayed_target_issue
 
     database_issue = (current or {}).get("issue")
     official_issue = (current or {}).get("issue")
@@ -846,7 +915,7 @@ def build_player_dashboard_summary() -> dict:
         "next_prediction": next_prediction,
         "previous_verification": previous_verification,
         "prediction_history": production_history,
-        "data_counts": _data_counts(history_records, full_stats, aggregates),
+        "data_counts": _data_counts(history_records, prediction_stats, aggregates),
         "history": prediction_stats,
         "aggregates": aggregates,
         "rule_library": next_prediction.get("rule_library"),

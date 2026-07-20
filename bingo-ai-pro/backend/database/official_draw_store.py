@@ -67,6 +67,8 @@ def init_official_draw_tables() -> dict:
                             super_number integer,
                             win_no_only boolean,
                             source text,
+                            verification_status text default 'validated',
+                            fetched_at timestamptz,
                             verified boolean default false,
                             raw_json jsonb,
                             created_at timestamptz default now(),
@@ -74,6 +76,8 @@ def init_official_draw_tables() -> dict:
                         )
                         """
                     )
+                    cur.execute("alter table official_draw_history add column if not exists verification_status text default 'validated'")
+                    cur.execute("alter table official_draw_history add column if not exists fetched_at timestamptz")
                     cur.execute(
                         """
                         create table if not exists draw_verification (
@@ -112,6 +116,8 @@ def init_official_draw_tables() -> dict:
                     super_number integer,
                     win_no_only integer,
                     source text,
+                    verification_status text default 'validated',
+                    fetched_at text,
                     verified integer default 0,
                     raw_json text,
                     created_at text default current_timestamp,
@@ -119,6 +125,11 @@ def init_official_draw_tables() -> dict:
                 )
                 """
             )
+            existing = {row[1] for row in conn.execute("pragma table_info(official_draw_history)").fetchall()}
+            if "verification_status" not in existing:
+                conn.execute("alter table official_draw_history add column verification_status text default 'validated'")
+            if "fetched_at" not in existing:
+                conn.execute("alter table official_draw_history add column fetched_at text")
             conn.execute(
                 """
                 create table if not exists draw_verification (
@@ -155,6 +166,8 @@ def _draw_params(draw: dict) -> tuple:
         draw.get("super_number"),
         bool(draw.get("win_no_only")),
         draw.get("source", "taiwan_lottery"),
+        draw.get("verification_status") or "validated",
+        draw.get("fetched_at") or _now(),
         bool(draw.get("verified", False)),
         _json_dumps(draw.get("raw_json", {})),
     )
@@ -207,9 +220,10 @@ def _save_official_cloud(draws: list[dict]) -> None:
                         insert into official_draw_history
                     (
                         issue, draw_date, draw_time, numbers, open_order_numbers,
-                        super_number, win_no_only, source, verified, raw_json, updated_at
+                        super_number, win_no_only, source, verification_status,
+                        fetched_at, verified, raw_json, updated_at
                     )
-                    values (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s::jsonb, now())
+                    values (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
                     on conflict (issue) do update set
                         draw_date = excluded.draw_date,
                         draw_time = coalesce(excluded.draw_time, official_draw_history.draw_time),
@@ -218,6 +232,8 @@ def _save_official_cloud(draws: list[dict]) -> None:
                         super_number = excluded.super_number,
                         win_no_only = excluded.win_no_only,
                         source = excluded.source,
+                        verification_status = excluded.verification_status,
+                        fetched_at = coalesce(excluded.fetched_at, official_draw_history.fetched_at),
                         raw_json = excluded.raw_json,
                         updated_at = now()
                     """,
@@ -232,15 +248,16 @@ def _save_official_sqlite(draws: list[dict]) -> None:
         for draw in draws:
             params = list(_draw_params(draw))
             params[6] = 1 if params[6] else 0
-            params[8] = 1 if params[8] else 0
+            params[10] = 1 if params[10] else 0
             conn.execute(
                 """
                 insert into official_draw_history
                 (
                     issue, draw_date, draw_time, numbers, open_order_numbers,
-                    super_number, win_no_only, source, verified, raw_json, updated_at
+                    super_number, win_no_only, source, verification_status,
+                    fetched_at, verified, raw_json, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(issue) do update set
                     draw_date = excluded.draw_date,
                     draw_time = coalesce(excluded.draw_time, official_draw_history.draw_time),
@@ -249,6 +266,8 @@ def _save_official_sqlite(draws: list[dict]) -> None:
                     super_number = excluded.super_number,
                     win_no_only = excluded.win_no_only,
                     source = excluded.source,
+                    verification_status = excluded.verification_status,
+                    fetched_at = coalesce(excluded.fetched_at, official_draw_history.fetched_at),
                     raw_json = excluded.raw_json,
                     updated_at = excluded.updated_at
                 """,
@@ -301,17 +320,33 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
     if _cloud_enabled():
         try:
             return _query_cloud(sql, params)
-        except Exception:
+        except Exception as exc:
             logger.exception("cloud official query failed")
+            if "verification_status" in str(exc) or "fetched_at" in str(exc):
+                try:
+                    init_official_draw_tables()
+                    return _query_cloud(sql, params)
+                except Exception:
+                    logger.exception("cloud official query retry after init failed")
 
     try:
         return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
-    except Exception:
+    except Exception as exc:
         logger.exception("sqlite official query failed")
+        if "verification_status" in str(exc) or "fetched_at" in str(exc):
+            try:
+                init_official_draw_tables()
+                return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
+            except Exception:
+                logger.exception("sqlite official query retry after init failed")
         return []
 
 
 def _row_to_official(row: Any) -> dict:
+    has_quality_columns = len(row) >= 15
+    verification_status = row[10] if has_quality_columns else None
+    fetched_at = row[11] if has_quality_columns else None
+    offset = 2 if has_quality_columns else 0
     return {
         "id": row[0],
         "issue": row[1],
@@ -322,10 +357,12 @@ def _row_to_official(row: Any) -> dict:
         "super_number": row[6],
         "win_no_only": bool(row[7]),
         "source": row[8],
-        "verified": bool(row[9]),
-        "raw_json": _json_loads(row[10]) or {},
-        "created_at": str(row[11]) if row[11] is not None else None,
-        "updated_at": str(row[12]) if row[12] is not None else None,
+        "verified": bool(row[9 + offset]),
+        "verification_status": verification_status or "validated",
+        "fetched_at": str(fetched_at) if fetched_at is not None else None,
+        "raw_json": _json_loads(row[10 + offset]) or {},
+        "created_at": str(row[11 + offset]) if row[11 + offset] is not None else None,
+        "updated_at": str(row[12 + offset]) if row[12 + offset] is not None else None,
     }
 
 
@@ -353,7 +390,8 @@ def get_official_draw_by_issue(issue: str, verified_only: bool = False) -> dict 
     rows = _query_with_fallback(
         f"""
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue = %s {where_verified}
         limit 1
@@ -361,7 +399,8 @@ def get_official_draw_by_issue(issue: str, verified_only: bool = False) -> dict 
         (str(issue),),
         sqlite_sql=f"""
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue = ? {sqlite_where_verified}
         limit 1
@@ -374,7 +413,8 @@ def get_latest_official_draw() -> dict | None:
     rows = _query_with_fallback(
         """
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue ~ '^[0-9]+$'
           and length(issue) >= 6
@@ -385,7 +425,8 @@ def get_latest_official_draw() -> dict | None:
         """,
         sqlite_sql="""
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue glob '[0-9]*'
           and length(issue) >= 6
@@ -403,7 +444,8 @@ def get_official_draw_history(limit: int = 30) -> list[dict]:
     rows = _query_with_fallback(
         """
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue ~ '^[0-9]+$'
           and length(issue) >= 6
@@ -415,7 +457,8 @@ def get_official_draw_history(limit: int = 30) -> list[dict]:
         (limit,),
         sqlite_sql="""
         select id, issue, draw_date, draw_time, numbers, open_order_numbers,
-               super_number, win_no_only, source, verified, raw_json, created_at, updated_at
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, raw_json, created_at, updated_at
         from official_draw_history
         where issue glob '[0-9]*'
           and length(issue) >= 6

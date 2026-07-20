@@ -345,6 +345,7 @@
       <article class="card" id="cardAlerts"></article>
       <article class="card" id="cardHistory"></article>
       <article class="card" id="cardSync"></article>
+      <article class="card" id="cardWake"></article>
       <article class="card" id="cardContinuity"></article>
       <article class="card" id="cardPipeline"></article>
       <article class="card" id="cardOfficial"></article>
@@ -374,6 +375,8 @@
       evolutionHistory: "/api/strategy-evolution/history",
       collectorStatus: "/api/collector/status",
       collectorGaps: "/api/collector/gaps",
+      latestSync: "/api/collector/latest-sync",
+      wakeStatus: "/api/health/wake-status",
       analysisLatest: "/api/analysis/latest"
     };
 
@@ -609,7 +612,6 @@
       for (const entry of loaded) {
         if (entry.status === "fulfilled") {
           data[entry.value[0]] = entry.value[1];
-          if (entry.value[1] && entry.value[1].unavailable) errors.push(entry.value[1].error);
         } else {
           errors.push(entry.reason && entry.reason.message ? entry.reason.message : String(entry.reason));
         }
@@ -626,6 +628,7 @@
         target_issue_source: raw.target_issue_source,
         based_on_issue: raw.based_on_issue || raw.source_issue,
         based_on_draw_time: raw.based_on_draw_time,
+        based_on_time_source: raw.based_on_time_source,
         based_on_draw_exists: raw.based_on_draw_exists,
         latest_official_issue: raw.latest_official_issue,
         expected_target_issue: raw.expected_target_issue,
@@ -684,7 +687,8 @@
       renderReasons(next.reasons, data.next || {}, previousVerification, next);
       renderAlerts(alerts, data.analysisLatest || {});
       renderHistory(history, previousVerification, counts, player ? (player.prediction_history || []) : []);
-      renderSync(sync, currentDraw, counts, data.collectorStatus || {});
+      renderSync(data.latestSync || sync, currentDraw, counts, data.collectorStatus || {});
+      renderWake(data.wakeStatus || {}, data.latestSync || {});
       renderContinuity(data.collectorGaps || {});
       renderPipeline(data.health || {}, data.collectorStatus || {});
       renderOfficial(data.official || {});
@@ -695,6 +699,8 @@
         health: data.health,
         collector: data.collectorStatus,
         gaps: data.collectorGaps,
+        latest_sync: data.latestSync,
+        wake_status: data.wakeStatus,
         official: data.official,
         operations_status: data.operations && data.operations.status
       }, null, 2);
@@ -722,13 +728,14 @@
         : statusText(verification.verification_status || "waiting_draw");
       const superText = verified
         ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
-        : "尚未驗證";
+        : "尚待開獎";
+      const basedOnTimeLabel = next.based_on_time_source === "official_draw_saved_event" ? "資料儲存時間" : "依據開獎時間";
       document.getElementById("cardNext").innerHTML = `
         <h2>下一期 AI 推薦<br><span class="muted">第${safe(next.prediction_issue)}期</span></h2>
         <div class="grid">
           ${metric("下一期期號", `第${safe(next.prediction_issue)}期`)}
           ${metric("依據期號", `第${safe(next.based_on_issue)}期`)}
-          ${metric("依據開獎時間", next.based_on_draw_exists === false ? "尚無資料" : formatDateTime(next.based_on_draw_time))}
+          ${metric(basedOnTimeLabel, next.based_on_draw_exists === false ? "尚無資料" : formatDateTime(next.based_on_draw_time))}
           ${metric("Prediction 狀態", statusText(status), statusClass(status))}
           ${metric("資料來源", sourceText(next.source))}
           ${metric("Trigger", triggerText(next.trigger))}
@@ -941,11 +948,17 @@
       const denominator = verification.hit_denominator || verification.prediction_count || predicted.length || 20;
       const verified = verification.verification_status === "verified";
       const learned = Boolean(verification.learning_used);
+      const previousMode = verification.previous_result_mode || "unavailable";
+      const previousTitle = previousMode === "latest_available_verified" ? "最近可驗證推薦結果" : "上一期推薦結果";
+      const previousNote = previousMode === "latest_available_verified"
+        ? `<div class="notice warn">第${safe(verification.requested_target_issue)}期尚無可顯示 prediction，改顯示最近可驗證的第${safe(verification.displayed_target_issue)}期。</div>`
+        : "";
       const superResult = verified
         ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
         : "尚未完成";
       document.getElementById("cardReasons").innerHTML = `
-        <h2>上一期命中結果</h2>
+        <h2>${previousTitle}</h2>
+        ${previousNote}
         <div class="grid">
           ${metric("比對期號", `第${safe(verification.target_issue || verification.verified_issue)}期`)}
           ${metric("開獎時間", formatDateTime(verification.draw_time))}
@@ -1099,6 +1112,82 @@
         </div>
         <h3>一般獎號</h3>${balls(currentDraw.numbers)}
         <h3>超級獎號</h3>${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">尚無資料</div>`}
+      `;
+    }
+
+    function renderSync(system, currentDraw, counts, collectorStatus) {
+      const lag = Number(system.issues_behind ?? system.lag_count ?? collectorStatus.lag_count ?? 0);
+      const syncStatus = system.sync_status || (lag > 0 || system.is_synced === false ? "database_behind" : "synced");
+      const status = syncStatus === "synced" ? "ok" : (["analysis_pending", "prediction_pending", "stale"].includes(syncStatus) ? "warning" : "error");
+      const officialIssue = system.official_detected_issue || system.source_latest_issue || system.official_latest_issue || system.latest_issue || currentDraw.issue;
+      const databaseIssue = system.database_latest_issue;
+      const dashboardIssue = system.dashboard_latest_issue || currentDraw.issue;
+      const consistent = officialIssue && databaseIssue && dashboardIssue && String(officialIssue) === String(databaseIssue) && String(databaseIssue) === String(dashboardIssue);
+      const summary = consistent && status === "ok" ? "同步正常" : (lag ? `落後 ${fmtNumber(lag)} 期` : statusText(syncStatus));
+      document.getElementById("cardSync").innerHTML = `
+        <h2>資料同步</h2>
+        <div class="grid">
+          ${metric("官方偵測最新期號", safe(officialIssue))}
+          ${metric("資料庫最新期號", safe(databaseIssue))}
+          ${metric("Dashboard 顯示期號", safe(dashboardIssue))}
+          ${metric("是否一致", consistent ? "一致" : "不一致", consistent ? "status-ok" : "status-warning")}
+          ${metric("同步狀態", summary, statusClass(status))}
+          ${metric("最後成功抓取時間", safe(system.latest_saved_at || system.last_successful_collect_time || collectorStatus.last_collector_finished_at))}
+          ${metric("資料庫是否已保存", system.database_saved ? "已保存" : "未保存", system.database_saved ? "status-ok" : "status-error")}
+          ${metric("分析是否完成", system.analysis_created ? "已完成" : "待處理", system.analysis_created ? "status-ok" : "status-warning")}
+          ${metric("推薦是否完成", system.prediction_created ? "已完成" : "待處理", system.prediction_created ? "status-ok" : "status-warning")}
+          ${metric("Stale 狀態", syncStatus === "stale" ? "stale" : "normal", statusClass(syncStatus === "stale" ? "warning" : "ok"))}
+        </div>
+        <h3>最新開獎資料</h3>
+        <div class="grid">
+          ${metric("期號", safe(currentDraw.issue))}
+          ${metric("開獎時間", safe(currentDraw.draw_time))}
+          ${metric("資料來源", safe(currentDraw.source || "official"))}
+          ${metric("號碼數量", fmtNumber(system.numbers_count || normalizeNumbers(currentDraw.numbers).length))}
+        </div>
+        <h3>號碼</h3>${balls(currentDraw.numbers)}
+        <h3>超級獎號</h3>${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">撠鞈?</div>`}
+      `;
+    }
+
+    function wakeStatusText(status) {
+      if (status === "healthy") return "正常";
+      if (status === "delayed") return "可能延遲";
+      if (status === "at_risk") return "即將休眠";
+      return "尚無資料";
+    }
+
+    function wakeStatusClass(status) {
+      if (status === "healthy") return "status-ok";
+      if (status === "delayed") return "status-warning";
+      if (status === "at_risk") return "status-error";
+      return "status-unknown";
+    }
+
+    function renderWake(wake, latestSync) {
+      const status = wake.wake_status || "unknown";
+      const seconds = Number(wake.seconds_since_last_health_request);
+      const minutes = Number.isFinite(seconds) ? Math.floor(seconds / 60) : null;
+      const warning = status === "at_risk"
+        ? `<div class="notice bad">外部喚醒可能已失效，Render 免費服務可能因閒置而休眠。</div>`
+        : "";
+      const restarted = latestSync.latest_saved_at && wake.instance_started_at
+        && new Date(wake.instance_started_at).getTime() > new Date(latestSync.latest_saved_at).getTime();
+      const restartNotice = restarted
+        ? `<div class="notice warn">服務剛重新啟動，休眠期間的排程可能未執行。</div>`
+        : "";
+      document.getElementById("cardWake").innerHTML = `
+        <h2>外部喚醒狀態</h2>
+        <div class="grid">
+          ${metric("狀態", wakeStatusText(status), wakeStatusClass(status))}
+          ${metric("最後 health request", formatDateTime(wake.last_health_request_at))}
+          ${metric("距今幾分鐘", minutes === null ? "尚無資料" : `${fmtNumber(minutes)} 分鐘`)}
+          ${metric("Wake source", safe(wake.wake_source))}
+          ${metric("Instance 啟動時間", formatDateTime(wake.instance_started_at))}
+          ${metric("本次啟動 request 數", fmtNumber(wake.health_request_count_since_start))}
+        </div>
+        ${warning}
+        ${restartNotice}
       `;
     }
 

@@ -596,6 +596,39 @@ def official_draw_time_investigation() -> dict:
         limit 20
         """
     )
+    latest_rows = _query(
+        """
+        select issue, draw_time
+        from official_draw_history
+        order by issue desc
+        limit 1
+        """
+    )
+    missing_examples = _query(
+        """
+        select issue, raw_json
+        from official_draw_history
+        where draw_time is null
+        order by issue desc
+        limit 5
+        """
+    )
+    parsed_examples = _query(
+        """
+        select issue, draw_time
+        from official_draw_history
+        where draw_time is not null
+        order by issue desc
+        limit 5
+        """
+    )
+    parser_failures = _query(
+        """
+        select count(*)
+        from operation_events
+        where event_type = 'official_draw_time_parse_failed'
+        """
+    )
     raw_time_keys = set()
     for _, raw in raw_rows:
         payload = _json_loads(raw) or {}
@@ -605,12 +638,33 @@ def official_draw_time_investigation() -> dict:
                 if "time" in lowered or "date" in lowered:
                     raw_time_keys.add(str(key))
     row = rows[0] if rows else [0, 0, 0, None, None]
+    latest = latest_rows[0] if latest_rows else [None, None]
+    latest_source = "official_draw_time" if latest[1] else "unavailable"
     return {
         "official_draw_count": int(row[0] or 0),
         "missing_draw_time_count": int(row[1] or 0),
         "has_draw_time_count": int(row[2] or 0),
         "min_issue": row[3],
         "max_issue": row[4],
+        "latest_issue": latest[0],
+        "latest_draw_time": latest[1],
+        "latest_draw_time_source": latest_source,
+        "parser_failure_count": int((parser_failures[0][0] if parser_failures else 0) or 0),
+        "recent_missing_examples": [
+            {
+                "issue": item[0],
+                "raw_time_like_values": {
+                    key: value
+                    for key, value in ((_json_loads(item[1]) or {}).items() if isinstance(_json_loads(item[1]), dict) else [])
+                    if "time" in str(key).lower() or "date" in str(key).lower()
+                },
+            }
+            for item in missing_examples
+        ],
+        "recent_parsed_examples": [
+            {"issue": item[0], "draw_time": item[1]}
+            for item in parsed_examples
+        ],
         "raw_time_like_keys": sorted(raw_time_keys),
         "finding": "official raw payload exposes date-like keys, but stored draw_time is missing for current official records",
     }

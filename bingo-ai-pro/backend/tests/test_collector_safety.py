@@ -7,6 +7,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from database import official_draw_store
 from database.official_draw_store import _valid_draw
+from collectors import taiwan_lottery_collector
 from services import catch_up_service
 from services import official_verification
 
@@ -26,6 +27,40 @@ def test_official_draw_validation_rejects_invalid_numbers():
     assert _valid_draw(_draw(101, list(range(1, 20)) + [81])) is False
     assert _valid_draw(_draw(101, list(range(1, 20)) + [0])) is False
     assert _valid_draw(_draw(101, list(range(1, 20)) + [19])) is False
+
+
+def test_taiwan_lottery_draw_time_parser_normalizes_to_utc():
+    parsed, reason = taiwan_lottery_collector._parse_draw_time("2026-07-17T15:35:08")
+    assert parsed == "2026-07-17T07:35:08+00:00"
+    assert reason is None
+
+    parsed, reason = taiwan_lottery_collector._parse_draw_time("2026/07/17 15:35:08+08:00")
+    assert parsed == "2026-07-17T07:35:08+00:00"
+    assert reason is None
+
+    parsed, reason = taiwan_lottery_collector._parse_draw_time("not-a-date")
+    assert parsed is None
+    assert reason == "invalid_datetime_format"
+
+
+def test_official_draw_upsert_keeps_existing_draw_time_when_incoming_null(tmp_path, monkeypatch):
+    monkeypatch.setattr(official_draw_store, "SQLITE_PATH", tmp_path / "bingo.db")
+    monkeypatch.setattr(official_draw_store, "_cloud_enabled", lambda: False)
+    official_draw_store.init_official_draw_tables()
+
+    first = {
+        **_draw(115040098),
+        "draw_date": "2026-07-17",
+        "draw_time": "2026-07-17T07:35:08+00:00",
+        "raw_json": {"dDate": "2026-07-17T15:35:08"},
+    }
+    second = {**first, "draw_time": None}
+
+    assert official_draw_store.save_official_draws([first])["saved"] == 1
+    assert official_draw_store.save_official_draws([second])["saved"] == 1
+
+    saved = official_draw_store.get_official_draw_by_issue("115040098")
+    assert saved["draw_time"] == "2026-07-17T07:35:08+00:00"
 
 
 def test_latest_official_draw_uses_numeric_production_order(monkeypatch):

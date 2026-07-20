@@ -17,7 +17,7 @@ from apscheduler.events import (
     EVENT_JOB_MAX_INSTANCES,
     EVENT_JOB_MISSED,
 )
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
@@ -88,6 +88,7 @@ from services.data_quality import run_kuaishou_data_quality_check
 from services.catch_up_service import catch_up_missing_issues
 from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
+from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
 from services.official_verification import collect_official_today
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
@@ -142,6 +143,60 @@ STATE: dict[str, str | int | None] = {
 
 scheduler = BackgroundScheduler()
 app.state.scheduler = scheduler
+app.state.instance_started_at = STARTUP_TIME
+app.state.last_health_request_at = None
+app.state.last_health_request_method = None
+app.state.health_request_count_since_start = 0
+app.state.last_health_user_agent = None
+app.state.wake_source = "unknown"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _wake_source(user_agent: str | None) -> str:
+    text = (user_agent or "").lower()
+    if "bingo-ai-pro-github-actions-keep-awake" in text or "github" in text:
+        return "github-actions"
+    if "uptimerobot" in text:
+        return "uptimerobot"
+    if "cron" in text:
+        return "cron-job"
+    if any(marker in text for marker in ("mozilla", "chrome", "safari", "firefox", "edge")):
+        return "browser"
+    return "unknown"
+
+
+def _record_health_request(request: Request) -> None:
+    user_agent = (request.headers.get("user-agent") or "")[:200]
+    app.state.last_health_request_at = _utc_now_iso()
+    app.state.last_health_request_method = request.method
+    app.state.health_request_count_since_start = int(app.state.health_request_count_since_start or 0) + 1
+    app.state.last_health_user_agent = user_agent
+    app.state.wake_source = _wake_source(user_agent)
+
+
+def _seconds_since(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+
+
+def _wake_status(seconds_since_last: int | None) -> str:
+    if seconds_since_last is None:
+        return "unknown"
+    if seconds_since_last <= 7 * 60:
+        return "healthy"
+    if seconds_since_last <= 12 * 60:
+        return "delayed"
+    return "at_risk"
 
 
 def _scheduler_listener(event) -> None:
@@ -216,6 +271,12 @@ def refresh_data() -> dict[str, object]:
 def startup_event() -> None:
     startup_started = datetime.utcnow()
     print("startup_scheduler_registered background_jobs_deferred=true")
+    print(f"WAKE_MONITOR instance_started_at={STARTUP_TIME}")
+    print(
+        "LATEST_SYNC_MODE "
+        f"latest_issue_priority={str(LATEST_ISSUE_PRIORITY).lower()} "
+        f"historical_catchup_enabled={str(HISTORICAL_CATCHUP_ENABLED).lower()}"
+    )
     init_db()
     _ensure_scheduler_listener()
 
@@ -276,16 +337,17 @@ def startup_event() -> None:
             coalesce=True,
             misfire_grace_time=90,
         )
-        scheduler.add_job(
-            catch_up_missing_issues,
-            "date",
-            run_date=datetime.utcnow() + timedelta(seconds=8),
-            id="collector_official_catch_up_startup",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=90,
-        )
+        if HISTORICAL_CATCHUP_ENABLED:
+            scheduler.add_job(
+                catch_up_missing_issues,
+                "date",
+                run_date=datetime.utcnow() + timedelta(seconds=8),
+                id="collector_official_catch_up_startup",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=90,
+            )
         scheduler.add_job(
             collect_pilio_today,
             "date",
@@ -307,16 +369,17 @@ def startup_event() -> None:
             id="collector_pilio_today",
             replace_existing=True,
         )
-        scheduler.add_job(
-            catch_up_missing_issues,
-            "interval",
-            minutes=2,
-            id="collector_official_catch_up",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=90,
-        )
+        if HISTORICAL_CATCHUP_ENABLED:
+            scheduler.add_job(
+                catch_up_missing_issues,
+                "interval",
+                minutes=2,
+                id="collector_official_catch_up",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=90,
+            )
         scheduler.add_job(
             collect_official_today,
             "interval",
@@ -381,6 +444,14 @@ def startup_event() -> None:
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
+    latest_sync = get_latest_sync_snapshot()
+    print("WAKE_MONITOR shutting_down")
+    print(
+        f"last_health_request_at={app.state.last_health_request_at} "
+        f"request_count={app.state.health_request_count_since_start} "
+        f"last_collector_success_at={latest_sync.get('latest_saved_at')} "
+        f"database_latest_issue={latest_sync.get('database_latest_issue')}"
+    )
     scheduler.shutdown(wait=False)
 
 
@@ -458,16 +529,36 @@ def api_update() -> JSONResponse:
 
 
 @app.get("/api/health")
-def api_health() -> dict[str, str | None]:
-    build_time = os.getenv("BUILD_TIME") or os.getenv("RENDER_BUILD_TIME")
+def api_health(request: Request) -> dict[str, str | int]:
+    _record_health_request(request)
+    started_seconds = _seconds_since(STARTUP_TIME)
     return {
         "status": "ok",
-        "app_version": os.getenv("APP_VERSION") or "V1-RC",
-        "git_commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT"),
-        "build_time": build_time,
-        "build_time_source": "environment" if build_time else "unavailable",
-        "startup_time": STARTUP_TIME,
-        "instance_id": os.getenv("RENDER_INSTANCE_ID"),
+        "service": "bingo-ai-pro",
+        "timestamp": _utc_now_iso(),
+        "instance_started_at": STARTUP_TIME,
+        "uptime_seconds": started_seconds or 0,
+    }
+
+
+@app.head("/api/health")
+def api_health_head(request: Request) -> JSONResponse:
+    _record_health_request(request)
+    return JSONResponse(status_code=200, content=None)
+
+
+@app.get("/api/health/wake-status")
+def api_health_wake_status() -> dict[str, str | int | None]:
+    seconds = _seconds_since(app.state.last_health_request_at)
+    return {
+        "instance_started_at": STARTUP_TIME,
+        "last_health_request_at": app.state.last_health_request_at,
+        "seconds_since_last_health_request": seconds,
+        "health_request_count_since_start": app.state.health_request_count_since_start,
+        "last_health_request_method": app.state.last_health_request_method,
+        "last_health_user_agent": app.state.last_health_user_agent,
+        "wake_source": app.state.wake_source,
+        "wake_status": _wake_status(seconds),
     }
 
 

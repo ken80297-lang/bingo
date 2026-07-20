@@ -6,6 +6,7 @@ from typing import Any
 
 from database.official_draw_store import get_official_draw_history
 from services.collector_runtime import update_collector_runtime
+from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY
 
 
 def _issue_int(value: Any) -> int | None:
@@ -41,6 +42,9 @@ def scan_collector_gaps(limit: int = 200) -> dict:
             "duplicate_issues": [],
             "invalid_issues": [],
             "continuity_status": "unknown",
+            "historical_catchup_enabled": HISTORICAL_CATCHUP_ENABLED,
+            "historical_gaps_ignored": not HISTORICAL_CATCHUP_ENABLED,
+            "latest_issue_priority": LATEST_ISSUE_PRIORITY,
         }
         update_collector_runtime(last_gap_scan_at=checked_at, missing_count=0, continuity_status="unknown")
         return payload
@@ -61,6 +65,7 @@ def scan_collector_gaps(limit: int = 200) -> dict:
         if item.get("issue") and not item.get("verified")
     ]
     continuity_status = "complete" if not missing and not invalid else "warning"
+    effective_status = "ignored" if missing and not HISTORICAL_CATCHUP_ENABLED else continuity_status
     payload = {
         "status": "ok",
         "checked_at": checked_at,
@@ -72,7 +77,11 @@ def scan_collector_gaps(limit: int = 200) -> dict:
         "pending_verification": pending[:100],
         "duplicate_issues": duplicates[:100],
         "invalid_issues": invalid[:100],
-        "continuity_status": continuity_status,
+        "continuity_status": effective_status,
+        "diagnostic_continuity_status": continuity_status,
+        "historical_catchup_enabled": HISTORICAL_CATCHUP_ENABLED,
+        "historical_gaps_ignored": not HISTORICAL_CATCHUP_ENABLED,
+        "latest_issue_priority": LATEST_ISSUE_PRIORITY,
     }
     update_collector_runtime(
         last_gap_scan_at=checked_at,

@@ -417,83 +417,55 @@ def collect_official_today() -> dict:
 
 def _collect_official_today_locked(start: float) -> dict:
     try:
-        draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=10)
-        saved = save_official_draws(draws)
-        latest_issue = draws[0].get("issue") if draws else None
+        if _collector_deadline_exceeded(start):
+            mark_deadline_exceeded("official_collector")
+            mark_success(
+                "official_collector",
+                round((time.perf_counter() - start) * 1000, 2),
+                exit_reason="deadline_exceeded",
+            )
+            return {
+                "status": "warning",
+                "count": 0,
+                "saved": {"status": "skipped", "reason": "deadline_exceeded"},
+                "lifecycle": {"status": "skipped", "reason": "deadline_exceeded"},
+                "verification": {"status": "skipped", "reason": "deadline_exceeded"},
+                "learning": {"status": "skipped", "reason": "deadline_exceeded"},
+                "reverify": {"status": "skipped", "reason": "deadline_exceeded"},
+                "prediction_refresh": {"status": "skipped", "reason": "deadline_exceeded"},
+                "prediction": {"status": "skipped", "reason": "deadline_exceeded"},
+                "latest_sync": {"status": "skipped", "reason": "deadline_exceeded"},
+                "elapsed_seconds": _collector_elapsed_seconds(start),
+                "deadline_exceeded": True,
+                "exit_reason": "deadline_exceeded",
+            }
+        from services.latest_sync import process_latest_official_draw
+
+        latest_result = process_latest_official_draw()
+        latest_issue = latest_result.get("official_detected_issue") or latest_result.get("target_issue")
         _record_event(
             "official_collector",
-            "ok" if saved.get("status") == "ok" else "warning",
+            "ok" if latest_result.get("status") in {"ok", "partial"} else "warning",
             latest_issue,
             start,
-            f"official collector saved {saved.get('saved', 0)} draws",
+            f"official latest sync status={latest_result.get('sync_status')}",
         )
-        lifecycle = {"status": "skipped", "reason": "collector_boundary"}
-        prediction_refresh = {"status": "unknown"}
-        verification = {"status": "skipped", "reason": "collector_boundary"}
-        learning = {"status": "skipped", "reason": "collector_boundary"}
-        reverify = {"status": "skipped", "reason": "collector_boundary"}
-        prediction = {"status": "unknown"}
-        exit_reason = "completed"
-
+        exit_reason = latest_result.get("exit_reason") or "completed"
         if _collector_deadline_exceeded(start):
             exit_reason = "deadline_exceeded"
-        else:
-            try:
-                from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
-
-                latest_draw = get_latest_official_draw() or (draws[0] if draws else None)
-                lifecycle = process_official_draw_lifecycle(
-                    latest_draw,
-                    source="official_collector",
-                    trigger="official_draw_saved",
-                    caller="official_collector",
-                    create_next_prediction=True,
-                )
-                verification = lifecycle.get("verification") or verification
-                learning = lifecycle.get("learning") or learning
-                prediction_refresh = lifecycle.get("prediction") or prediction_refresh
-            except Exception as exc:
-                logger.warning(
-                    "collector downstream lifecycle failed component=prediction_lifecycle error=%s",
-                    exc,
-                )
-                lifecycle = {"status": "error", "message": str(exc)}
-
-        if _collector_deadline_exceeded(start):
-            exit_reason = "deadline_exceeded"
-        else:
-            verification = run_official_verification(limit=10)
-
-        if _collector_deadline_exceeded(start):
-            exit_reason = "deadline_exceeded"
-        else:
-            reverify = reverify_recent_draws(limit=20)
-
-        if _collector_deadline_exceeded(start):
-            exit_reason = "deadline_exceeded"
-        else:
-            try:
-                from services.prediction_tracker import evaluate_pending_predictions
-
-                prediction = evaluate_pending_predictions(max_runs=3)
-            except Exception as exc:
-                logger.warning(
-                    "collector downstream prediction evaluation failed component=prediction error=%s",
-                    exc,
-                )
-                prediction = {"status": "error", "message": str(exc)}
         if exit_reason == "deadline_exceeded":
             mark_deadline_exceeded("official_collector")
         result = {
-            "status": "ok" if saved.get("status") == "ok" else "warning",
-            "count": len(draws),
-            "saved": saved,
-            "lifecycle": lifecycle,
-            "verification": verification,
-            "learning": learning,
-            "reverify": reverify,
-            "prediction_refresh": prediction_refresh,
-            "prediction": prediction,
+            "status": "ok" if latest_result.get("database_saved") else "warning",
+            "count": 1 if latest_issue else 0,
+            "saved": latest_result.get("saved"),
+            "lifecycle": latest_result.get("lifecycle"),
+            "verification": ((latest_result.get("lifecycle") or {}).get("verification") if isinstance(latest_result.get("lifecycle"), dict) else None) or {"status": "skipped", "reason": "latest_sync_unavailable"},
+            "learning": ((latest_result.get("lifecycle") or {}).get("learning") if isinstance(latest_result.get("lifecycle"), dict) else None) or {"status": "skipped", "reason": "latest_sync_unavailable"},
+            "reverify": {"status": "skipped", "reason": "latest_issue_priority"},
+            "prediction_refresh": ((latest_result.get("lifecycle") or {}).get("prediction") if isinstance(latest_result.get("lifecycle"), dict) else None) or {"status": "skipped", "reason": "latest_sync_unavailable"},
+            "prediction": ((latest_result.get("lifecycle") or {}).get("prediction") if isinstance(latest_result.get("lifecycle"), dict) else None) or {"status": "skipped", "reason": "latest_sync_unavailable"},
+            "latest_sync": latest_result,
             "elapsed_seconds": _collector_elapsed_seconds(start),
             "deadline_exceeded": exit_reason == "deadline_exceeded",
             "exit_reason": exit_reason,

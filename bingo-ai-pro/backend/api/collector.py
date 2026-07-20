@@ -10,6 +10,7 @@ from database.collector_store import (
 from services.catch_up_service import catch_up_missing_issues
 from services.collector_gap_service import scan_collector_gaps
 from services.collector_runtime import collector_runtime_status
+from services.latest_sync import get_latest_sync_snapshot
 
 router = APIRouter(prefix="/api", tags=["Collectors"])
 
@@ -32,6 +33,11 @@ def api_collector_catch_up():
 @router.get("/collector/gaps")
 def api_collector_gaps():
     return scan_collector_gaps()
+
+
+@router.get("/collector/latest-sync")
+def api_collector_latest_sync():
+    return get_latest_sync_snapshot()
 
 
 @router.get("/kuaishou/latest")

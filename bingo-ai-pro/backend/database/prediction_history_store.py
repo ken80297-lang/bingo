@@ -1036,6 +1036,81 @@ def _prediction_records_for_target_issue(issue: str) -> list[dict]:
     return [_row_to_prediction(row) for row in rows]
 
 
+def get_latest_verified_prediction_at_or_before(issue: str) -> dict | None:
+    target = _valid_issue(issue)
+    if not target:
+        return None
+    rows = _query_with_fallback(
+        """
+        select {columns}
+        from prediction_history p
+        join official_draw_history o on o.issue = p.prediction_issue
+        where p.issue is not null
+          and p.prediction_issue is not null
+          and p.issue ~ '^[0-9]+$'
+          and p.prediction_issue ~ '^[0-9]+$'
+          and length(p.issue) >= {min_issue_length}
+          and length(p.prediction_issue) >= {min_issue_length}
+          and p.issue not like '99%%'
+          and p.prediction_issue not like '99%%'
+          and upper(p.issue) not like 'TEST%%'
+          and upper(p.prediction_issue) not like 'TEST%%'
+          and p.prediction_issue::bigint = p.issue::bigint + 1
+          and p.prediction_issue::bigint <= %s::bigint
+          and jsonb_typeof(p.recommend_numbers) = 'array'
+          and jsonb_array_length(p.recommend_numbers) = 20
+          and jsonb_typeof(coalesce(p.winning_numbers, o.numbers)) = 'array'
+          and jsonb_array_length(coalesce(p.winning_numbers, o.numbers)) = 20
+          and coalesce(lower(p.strategy), '') not like '%%preview%%'
+          and coalesce(lower(p.strategy), '') not like '%%simulation%%'
+          and coalesce(lower(p.strategy), '') not like '%%test%%'
+          and coalesce(lower(p.strategy), '') not like '%%fixture%%'
+          and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
+        order by p.prediction_issue::bigint desc, p.created_at desc, p.id desc
+        limit 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+        (target,),
+        sqlite_sql="""
+        select {columns}
+        from prediction_history p
+        join official_draw_history o on o.issue = p.prediction_issue
+        where p.issue is not null
+          and p.prediction_issue is not null
+          and p.issue not glob '*[^0-9]*'
+          and p.prediction_issue not glob '*[^0-9]*'
+          and length(p.issue) >= {min_issue_length}
+          and length(p.prediction_issue) >= {min_issue_length}
+          and p.issue not like '99%'
+          and p.prediction_issue not like '99%'
+          and upper(p.issue) not like 'TEST%'
+          and upper(p.prediction_issue) not like 'TEST%'
+          and cast(p.prediction_issue as integer) = cast(p.issue as integer) + 1
+          and cast(p.prediction_issue as integer) <= cast(? as integer)
+          and p.recommend_numbers is not null
+          and p.recommend_numbers not in ('', '[]')
+          and coalesce(p.winning_numbers, o.numbers) is not null
+          and coalesce(p.winning_numbers, o.numbers) not in ('', '[]')
+          and coalesce(lower(p.strategy), '') not like '%preview%'
+          and coalesce(lower(p.strategy), '') not like '%simulation%'
+          and coalesce(lower(p.strategy), '') not like '%test%'
+          and coalesce(lower(p.strategy), '') not like '%fixture%'
+          and coalesce(lower(p.strategy), '') not like '%synthetic%'
+        order by cast(p.prediction_issue as integer) desc, p.created_at desc, p.id desc
+        limit 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+    )
+    if not rows:
+        return None
+    record = _row_to_prediction(rows[0])
+    record["read_layer"] = {
+        "data_source": "database",
+        "table_name": "prediction_history",
+        "query_name": "latest_verified_prediction_at_or_before",
+        "production_filtered": True,
+    }
+    return _enrich_prediction_metadata(record)
+
+
 def update_prediction_history_result(actual: dict) -> dict:
     _ensure_initialized()
     issue = str(actual.get("issue"))

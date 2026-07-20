@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from services.http_client import safe_get_json
 
 logger = logging.getLogger(__name__)
 
 OFFICIAL_BINGO_URL = "https://api.taiwanlottery.com/TLCAPIWeB/Lottery/BingoResult"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
 def _as_int(value: Any) -> int | None:
@@ -32,6 +34,54 @@ def _draw_date(open_date: str, d_date: str | None) -> str:
     if not d_date or str(d_date).startswith("0001-01-01"):
         return open_date
     return str(d_date).split("T", 1)[0]
+
+
+def _parse_draw_time(value: Any) -> tuple[str | None, str | None]:
+    if value is None or value == "":
+        return None, "missing"
+    if isinstance(value, (int, float)):
+        try:
+            timestamp = float(value)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(), None
+        except Exception:
+            return None, "invalid_unix_timestamp"
+
+    text = str(value).strip()
+    if not text or text.startswith("0001-01-01"):
+        return None, "placeholder_datetime"
+    normalized = text.replace("/", "-").replace(" ", "T")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None, "invalid_datetime_format"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TAIPEI_TZ)
+    return parsed.astimezone(timezone.utc).isoformat(), None
+
+
+def _record_draw_time_parse_failure(issue: Any, raw_value: Any, reason: str | None) -> None:
+    if not reason or reason in {"missing", "placeholder_datetime"}:
+        return
+    try:
+        from services.operations_center import record_operation_event
+
+        record_operation_event(
+            component="official_collector",
+            event_type="official_draw_time_parse_failed",
+            status="warning",
+            issue=str(issue) if issue else None,
+            message=(
+                f"official draw_time parse failed "
+                f"raw_value_type={type(raw_value).__name__} reason={reason}"
+            ),
+            error_type=reason,
+        )
+    except Exception:
+        logger.exception("official draw_time parse failure event failed")
 
 
 def fetch_official_bingo_results(
@@ -74,11 +124,13 @@ def fetch_official_bingo_results(
             open_order_numbers = _as_numbers(row.get("openShowOrder"))
             if not issue or len(numbers) != 20 or len(set(numbers)) != 20:
                 continue
+            draw_time, parse_reason = _parse_draw_time(row.get("dDate"))
+            _record_draw_time_parse_failure(issue, row.get("dDate"), parse_reason)
             draws.append(
                 {
                     "issue": str(issue),
                     "draw_date": _draw_date(query_date, row.get("dDate")),
-                    "draw_time": None,
+                    "draw_time": draw_time,
                     "numbers": numbers,
                     "open_order_numbers": open_order_numbers,
                     "super_number": _as_int(row.get("bullEyeTop")),

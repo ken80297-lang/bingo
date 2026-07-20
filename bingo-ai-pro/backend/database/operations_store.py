@@ -485,6 +485,39 @@ def get_operation_timeline(limit: int = 50) -> list[dict]:
         return []
 
 
+def get_latest_operation_event(event_type: str, issue: str | None = None) -> dict | None:
+    where_issue = "and issue = %s" if issue is not None else ""
+    sqlite_where_issue = "and issue = ?" if issue is not None else ""
+    params = (str(event_type), str(issue)) if issue is not None else (str(event_type),)
+    sql = f"""
+        select id, issue, component, event_type, status, message, duration_ms, created_at
+        from operation_events
+        where event_type = %s {where_issue}
+        order by created_at desc, id desc
+        limit 1
+    """
+    sqlite_sql = f"""
+        select id, issue, component, event_type, status, message, duration_ms, created_at
+        from operation_events
+        where event_type = ? {sqlite_where_issue}
+        order by created_at desc, id desc
+        limit 1
+    """
+    if _cloud_enabled():
+        try:
+            rows = _query_cloud(sql, params)
+            return _event_from_row(rows[0]) if rows else None
+        except Exception:
+            logger.exception("cloud latest operation event query failed")
+
+    try:
+        rows = _query_sqlite(sqlite_sql, params)
+        return _event_from_row(rows[0]) if rows else None
+    except Exception:
+        logger.exception("sqlite latest operation event query failed")
+        return None
+
+
 def get_operation_errors(limit: int = 50, unresolved_only: bool = False) -> list[dict]:
     limit = max(1, min(int(limit or 50), 200))
     where = "where resolved = false" if unresolved_only else ""
