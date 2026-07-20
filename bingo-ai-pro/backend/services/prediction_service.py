@@ -204,6 +204,7 @@ def create_for_official_draw(
             "trigger": trigger,
             "collector_metadata": collector_metadata or {},
             "prediction_service": True,
+            "ensure_simulation": False,
         },
     )
     if recommendation_result.get("status") != "ok":
@@ -237,6 +238,8 @@ def create_for_official_draw(
         }
 
     recommendation = recommendation_result.get("recommendation") or {}
+    recommendation["issue"] = based_on
+    recommendation["target_issue"] = target
     record = build_prediction_history_record(recommendation)
     recommended = _numbers((record or {}).get("recommend_numbers"))
     if len(recommended) != 20:

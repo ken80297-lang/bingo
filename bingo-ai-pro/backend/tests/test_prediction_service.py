@@ -37,9 +37,15 @@ def _recommendation(numbers=None):
 def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     events = []
     saved = []
+    contexts = []
 
     monkeypatch.setattr(prediction_service, "get_prediction_history_records", lambda limit: [])
-    monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: _recommendation())
+
+    def calculate(*args, **kwargs):
+        contexts.append(kwargs.get("context") or {})
+        return _recommendation()
+
+    monkeypatch.setattr(prediction_service, "calculate_recommendation", calculate)
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append((record, caller_context)) or {"status": "ok", "id": 42, "storage": "cloud"})
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: events.append(kwargs))
 
@@ -52,6 +58,7 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     assert result["status"] == "created"
     assert result["target_issue"] == "115000101"
     assert result["recommended_count"] == 20
+    assert contexts[0]["ensure_simulation"] is False
     assert saved[0][1] == "prediction_service"
     assert saved[0][0]["prediction_status"] == "waiting_draw"
     assert saved[0][0]["learning_used"] is False
@@ -101,6 +108,29 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
 
     assert result["status"] == "already_exists"
     assert result["prediction_id"] == 9
+
+
+def test_prediction_service_persists_requested_source_and_target_from_fallback(monkeypatch):
+    saved = []
+    fallback = _recommendation()
+    fallback["recommendation"]["issue"] = "115000001"
+    fallback["recommendation"]["target_issue"] = "115000002"
+
+    monkeypatch.setattr(prediction_service, "get_prediction_history_records", lambda limit: [])
+    monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: fallback)
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 43, "storage": "cloud"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    result = prediction_service.create_for_official_draw(
+        "115000200",
+        source="official_collector",
+        trigger="official_draw_saved",
+        target_issue="115000201",
+    )
+
+    assert result["status"] == "created"
+    assert saved[0]["issue"] == "115000200"
+    assert saved[0]["prediction_issue"] == "115000201"
 
 
 def test_writer_guard_rejects_direct_prediction_history_write(monkeypatch):
