@@ -31,6 +31,8 @@ _STATE_LOCK = threading.RLock()
 _RECONCILE_LOCK = threading.RLock()
 _RECONCILE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="latest-sync-reconcile")
 _RECONCILE_IN_FLIGHT: set[str] = set()
+_LATEST_SYNC_CACHE_TTL_SECONDS = 10
+_LATEST_SYNC_CACHE: dict[str, Any] = {"snapshot": None, "expires_at": 0.0}
 _LATEST_SYNC_STATE: dict[str, Any] = {
     "official_detected_issue": None,
     "source_issue": None,
@@ -320,6 +322,21 @@ def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: s
 def get_latest_sync_snapshot() -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
+    with _STATE_LOCK:
+        cached = _LATEST_SYNC_CACHE.get("snapshot")
+        if (
+            isinstance(cached, dict)
+            and cached.get("sync_status") == "synced"
+            and float(_LATEST_SYNC_CACHE.get("expires_at") or 0) > started
+        ):
+            snapshot = deepcopy(cached)
+            snapshot["timings_ms"] = {
+                **(snapshot.get("timings_ms") or {}),
+                "cache_hit_ms": 0.0,
+                "total_ms": round((time.perf_counter() - started) * 1000, 2),
+            }
+            return snapshot
+
     mark = time.perf_counter()
     sync_status = get_latest_official_draw_sync_status()
     latest = (sync_status or {}).get("draw")
@@ -363,7 +380,7 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         failure_reason=failure_reason,
     )
     timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
-    return _update_state(
+    snapshot = _update_state(
         official_detected_issue=detected,
         source_issue=source_issue,
         database_latest_issue=(latest or {}).get("issue"),
@@ -388,6 +405,11 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         historical_catchup_enabled=HISTORICAL_CATCHUP_ENABLED,
         latest_issue_priority=LATEST_ISSUE_PRIORITY,
     )
+    if snapshot.get("sync_status") == "synced":
+        with _STATE_LOCK:
+            _LATEST_SYNC_CACHE["snapshot"] = deepcopy(snapshot)
+            _LATEST_SYNC_CACHE["expires_at"] = time.perf_counter() + _LATEST_SYNC_CACHE_TTL_SECONDS
+    return snapshot
 
 
 def _failure(source_issue: str | None, stage: str, reason: str, detected_at: str | None, attempt_count: int) -> dict[str, Any]:
