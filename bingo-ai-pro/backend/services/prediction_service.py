@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from database.prediction_history_store import get_prediction_history_records, save_prediction_history
+from database.prediction_history_store import get_prediction_for_source_target, save_prediction_history
 from services.next_prediction_center import build_prediction_history_record
 from services.recommendation_center import calculate_recommendation
 
@@ -95,12 +95,7 @@ def _record_event(
 
 
 def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
-    for item in get_prediction_history_records(500):
-        if str(item.get("prediction_issue") or "") != str(target_issue):
-            continue
-        if str(item.get("issue") or "") == str(based_on_issue):
-            return item
-    return None
+    return get_prediction_for_source_target(based_on_issue, target_issue)
 
 
 def create_for_official_draw(

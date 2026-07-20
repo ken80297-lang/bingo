@@ -145,7 +145,7 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
 
     monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
     monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
-    monkeypatch.setattr(latest_sync, "get_latest_prediction_history", lambda: prediction)
+    monkeypatch.setattr(latest_sync, "get_prediction_for_source_target", lambda source_issue, target_issue: prediction)
 
     import services.prediction_refresh as prediction_refresh
 

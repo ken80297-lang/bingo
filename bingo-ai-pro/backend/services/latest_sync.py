@@ -15,7 +15,7 @@ from database.official_draw_store import (
     get_official_draw_by_issue,
     save_official_draws,
 )
-from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_prediction_for_source_target
 from services.collector_runtime import update_collector_runtime
 
 logger = logging.getLogger(__name__)
@@ -122,15 +122,11 @@ def _analysis_exists(issue: str) -> bool:
 
 
 def _latest_prediction_for_issue(issue: str) -> dict | None:
-    latest = get_latest_prediction_history()
-    if not latest:
-        return None
-    target_issue = _issue_int(latest.get("prediction_issue"))
-    based_on = _issue_int(latest.get("issue"))
     issue_number = _issue_int(issue)
-    if issue_number is not None and based_on == issue_number and target_issue == issue_number + 1:
-        return latest
-    return None
+    target_issue = _next_issue(issue)
+    if issue_number is None or not target_issue:
+        return None
+    return get_prediction_for_source_target(str(issue), target_issue)
 
 
 def _prediction_exists_for_latest(issue: str) -> bool:

@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from database.prediction_history_store import get_prediction_history_records
+from database.prediction_history_store import get_prediction_for_source_target
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +41,7 @@ def _numbers(draw: dict) -> list[int]:
 
 
 def _existing_prediction(source_issue: str, target_issue: str) -> dict | None:
-    for item in get_prediction_history_records(50):
-        if str(item.get("prediction_issue") or "") != str(target_issue):
-            continue
-        if str(item.get("issue") or "") == str(source_issue):
-            return item
-    return None
+    return get_prediction_for_source_target(source_issue, target_issue)
 
 
 def _lag_issues(source_issue: str, target_issue: str | None) -> int | None:

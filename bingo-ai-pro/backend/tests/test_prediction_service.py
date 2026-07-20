@@ -39,7 +39,7 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     saved = []
     contexts = []
 
-    monkeypatch.setattr(prediction_service, "get_prediction_history_records", lambda limit: [])
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
 
     def calculate(*args, **kwargs):
         contexts.append(kwargs.get("context") or {})
@@ -82,7 +82,7 @@ def test_prediction_service_skips_invalid_target(monkeypatch):
 
 
 def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
-    monkeypatch.setattr(prediction_service, "get_prediction_history_records", lambda limit: [])
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: _recommendation([1, 2, 3]))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
@@ -97,8 +97,8 @@ def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
 def test_prediction_service_duplicate_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
-        "get_prediction_history_records",
-        lambda limit: [{"id": 9, "issue": "115000100", "prediction_issue": "115000101", "recommend_numbers": list(range(1, 21)), "prediction_status": "waiting_draw"}],
+        "get_prediction_for_source_target",
+        lambda source_issue, target_issue: {"id": 9, "issue": "115000100", "prediction_issue": "115000101", "recommend_numbers": list(range(1, 21)), "prediction_status": "waiting_draw"},
     )
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not calculate")))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
@@ -116,7 +116,7 @@ def test_prediction_service_persists_requested_source_and_target_from_fallback(m
     fallback["recommendation"]["issue"] = "115000001"
     fallback["recommendation"]["target_issue"] = "115000002"
 
-    monkeypatch.setattr(prediction_service, "get_prediction_history_records", lambda limit: [])
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: fallback)
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 43, "storage": "cloud"})
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
