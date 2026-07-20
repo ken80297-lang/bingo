@@ -9,6 +9,7 @@ from database.analysis_store import get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import (
     get_latest_prediction_history,
+    get_latest_prediction_context,
     get_prediction_for_source_target,
     get_prediction_history_statistics,
     is_production_prediction,
@@ -229,13 +230,13 @@ def build_next_prediction_dashboard() -> dict:
     started = time.perf_counter()
     timings: dict[str, float] = {}
     mark = time.perf_counter()
-    latest_draw = get_latest_official_draw()
+    context = get_latest_prediction_context()
     timings["latest_draw_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    latest_draw = (context or {}).get("draw")
     source_issue = str(latest_draw.get("issue")) if latest_draw and latest_draw.get("issue") else None
-    target_issue = _next_issue(source_issue)
-    mark = time.perf_counter()
-    prediction = get_prediction_for_source_target(source_issue, target_issue) if source_issue and target_issue else None
-    timings["prediction_lookup_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    target_issue = (context or {}).get("target_issue") or _next_issue(source_issue)
+    prediction = (context or {}).get("prediction")
+    timings["prediction_lookup_ms"] = 0.0
     latest_history = prediction
     fallback = None
     if not prediction and not latest_draw:
@@ -247,9 +248,8 @@ def build_next_prediction_dashboard() -> dict:
             fallback = candidate if is_production_prediction(candidate) else None
         prediction = latest_history or fallback
     refresh = prediction_refresh_status(latest_draw, prediction)
-    mark = time.perf_counter()
-    analysis = get_latest_analysis_history()
-    timings["analysis_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    analysis = None
+    timings["analysis_ms"] = 0.0
     stats = _fast_history_stats() if latest_draw else get_prediction_history_statistics(100)
 
     if not prediction:

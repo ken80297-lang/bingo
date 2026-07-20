@@ -1081,6 +1081,83 @@ def get_prediction_for_source_target(source_issue: str, target_issue: str) -> di
     return record
 
 
+def get_latest_prediction_context() -> dict | None:
+    rows = _query_with_fallback(
+        """
+        with latest as (
+            select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+                   super_number, win_no_only, source, verification_status, fetched_at,
+                   verified, raw_json, created_at, updated_at
+            from official_draw_history
+            where issue ~ '^[0-9]+$'
+              and length(issue) >= 6
+              and issue not like '99%%'
+              and upper(issue) not like 'TEST%%'
+            order by issue::bigint desc
+            limit 1
+        ),
+        prediction as (
+            select {columns}
+            from prediction_history
+            where issue = (select issue from latest)
+              and prediction_issue = ((select issue from latest)::bigint + 1)::text
+              and issue is not null
+              and prediction_issue is not null
+              and recommend_numbers is not null
+              and jsonb_typeof(recommend_numbers) = 'array'
+              and jsonb_array_length(recommend_numbers) > 0
+            order by created_at desc, id desc
+            limit 1
+        )
+        select latest.*, prediction.*
+        from latest
+        left join prediction on true
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        sqlite_sql="""
+        with latest as (
+            select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+                   super_number, win_no_only, source, verification_status, fetched_at,
+                   verified, raw_json, created_at, updated_at
+            from official_draw_history
+            where issue glob '[0-9]*'
+              and length(issue) >= 6
+              and issue not like '99%'
+              and upper(issue) not like 'TEST%'
+            order by cast(issue as integer) desc
+            limit 1
+        ),
+        prediction as (
+            select {columns}
+            from prediction_history
+            where issue = (select issue from latest)
+              and prediction_issue = cast(cast((select issue from latest) as integer) + 1 as text)
+              and issue is not null
+              and prediction_issue is not null
+              and recommend_numbers is not null
+              and recommend_numbers not in ('', '[]')
+            order by created_at desc, id desc
+            limit 1
+        )
+        select latest.*, prediction.*
+        from latest
+        left join prediction on 1 = 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+    )
+    if not rows:
+        return None
+    from database.official_draw_store import _row_to_official
+
+    row = rows[0]
+    draw = _row_to_official(row[:15])
+    prediction = _row_to_prediction(row[15:]) if row[15] is not None else None
+    source_issue = _valid_issue(draw.get("issue"))
+    return {
+        "draw": draw,
+        "prediction": prediction,
+        "target_issue": str(int(source_issue) + 1) if source_issue else None,
+    }
+
+
 def get_latest_verified_prediction_at_or_before(issue: str) -> dict | None:
     target = _valid_issue(issue)
     if not target:

@@ -462,13 +462,15 @@ def test_next_prediction_dashboard_uses_exact_fast_path(monkeypatch):
         "prediction_status": "waiting_draw",
     }
 
-    monkeypatch.setattr(next_prediction_center, "get_latest_official_draw", lambda: {"issue": "115040650"})
     monkeypatch.setattr(
         next_prediction_center,
-        "get_prediction_for_source_target",
-        lambda source_issue, target_issue: prediction,
+        "get_latest_prediction_context",
+        lambda: {
+            "draw": {"issue": "115040650"},
+            "prediction": prediction,
+            "target_issue": "115040651",
+        },
     )
-    monkeypatch.setattr(next_prediction_center, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(
         next_prediction_center,
         "get_prediction_history_statistics",
