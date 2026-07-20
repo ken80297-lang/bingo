@@ -250,7 +250,7 @@ def build_next_prediction_dashboard() -> dict:
     mark = time.perf_counter()
     analysis = get_latest_analysis_history()
     timings["analysis_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-    stats = _fast_history_stats() if prediction else get_prediction_history_statistics(100)
+    stats = _fast_history_stats() if latest_draw else get_prediction_history_statistics(100)
 
     if not prediction:
         message = "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。"

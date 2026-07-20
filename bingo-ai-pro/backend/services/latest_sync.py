@@ -12,6 +12,7 @@ from typing import Any
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
 from database.analysis_store import get_analysis_history, save_analysis_history
 from database.official_draw_store import (
+    get_latest_official_draw_sync_status,
     get_latest_official_draw,
     get_official_draw_by_issue,
     save_official_draws,
@@ -320,20 +321,19 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
     mark = time.perf_counter()
-    latest = get_latest_official_draw()
+    sync_status = get_latest_official_draw_sync_status()
+    latest = (sync_status or {}).get("draw")
     timings["read_latest_draw_ms"] = round((time.perf_counter() - mark) * 1000, 2)
     source_issue = str(latest["issue"]) if latest and latest.get("issue") else None
-    target_issue = _next_issue(source_issue) if source_issue else None
+    target_issue = (sync_status or {}).get("target_issue") or (_next_issue(source_issue) if source_issue else None)
     prediction_created = False
     analysis_created = False
     reconcile: dict[str, Any] = {}
     if source_issue:
-        mark = time.perf_counter()
-        analysis_created = _analysis_exists(source_issue)
-        timings["analysis_lookup_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-        mark = time.perf_counter()
-        prediction_created = _prediction_exists_for_latest(source_issue)
-        timings["prediction_lookup_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+        analysis_created = bool((sync_status or {}).get("analysis_exists"))
+        timings["analysis_lookup_ms"] = 0.0
+        prediction_created = bool((sync_status or {}).get("prediction_exists"))
+        timings["prediction_lookup_ms"] = 0.0
         if is_complete_official_draw(latest) and analysis_created and not prediction_created and target_issue:
             reconcile = _queue_prediction_reconcile(latest, source_issue, target_issue)
     with _STATE_LOCK:

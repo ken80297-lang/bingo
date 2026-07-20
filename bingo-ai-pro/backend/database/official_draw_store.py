@@ -439,6 +439,87 @@ def get_latest_official_draw() -> dict | None:
     return _row_to_official(rows[0]) if rows else None
 
 
+def get_latest_official_draw_sync_status() -> dict | None:
+    rows = _query_with_fallback(
+        """
+        with latest as (
+            select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+                   super_number, win_no_only, source, verification_status, fetched_at,
+                   verified, raw_json, created_at, updated_at
+            from official_draw_history
+            where issue ~ '^[0-9]+$'
+              and length(issue) >= 6
+              and issue not like '99%%'
+              and upper(issue) not like 'TEST%%'
+            order by issue::bigint desc
+            limit 1
+        )
+        select latest.*,
+               exists (
+                   select 1
+                   from analysis_history a
+                   where a.issue = latest.issue
+                     and a.cluster_level is not null
+               ) as analysis_exists,
+               exists (
+                   select 1
+                   from prediction_history p
+                   where p.issue = latest.issue
+                     and p.prediction_issue = (latest.issue::bigint + 1)::text
+                     and p.issue is not null
+                     and p.prediction_issue is not null
+                     and p.recommend_numbers is not null
+                     and jsonb_typeof(p.recommend_numbers) = 'array'
+                     and jsonb_array_length(p.recommend_numbers) > 0
+               ) as prediction_exists,
+               (latest.issue::bigint + 1)::text as target_issue
+        from latest
+        """,
+        sqlite_sql="""
+        with latest as (
+            select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+                   super_number, win_no_only, source, verification_status, fetched_at,
+                   verified, raw_json, created_at, updated_at
+            from official_draw_history
+            where issue glob '[0-9]*'
+              and length(issue) >= 6
+              and issue not like '99%'
+              and upper(issue) not like 'TEST%'
+            order by cast(issue as integer) desc
+            limit 1
+        )
+        select latest.*,
+               exists (
+                   select 1
+                   from analysis_history a
+                   where a.issue = latest.issue
+                     and a.cluster_level is not null
+               ) as analysis_exists,
+               exists (
+                   select 1
+                   from prediction_history p
+                   where p.issue = latest.issue
+                     and p.prediction_issue = cast(cast(latest.issue as integer) + 1 as text)
+                     and p.issue is not null
+                     and p.prediction_issue is not null
+                     and p.recommend_numbers is not null
+                     and p.recommend_numbers not in ('', '[]')
+               ) as prediction_exists,
+               cast(cast(latest.issue as integer) + 1 as text) as target_issue
+        from latest
+        """,
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "draw": _row_to_official(row[:15]),
+        "analysis_exists": bool(row[15]),
+        "prediction_exists": bool(row[16]),
+        "target_issue": str(row[17]) if row[17] is not None else None,
+    }
+
+
 def get_official_draw_history(limit: int = 30) -> list[dict]:
     limit = max(1, min(int(limit or 30), 200))
     rows = _query_with_fallback(

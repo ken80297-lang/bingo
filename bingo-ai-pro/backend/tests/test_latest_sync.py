@@ -83,9 +83,16 @@ def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeyp
     draw = _draw("115040625")
     submitted = []
 
-    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
-    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
-    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": True,
+            "prediction_exists": False,
+            "target_issue": "115040626",
+        },
+    )
     latest_sync._RECONCILE_IN_FLIGHT.clear()
 
     class Executor:
@@ -137,9 +144,16 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
         }
     )
 
-    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
-    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
-    monkeypatch.setattr(latest_sync, "get_prediction_for_source_target", lambda source_issue, target_issue: prediction)
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": True,
+            "prediction_exists": True,
+            "target_issue": "115040626",
+        },
+    )
 
     import services.prediction_refresh as prediction_refresh
 
