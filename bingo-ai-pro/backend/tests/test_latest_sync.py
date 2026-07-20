@@ -79,39 +79,33 @@ def test_latest_sync_database_failure_does_not_mark_saved(monkeypatch):
     assert result["failure_stage"] == "database_saved"
 
 
-def test_latest_sync_snapshot_reconciles_missing_prediction(monkeypatch):
+def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeypatch):
     draw = _draw("115040625")
-    calls = []
+    submitted = []
 
     monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
     monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
     monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+    latest_sync._RECONCILE_IN_FLIGHT.clear()
 
-    import services.prediction_refresh as prediction_refresh
+    class Executor:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
 
-    def ensure(latest_draw):
-        calls.append(latest_draw)
-        return {
-            "status": "created",
-            "refresh_status": "ready",
-            "based_on_issue": "115040625",
-            "target_issue": "115040626",
-        }
-
-    monkeypatch.setattr(prediction_refresh, "ensure_next_prediction", ensure)
-
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
     result = latest_sync.get_latest_sync_snapshot()
 
-    assert calls == [draw]
+    assert len(submitted) == 1
     assert result["source_issue"] == "115040625"
     assert result["target_issue"] == "115040626"
     assert result["database_saved"] is True
     assert result["analysis_created"] is True
-    assert result["prediction_created"] is True
-    assert result["dashboard_ready"] is True
-    assert result["sync_status"] == "synced"
-    assert result["prediction_reconcile"]["refresh_status"] == "ready"
-    assert result["stages"]["prediction"]["status"] == "completed"
+    assert result["prediction_created"] is False
+    assert result["dashboard_ready"] is False
+    assert result["sync_status"] == "prediction_pending"
+    assert result["prediction_reconcile"]["refresh_status"] == "queued"
+    assert result["stages"]["prediction"]["status"] == "pending"
+    assert result["timings_ms"]["total_ms"] >= 0
 
 
 def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):

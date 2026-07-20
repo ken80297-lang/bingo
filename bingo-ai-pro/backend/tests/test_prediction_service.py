@@ -8,7 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from api import recommendation_center as recommendation_api
 from database import prediction_history_store
-from services import prediction_refresh, prediction_service
+from services import next_prediction_center, prediction_refresh, prediction_service
 
 
 def _recommendation(numbers=None):
@@ -449,3 +449,37 @@ def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     assert calls[0][1]["source"] == "official_collector"
     assert calls[0][1]["trigger"] == "official_draw_saved"
     assert "prediction_service_called" in [event[0] for event in events]
+
+
+def test_next_prediction_dashboard_uses_exact_fast_path(monkeypatch):
+    prediction = {
+        "id": 1,
+        "issue": "115040650",
+        "prediction_issue": "115040651",
+        "recommend_numbers": list(range(1, 21)),
+        "confidence": 88,
+        "super_number": 7,
+        "prediction_status": "waiting_draw",
+    }
+
+    monkeypatch.setattr(next_prediction_center, "get_latest_official_draw", lambda: {"issue": "115040650"})
+    monkeypatch.setattr(
+        next_prediction_center,
+        "get_prediction_for_source_target",
+        lambda source_issue, target_issue: prediction,
+    )
+    monkeypatch.setattr(next_prediction_center, "get_latest_analysis_history", lambda: {})
+    monkeypatch.setattr(
+        next_prediction_center,
+        "get_prediction_history_statistics",
+        lambda limit: (_ for _ in ()).throw(AssertionError("fast path should not load heavy statistics")),
+    )
+
+    result = next_prediction_center.build_next_prediction_dashboard()
+
+    assert result["status"] == "ok"
+    assert result["next_recommendation"]["based_on_issue"] == "115040650"
+    assert result["next_recommendation"]["target_issue"] == "115040651"
+    assert len(result["next_recommendation"]["candidates"]) == 20
+    assert result["history"]["status"] == "fast_path"
+    assert result["timings_ms"]["total_ms"] >= 0

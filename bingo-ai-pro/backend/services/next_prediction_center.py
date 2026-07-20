@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ from database.analysis_store import get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw
 from database.prediction_history_store import (
     get_latest_prediction_history,
+    get_prediction_for_source_target,
     get_prediction_history_statistics,
     is_production_prediction,
 )
@@ -35,6 +37,34 @@ def _as_int_list(values: Any) -> list[int]:
         if 1 <= number <= 80 and number not in numbers:
             numbers.append(number)
     return sorted(numbers)
+
+
+def _next_issue(issue: Any) -> str | None:
+    text = str(issue or "").strip()
+    if not text:
+        return None
+    try:
+        from services.prediction_refresh import _next_issue as resolve_next_issue
+
+        return resolve_next_issue(text)
+    except Exception:
+        try:
+            return str(int(text) + 1)
+        except Exception:
+            return None
+
+
+def _fast_history_stats() -> dict:
+    return {
+        "status": "fast_path",
+        "sample_size": 0,
+        "three_star_rate": 0,
+        "four_star_rate": 0,
+        "five_star_rate": 0,
+        "super_hit_rate": 0,
+        "average_hits": 0,
+        "cache": {"status": "skipped", "reason": "fast_path"},
+    }
 
 
 def _pairs(numbers: list[int], diff: int) -> list[list[int]]:
@@ -196,27 +226,48 @@ def _fallback_recommendation() -> dict | None:
 
 
 def build_next_prediction_dashboard() -> dict:
-    latest_history = get_latest_prediction_history()
-    fallback = None
-    if not latest_history:
-        candidate = _fallback_recommendation()
-        fallback = candidate if is_production_prediction(candidate) else None
-    prediction = latest_history or fallback
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
+    mark = time.perf_counter()
     latest_draw = get_latest_official_draw()
+    timings["latest_draw_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    source_issue = str(latest_draw.get("issue")) if latest_draw and latest_draw.get("issue") else None
+    target_issue = _next_issue(source_issue)
+    mark = time.perf_counter()
+    prediction = get_prediction_for_source_target(source_issue, target_issue) if source_issue and target_issue else None
+    timings["prediction_lookup_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    latest_history = prediction
+    fallback = None
+    if not prediction and not latest_draw:
+        mark = time.perf_counter()
+        latest_history = get_latest_prediction_history()
+        timings["latest_prediction_fallback_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+        if not latest_history:
+            candidate = _fallback_recommendation()
+            fallback = candidate if is_production_prediction(candidate) else None
+        prediction = latest_history or fallback
     refresh = prediction_refresh_status(latest_draw, prediction)
+    mark = time.perf_counter()
     analysis = get_latest_analysis_history()
-    stats = get_prediction_history_statistics(100)
+    timings["analysis_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    stats = _fast_history_stats() if prediction else get_prediction_history_statistics(100)
 
     if not prediction:
         message = "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。"
         return {
-            "status": "empty",
+            "status": "prediction_pending" if latest_draw else "empty",
             "message": message,
-            "next_recommendation": {"message": message},
+            "next_recommendation": {
+                "message": message,
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+                "refresh_status": "prediction_pending" if latest_draw else "missing_latest_draw",
+            },
             "laowanjia": {"message": "尚無老玩家特徵資料。"},
             "reasons": [message],
             "alerts": {},
             "history": stats,
+            "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
         }
 
     numbers = _as_int_list(prediction.get("recommend_numbers"))
@@ -270,4 +321,5 @@ def build_next_prediction_dashboard() -> dict:
         "alerts": _alerts(numbers, super_number),
         "history": stats,
         "fallback": latest_history is None,
+        "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
     }
