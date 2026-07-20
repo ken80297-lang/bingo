@@ -77,3 +77,95 @@ def test_latest_sync_database_failure_does_not_mark_saved(monkeypatch):
     assert result["database_saved"] is False
     assert result["sync_status"] == "error"
     assert result["failure_stage"] == "database_saved"
+
+
+def test_latest_sync_snapshot_reconciles_missing_prediction(monkeypatch):
+    draw = _draw("115040625")
+    calls = []
+
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
+    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
+    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+
+    import services.prediction_refresh as prediction_refresh
+
+    def ensure(latest_draw):
+        calls.append(latest_draw)
+        return {
+            "status": "created",
+            "refresh_status": "ready",
+            "based_on_issue": "115040625",
+            "target_issue": "115040626",
+        }
+
+    monkeypatch.setattr(prediction_refresh, "ensure_next_prediction", ensure)
+
+    result = latest_sync.get_latest_sync_snapshot()
+
+    assert calls == [draw]
+    assert result["source_issue"] == "115040625"
+    assert result["target_issue"] == "115040626"
+    assert result["database_saved"] is True
+    assert result["analysis_created"] is True
+    assert result["prediction_created"] is True
+    assert result["dashboard_ready"] is True
+    assert result["sync_status"] == "synced"
+    assert result["prediction_reconcile"]["refresh_status"] == "ready"
+    assert result["stages"]["prediction"]["status"] == "completed"
+
+
+def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):
+    draw = _draw("115040625")
+    prediction = {
+        "id": 7,
+        "issue": "115040625",
+        "prediction_issue": "115040626",
+        "recommend_numbers": list(range(1, 21)),
+    }
+    latest_sync._LATEST_SYNC_STATE.update(
+        {
+            "official_detected_issue": None,
+            "source_issue": None,
+            "database_latest_issue": None,
+            "dashboard_latest_issue": None,
+            "database_saved": False,
+            "analysis_created": False,
+            "prediction_created": False,
+            "dashboard_ready": False,
+            "target_issue": None,
+            "detected_at": None,
+            "last_attempt_at": None,
+            "attempt_count": 0,
+            "failure_stage": None,
+            "failure_reason": None,
+            "next_retry_expected_at": None,
+            "stages": {},
+        }
+    )
+
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: draw)
+    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
+    monkeypatch.setattr(latest_sync, "get_latest_prediction_history", lambda: prediction)
+
+    import services.prediction_refresh as prediction_refresh
+
+    monkeypatch.setattr(
+        prediction_refresh,
+        "ensure_next_prediction",
+        lambda latest_draw: (_ for _ in ()).throw(AssertionError("should not reconcile existing prediction")),
+    )
+
+    result = latest_sync.get_latest_sync_snapshot()
+
+    assert result["official_detected_issue"] == "115040625"
+    assert result["source_issue"] == "115040625"
+    assert result["database_latest_issue"] == "115040625"
+    assert result["target_issue"] == "115040626"
+    assert result["database_saved"] is True
+    assert result["analysis_created"] is True
+    assert result["prediction_created"] is True
+    assert result["dashboard_ready"] is True
+    assert result["sync_status"] == "synced"
+    assert result["attempt_count"] == 0
+    assert result["stages"]["database"]["status"] == "completed"
+    assert result["stages"]["prediction"]["status"] == "completed"

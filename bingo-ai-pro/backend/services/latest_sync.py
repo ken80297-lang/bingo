@@ -28,6 +28,7 @@ LATEST_SYNC_STALE_SECONDS = 12 * 60
 _STATE_LOCK = threading.RLock()
 _LATEST_SYNC_STATE: dict[str, Any] = {
     "official_detected_issue": None,
+    "source_issue": None,
     "database_latest_issue": None,
     "dashboard_latest_issue": None,
     "latest_saved_at": None,
@@ -64,6 +65,21 @@ def _issue_int(value: Any) -> int | None:
         return int(str(value))
     except Exception:
         return None
+
+
+def _next_issue(issue: Any) -> str | None:
+    source_issue = str(issue or "").strip()
+    if not source_issue:
+        return None
+    try:
+        from services.prediction_refresh import _next_issue as resolve_next_issue
+
+        return resolve_next_issue(source_issue)
+    except Exception:
+        issue_number = _issue_int(source_issue)
+        if issue_number is None:
+            return None
+        return str(issue_number + 1)
 
 
 def _valid_numbers(values: Any) -> list[int]:
@@ -105,14 +121,20 @@ def _analysis_exists(issue: str) -> bool:
         return False
 
 
-def _prediction_exists_for_latest(issue: str) -> bool:
+def _latest_prediction_for_issue(issue: str) -> dict | None:
     latest = get_latest_prediction_history()
     if not latest:
-        return False
+        return None
     target_issue = _issue_int(latest.get("prediction_issue"))
     based_on = _issue_int(latest.get("issue"))
     issue_number = _issue_int(issue)
-    return bool(issue_number is not None and based_on == issue_number and target_issue == issue_number + 1)
+    if issue_number is not None and based_on == issue_number and target_issue == issue_number + 1:
+        return latest
+    return None
+
+
+def _prediction_exists_for_latest(issue: str) -> bool:
+    return _latest_prediction_for_issue(issue) is not None
 
 
 def _sync_status(payload: dict[str, Any]) -> str:
@@ -161,33 +183,145 @@ def _update_state(**kwargs: Any) -> dict[str, Any]:
     return snapshot
 
 
+def _stage(status: str, completed_at: str | None = None, error: str | None = None) -> dict[str, Any]:
+    return {"status": status, "completed_at": completed_at, "error": error}
+
+
+def _snapshot_stages(
+    *,
+    database_saved: bool,
+    analysis_created: bool,
+    prediction_created: bool,
+    dashboard_ready: bool,
+    failure_stage: str | None = None,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    def status(stage: str, ready: bool, pending_after: bool) -> str:
+        if failure_stage == stage:
+            return "failed"
+        if ready:
+            return "completed"
+        if pending_after:
+            return "pending"
+        return "waiting"
+
+    return {
+        "collector": _stage("completed" if database_saved else "pending"),
+        "database": _stage(status("database", database_saved, True)),
+        "analysis": _stage(status("analysis", analysis_created, database_saved)),
+        "prediction": _stage(status("prediction", prediction_created, database_saved and analysis_created)),
+        "dashboard": _stage(status("dashboard", dashboard_ready, database_saved and analysis_created and prediction_created)),
+        "failure": {
+            "stage": failure_stage,
+            "reason": failure_reason,
+        },
+    }
+
+
+def _reconcile_missing_prediction(latest: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
+    with _STATE_LOCK:
+        attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
+    try:
+        from services.prediction_refresh import ensure_next_prediction
+
+        result = ensure_next_prediction(latest)
+        return {
+            "attempt_count": attempt_count,
+            "last_attempt_at": _now(),
+            "prediction_reconcile": result,
+            "prediction_created": result.get("refresh_status") in {"ready", "existing"}
+            or result.get("status") in {"created", "already_exists", "existing"},
+            "failure_stage": None,
+            "failure_reason": None,
+            "next_retry_expected_at": None,
+        }
+    except Exception as exc:
+        logger.exception(
+            "latest sync prediction reconcile failed source_issue=%s target_issue=%s",
+            source_issue,
+            target_issue,
+        )
+        return {
+            "attempt_count": attempt_count,
+            "last_attempt_at": _now(),
+            "prediction_reconcile": {"status": "failed", "error": str(exc)},
+            "prediction_created": False,
+            "failure_stage": "prediction",
+            "failure_reason": str(exc),
+            "next_retry_expected_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        }
+
+
 def get_latest_sync_snapshot() -> dict[str, Any]:
     latest = get_latest_official_draw()
+    source_issue = str(latest["issue"]) if latest and latest.get("issue") else None
+    target_issue = _next_issue(source_issue) if source_issue else None
     prediction_created = False
     analysis_created = False
-    if latest and latest.get("issue"):
-        analysis_created = _analysis_exists(str(latest["issue"]))
-        prediction_created = _prediction_exists_for_latest(str(latest["issue"]))
+    reconcile: dict[str, Any] = {}
+    if source_issue:
+        analysis_created = _analysis_exists(source_issue)
+        prediction_created = _prediction_exists_for_latest(source_issue)
+        if is_complete_official_draw(latest) and analysis_created and not prediction_created and target_issue:
+            reconcile = _reconcile_missing_prediction(latest, source_issue, target_issue)
+            prediction_created = bool(reconcile.get("prediction_created")) or _prediction_exists_for_latest(source_issue)
     with _STATE_LOCK:
-        detected = _LATEST_SYNC_STATE.get("official_detected_issue") or (latest or {}).get("issue")
+        detected = source_issue or _LATEST_SYNC_STATE.get("official_detected_issue")
+        existing_attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0)
+        existing_detected_at = _LATEST_SYNC_STATE.get("detected_at")
+        existing_last_attempt_at = _LATEST_SYNC_STATE.get("last_attempt_at")
+    database_saved = is_complete_official_draw(latest)
+    dashboard_ready = database_saved and analysis_created and prediction_created
+    failure_stage = reconcile.get("failure_stage")
+    failure_reason = reconcile.get("failure_reason")
+    if database_saved and analysis_created and not prediction_created and not failure_stage:
+        failure_stage = "prediction"
+        failure_reason = "latest_prediction_missing"
+    elif database_saved and not analysis_created:
+        failure_stage = "analysis"
+        failure_reason = "latest_analysis_missing"
+    elif not database_saved and detected:
+        failure_stage = "database"
+        failure_reason = "latest_official_draw_missing_or_incomplete"
+    stages = _snapshot_stages(
+        database_saved=database_saved,
+        analysis_created=analysis_created,
+        prediction_created=prediction_created,
+        dashboard_ready=dashboard_ready,
+        failure_stage=failure_stage,
+        failure_reason=failure_reason,
+    )
     return _update_state(
         official_detected_issue=detected,
+        source_issue=source_issue,
         database_latest_issue=(latest or {}).get("issue"),
         dashboard_latest_issue=(latest or {}).get("issue"),
         latest_saved_at=(latest or {}).get("updated_at") or (latest or {}).get("created_at"),
         draw_time=(latest or {}).get("draw_time"),
         numbers_count=len(_valid_numbers((latest or {}).get("numbers"))),
-        database_saved=is_complete_official_draw(latest),
+        database_saved=database_saved,
         analysis_created=analysis_created,
         prediction_created=prediction_created,
+        dashboard_ready=dashboard_ready,
+        target_issue=target_issue,
+        detected_at=existing_detected_at or (_now() if detected else None),
+        last_attempt_at=reconcile.get("last_attempt_at") or existing_last_attempt_at,
+        attempt_count=reconcile.get("attempt_count", existing_attempt_count),
+        failure_stage=failure_stage,
+        failure_reason=failure_reason,
+        next_retry_expected_at=reconcile.get("next_retry_expected_at"),
+        stages=stages,
+        prediction_reconcile=reconcile.get("prediction_reconcile"),
         historical_catchup_enabled=HISTORICAL_CATCHUP_ENABLED,
         latest_issue_priority=LATEST_ISSUE_PRIORITY,
     )
 
 
-def _failure(target_issue: str | None, stage: str, reason: str, detected_at: str | None, attempt_count: int) -> dict[str, Any]:
+def _failure(source_issue: str | None, stage: str, reason: str, detected_at: str | None, attempt_count: int) -> dict[str, Any]:
+    prediction_target_issue = _next_issue(source_issue)
     return _update_state(
-        target_issue=target_issue,
+        source_issue=source_issue,
+        target_issue=prediction_target_issue,
         detected_at=detected_at,
         last_attempt_at=_now(),
         attempt_count=attempt_count,
@@ -195,18 +329,14 @@ def _failure(target_issue: str | None, stage: str, reason: str, detected_at: str
         failure_reason=reason,
         next_retry_expected_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
         database_saved=False,
-        stages={
-            "detected": bool(target_issue),
-            "fetched": stage not in {"detect", "fetch"},
-            "validated": False,
-            "database_saved": False,
-            "analysis_created": False,
-            "prediction_created": False,
-            "dashboard_available": False,
-            "completed": False,
-            "partial": False,
-            "failed": True,
-        },
+        stages=_snapshot_stages(
+            database_saved=False,
+            analysis_created=False,
+            prediction_created=False,
+            dashboard_ready=False,
+            failure_stage=stage,
+            failure_reason=reason,
+        ),
     )
 
 
@@ -220,8 +350,9 @@ def process_latest_official_draw() -> dict[str, Any]:
     if not source_draw:
         return _failure(None, "detect", "official_latest_issue_unavailable", detected_at, attempt_count)
 
-    target_issue = str(source_draw.get("issue"))
-    existing = get_official_draw_by_issue(target_issue)
+    source_issue = str(source_draw.get("issue"))
+    prediction_target_issue = _next_issue(source_issue)
+    existing = get_official_draw_by_issue(source_issue)
     if is_complete_official_draw(existing):
         saved_draw = existing
         save_result = {"status": "ok", "saved": 0, "storage": "existing"}
@@ -230,12 +361,12 @@ def process_latest_official_draw() -> dict[str, Any]:
         source_draw["fetched_at"] = detected_at
         save_result = save_official_draws([source_draw])
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
-            return _failure(target_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
-        saved_draw = get_official_draw_by_issue(target_issue)
+            return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
+        saved_draw = get_official_draw_by_issue(source_issue)
         if not is_complete_official_draw(saved_draw):
-            return _failure(target_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
+            return _failure(source_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
     else:
-        return _failure(target_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
+        return _failure(source_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
 
     analysis_result: dict[str, Any]
     try:
@@ -259,42 +390,41 @@ def process_latest_official_draw() -> dict[str, Any]:
         logger.exception("latest sync downstream lifecycle failed")
         lifecycle = {"status": "error", "message": str(exc)}
 
-    analysis_created = analysis_result.get("status") == "ok" or _analysis_exists(target_issue)
+    analysis_created = analysis_result.get("status") == "ok" or _analysis_exists(source_issue)
     prediction_payload = lifecycle.get("prediction") if isinstance(lifecycle, dict) else {}
     prediction_created = (
         (prediction_payload or {}).get("status") in {"created", "already_exists", "ok"}
-        or _prediction_exists_for_latest(target_issue)
+        or _prediction_exists_for_latest(source_issue)
     )
     completed = analysis_created and prediction_created
+    stages = _snapshot_stages(
+        database_saved=True,
+        analysis_created=analysis_created,
+        prediction_created=prediction_created,
+        dashboard_ready=completed,
+        failure_stage=None if completed else "downstream",
+        failure_reason=None if completed else "analysis_or_prediction_pending",
+    )
     snapshot = _update_state(
-        official_detected_issue=target_issue,
-        database_latest_issue=target_issue,
-        dashboard_latest_issue=target_issue,
+        official_detected_issue=source_issue,
+        source_issue=source_issue,
+        database_latest_issue=source_issue,
+        dashboard_latest_issue=source_issue,
         latest_saved_at=(saved_draw or {}).get("updated_at") or (saved_draw or {}).get("created_at") or _now(),
         draw_time=(saved_draw or {}).get("draw_time"),
         numbers_count=len(_valid_numbers((saved_draw or {}).get("numbers"))),
         database_saved=True,
         analysis_created=analysis_created,
         prediction_created=prediction_created,
-        target_issue=target_issue,
+        dashboard_ready=completed,
+        target_issue=prediction_target_issue,
         detected_at=detected_at,
         last_attempt_at=_now(),
         attempt_count=attempt_count,
         failure_stage=None if completed else "downstream",
         failure_reason=None if completed else "analysis_or_prediction_pending",
         next_retry_expected_at=None if completed else (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
-        stages={
-            "detected": True,
-            "fetched": True,
-            "validated": True,
-            "database_saved": True,
-            "analysis_created": analysis_created,
-            "prediction_created": prediction_created,
-            "dashboard_available": True,
-            "completed": completed,
-            "partial": not completed,
-            "failed": False,
-        },
+        stages=stages,
     )
     snapshot.update(
         {
