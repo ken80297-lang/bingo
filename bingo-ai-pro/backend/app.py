@@ -613,8 +613,18 @@ def dashboard_page() -> FileResponse:
 
 
 @app.head("/dashboard")
-def dashboard_head() -> JSONResponse:
-    return JSONResponse(status_code=200, content=None)
+def dashboard_head() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/")
+def root_page() -> FileResponse:
+    return dashboard_page()
+
+
+@app.head("/")
+def root_head() -> FileResponse:
+    return dashboard_head()
 
 
 @app.get("/admin")

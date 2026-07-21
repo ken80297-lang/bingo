@@ -27,6 +27,8 @@ def test_core_status_route_functions(monkeypatch):
     assert collector_api.api_collector_gaps()["missing_count"] == 0
     assert app_module.dashboard_page().status_code == 200
     assert app_module.dashboard_head().status_code == 200
+    assert app_module.root_page().status_code == 200
+    assert app_module.root_head().status_code == 200
 
 
 def test_health_records_wake_status():
