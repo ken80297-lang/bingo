@@ -32,7 +32,8 @@ _STATE_LOCK = threading.RLock()
 _RECONCILE_LOCK = threading.RLock()
 _RECONCILE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="latest-sync-reconcile")
 _RECONCILE_IN_FLIGHT: set[str] = set()
-_RECONCILE_QUEUED_STALE_SECONDS = 20
+_RECONCILE_QUEUED_STALE_SECONDS = 8
+_RECONCILE_MAX_QUEUED_ATTEMPTS = 3
 _LATEST_SYNC_CACHE_TTL_SECONDS = 10
 _LATEST_SYNC_CACHE: dict[str, Any] = {"snapshot": None, "expires_at": 0.0}
 _LATEST_SYNC_STATE: dict[str, Any] = {
@@ -257,6 +258,10 @@ def _queued_reconcile_is_stale(source_issue: str) -> bool:
         if source_issue not in _RECONCILE_IN_FLIGHT:
             return False
         last_attempt_at = _LATEST_SYNC_STATE.get("last_attempt_at")
+        attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0)
+        reason = ((_LATEST_SYNC_STATE.get("prediction_reconcile") or {}).get("reason"))
+        if reason == "reconcile_already_running" and attempt_count >= _RECONCILE_MAX_QUEUED_ATTEMPTS:
+            return True
     try:
         parsed = datetime.fromisoformat(str(last_attempt_at).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -413,6 +418,41 @@ def _queue_latest_downstream_reconcile(
         _RECONCILE_IN_FLIGHT.add(source_issue)
     with _STATE_LOCK:
         attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
+    if attempt_count > _RECONCILE_MAX_QUEUED_ATTEMPTS and _queued_reconcile_is_stale(source_issue):
+        with _RECONCILE_LOCK:
+            _RECONCILE_IN_FLIGHT.discard(source_issue)
+        try:
+            result = _reconcile_latest_downstream(
+                latest,
+                source_issue,
+                target_issue,
+                analysis_created=analysis_created,
+            )
+        finally:
+            with _RECONCILE_LOCK:
+                _RECONCILE_IN_FLIGHT.discard(source_issue)
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            analysis_created=bool(result.get("analysis_created")),
+            prediction_created=bool(result.get("prediction_created")),
+            dashboard_ready=bool(result.get("analysis_created") and result.get("prediction_created")),
+            failure_stage=result.get("failure_stage"),
+            failure_reason=result.get("failure_reason"),
+            next_retry_expected_at=result.get("next_retry_expected_at"),
+            last_attempt_at=result.get("last_attempt_at"),
+            attempt_count=result.get("attempt_count", attempt_count),
+            analysis_reconcile=result.get("analysis_reconcile"),
+            prediction_reconcile=result.get("prediction_reconcile"),
+        )
+        return {
+            "status": (result.get("prediction_reconcile") or {}).get("status") or "failed",
+            "refresh_status": (result.get("prediction_reconcile") or {}).get("refresh_status") or "failed",
+            "based_on_issue": source_issue,
+            "target_issue": target_issue,
+            "analysis_created": bool(result.get("analysis_created")),
+            "attempt_count": result.get("attempt_count", attempt_count),
+        }
     queued_at = _now()
     _update_state(
         source_issue=source_issue,

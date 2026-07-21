@@ -54,7 +54,7 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
         return None
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
-    monkeypatch.setattr(player_dashboard, "get_latest_prediction_history", lambda: next_prediction)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
@@ -103,7 +103,7 @@ def test_dashboard_uses_official_draw_saved_event_time_fallback(monkeypatch):
     }
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
-    monkeypatch.setattr(player_dashboard, "get_latest_prediction_history", lambda: next_prediction)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
@@ -172,7 +172,7 @@ def test_dashboard_previous_prediction_falls_back_to_latest_available_verified(m
         return None
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
-    monkeypatch.setattr(player_dashboard, "get_latest_prediction_history", lambda: next_prediction)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
@@ -212,7 +212,7 @@ def test_dashboard_marks_prediction_stale_when_database_lags_detected_source(mon
     }
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
-    monkeypatch.setattr(player_dashboard, "get_latest_prediction_history", lambda: stale_prediction)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: stale_prediction)
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=10: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})

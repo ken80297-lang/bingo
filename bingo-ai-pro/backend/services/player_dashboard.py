@@ -13,6 +13,7 @@ from database.official_draw_store import get_latest_official_draw, get_official_
 from database.operations_store import get_latest_operation_event
 from database.prediction_history_store import get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_prediction_for_source_target
 from database.prediction_history_store import get_latest_verified_prediction_at_or_before
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
@@ -124,6 +125,19 @@ def _derive_next_issue(source_issue: Any) -> str | None:
         return str(int(issue) + 1)
     except Exception:
         return None
+
+
+def _current_prediction_for_draw(current_draw: dict | None) -> dict | None:
+    source_issue = (current_draw or {}).get("issue")
+    target_issue = _derive_next_issue(source_issue)
+    if not source_issue or not target_issue:
+        return None
+    try:
+        record = get_prediction_for_source_target(str(source_issue), target_issue)
+    except Exception:
+        logger.exception("player dashboard exact latest prediction lookup failed")
+        return None
+    return record if is_production_prediction(record) else None
 
 
 def _max_issue(*values: Any) -> str | None:
@@ -919,14 +933,12 @@ def build_player_dashboard_summary() -> dict:
 
     futures = {
         "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
-        "latest_prediction": _PLAYER_EXECUTOR.submit(get_latest_prediction_history),
         "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT)),
         "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
         "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
         "kuaishou": _PLAYER_EXECUTOR.submit(get_latest_kuaishou_snapshot),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
-    latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
     history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
@@ -938,6 +950,7 @@ def build_player_dashboard_summary() -> dict:
     production_scope = production_scope_payload()
 
     current = _current_draw(official)
+    latest_prediction = _current_prediction_for_draw(current)
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
     if current and analysis and str(analysis.get("issue") or "") != str(current.get("issue") or ""):
         warnings.append("analysis_pending")

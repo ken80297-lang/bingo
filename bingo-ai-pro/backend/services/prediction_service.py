@@ -24,6 +24,7 @@ _LOCK_STATE: dict[str, Any] = {
     "prediction_last_success_issue": None,
     "prediction_last_error": None,
     "prediction_recovery_count": 0,
+    "prediction_lock_token": 0,
 }
 
 
@@ -72,30 +73,71 @@ def _lock_is_stale() -> bool:
     return bool(_LOCK_STATE.get("prediction_running") and seconds is not None and seconds >= stale_after)
 
 
+def _owner_target_issue(owner: str | None) -> int | None:
+    try:
+        return int(str(owner or "").rsplit(":", 1)[-1])
+    except Exception:
+        return None
+
+
+def _lock_should_be_superseded(owner: str) -> bool:
+    status = prediction_lock_status()
+    seconds = status.get("prediction_running_seconds")
+    current_target = _owner_target_issue(owner)
+    locked_target = _owner_target_issue(status.get("prediction_lock_owner"))
+    return bool(
+        _LOCK_STATE.get("prediction_running")
+        and seconds is not None
+        and seconds >= 10
+        and current_target is not None
+        and locked_target is not None
+        and current_target > locked_target
+    )
+
+
+def _recover_prediction_lock(reason: str) -> None:
+    _LOCK_STATE["prediction_recovery_count"] = int(_LOCK_STATE.get("prediction_recovery_count") or 0) + 1
+    _LOCK_STATE["prediction_running"] = False
+    _LOCK_STATE["prediction_lock_owner"] = None
+    _LOCK_STATE["prediction_lock_token"] = int(_LOCK_STATE.get("prediction_lock_token") or 0) + 1
+    _LOCK_STATE["prediction_last_error"] = reason
+    try:
+        _PREDICTION_LOCK.release()
+    except RuntimeError:
+        pass
+
+
 def _acquire_prediction_lock(owner: str) -> tuple[bool, dict]:
     if _PREDICTION_LOCK.acquire(blocking=False):
+        token = int(_LOCK_STATE.get("prediction_lock_token") or 0) + 1
         _LOCK_STATE.update(
             {
                 "prediction_running": True,
                 "prediction_lock_owner": owner,
+                "prediction_lock_token": token,
                 "prediction_last_started_at": _now(),
                 "prediction_last_error": None,
             }
         )
-        return True, {"status": "locked", "lock_owner": owner}
-    if _lock_is_stale():
-        _LOCK_STATE["prediction_recovery_count"] = int(_LOCK_STATE.get("prediction_recovery_count") or 0) + 1
-        _LOCK_STATE["prediction_running"] = False
-        _LOCK_STATE["prediction_lock_owner"] = None
-        try:
-            _PREDICTION_LOCK.release()
-        except RuntimeError:
-            pass
+        return True, {"status": "locked", "lock_owner": owner, "lock_token": token}
+    if not _LOCK_STATE.get("prediction_running") or _lock_is_stale() or _lock_should_be_superseded(owner):
+        _recover_prediction_lock("stale_or_superseded_prediction_lock")
         return _acquire_prediction_lock(owner)
     return False, {"status": "already_running", **prediction_lock_status()}
 
 
-def _release_prediction_lock(owner: str, *, success_issue: str | None = None, error: str | None = None) -> None:
+def _release_prediction_lock(owner: str, *, lock_token: int | None = None, success_issue: str | None = None, error: str | None = None) -> None:
+    current_owner = _LOCK_STATE.get("prediction_lock_owner")
+    current_token = int(_LOCK_STATE.get("prediction_lock_token") or 0)
+    if current_owner != owner or (lock_token is not None and lock_token != current_token):
+        logger.warning(
+            "prediction lock release skipped owner=%s current_owner=%s token=%s current_token=%s",
+            owner,
+            current_owner,
+            lock_token,
+            current_token,
+        )
+        return
     _LOCK_STATE.update(
         {
             "prediction_running": False,
@@ -199,6 +241,7 @@ def create_for_official_draw(
         target = _next_issue(based_on)
     lock_owner = f"{source}:{trigger}:{based_on or 'unknown'}:{target or 'unknown'}"
     locked, lock_payload = _acquire_prediction_lock(lock_owner)
+    lock_token = lock_payload.get("lock_token")
     if not locked:
         _record_event(
             event_type="prediction_skipped",
@@ -423,6 +466,7 @@ def create_for_official_draw(
     finally:
         _release_prediction_lock(
             lock_owner,
+            lock_token=lock_token,
             success_issue=target if based_on and target else None,
             error=_LOCK_STATE.get("prediction_last_error"),
         )

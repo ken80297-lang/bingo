@@ -641,3 +641,27 @@ def test_prediction_lock_stale_after_timeout(monkeypatch):
             "prediction_last_started_at": None,
         }
     )
+
+
+def test_prediction_lock_release_token_prevents_old_owner_unlocking_new_owner():
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": True,
+            "prediction_lock_owner": "new-owner",
+            "prediction_lock_token": 3,
+            "prediction_last_started_at": None,
+        }
+    )
+
+    prediction_service._release_prediction_lock("old-owner", lock_token=2, success_issue="115040914")
+
+    assert prediction_service._LOCK_STATE["prediction_running"] is True
+    assert prediction_service._LOCK_STATE["prediction_lock_owner"] == "new-owner"
+    assert prediction_service._LOCK_STATE["prediction_lock_token"] == 3
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": False,
+            "prediction_lock_owner": None,
+            "prediction_lock_token": 3,
+        }
+    )

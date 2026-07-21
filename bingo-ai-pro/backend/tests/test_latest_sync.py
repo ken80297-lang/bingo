@@ -271,6 +271,47 @@ def test_latest_sync_snapshot_preserves_fast_reconcile_completion(monkeypatch):
     assert result["prediction_reconcile"]["refresh_status"] == "ready"
 
 
+def test_latest_sync_stale_already_running_reconcile_runs_inline(monkeypatch):
+    draw = _draw("115040915")
+    calls = []
+    latest_sync._RECONCILE_IN_FLIGHT.add("115040915")
+    latest_sync._LATEST_SYNC_STATE.update(
+        {
+            "source_issue": "115040915",
+            "last_attempt_at": "2026-07-21T00:00:00+00:00",
+            "attempt_count": latest_sync._RECONCILE_MAX_QUEUED_ATTEMPTS,
+            "prediction_reconcile": {"reason": "reconcile_already_running"},
+        }
+    )
+
+    monkeypatch.setattr(
+        latest_sync,
+        "_reconcile_latest_downstream",
+        lambda latest, source_issue, target_issue, analysis_created=True: calls.append((source_issue, target_issue)) or {
+            "attempt_count": 17,
+            "last_attempt_at": "2026-07-21T00:01:00+00:00",
+            "analysis_reconcile": {"status": "existing"},
+            "prediction_reconcile": {"status": "created", "refresh_status": "ready"},
+            "analysis_created": True,
+            "prediction_created": True,
+            "failure_stage": None,
+            "failure_reason": None,
+            "next_retry_expected_at": None,
+        },
+    )
+
+    result = latest_sync._queue_latest_downstream_reconcile(
+        draw,
+        "115040915",
+        "115040916",
+        analysis_created=True,
+    )
+
+    assert calls == [("115040915", "115040916")]
+    assert result["refresh_status"] == "ready"
+    assert "115040915" not in latest_sync._RECONCILE_IN_FLIGHT
+
+
 def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):
     draw = _draw("115040625")
     prediction = {
