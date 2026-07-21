@@ -66,6 +66,33 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     assert [event["event_type"] for event in events] == ["prediction_create_started", "prediction_created"]
 
 
+def test_prediction_service_uses_fast_path_before_heavy_recommendation(monkeypatch):
+    saved = []
+    fast = _recommendation()
+    fast["recommendation"]["best_strategy"] = "ProductionFastPath"
+    fast["recommendation_status"] = "production_fast_path"
+
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: fast)
+    monkeypatch.setattr(
+        prediction_service,
+        "calculate_recommendation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("heavy recommendation should not run")),
+    )
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 44, "storage": "cloud"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    result = prediction_service.create_for_official_draw(
+        "115040800",
+        source="official_collector",
+        trigger="official_draw_saved",
+    )
+
+    assert result["status"] == "created"
+    assert saved[0]["strategy"] == "ProductionFastPath"
+    assert any(stage["stage"] == "fast_recommendation_build" and stage["status"] == "ok" for stage in result["timings"])
+
+
 def test_prediction_service_skips_invalid_target(monkeypatch):
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not calculate")))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))

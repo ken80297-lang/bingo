@@ -205,6 +205,128 @@ def _recommendation_output_status(numbers: list[int], trace: list[dict], voting:
     }
 
 
+def _append_unique(result: list[int], values, *, exclude: set[int] | None = None) -> None:
+    excluded = exclude or set()
+    for number in _recommendation_numbers(values):
+        if number not in excluded and number not in result:
+            result.append(number)
+
+
+def calculate_fast_recommendation(
+    issue: str | None,
+    target_issue: str | None,
+    context: dict | None = None,
+) -> dict:
+    started = time.perf_counter()
+    trace: list[dict] = []
+    try:
+        context = context or {}
+        source_issue = str(issue or "").strip()
+        if not source_issue:
+            return {
+                "status": "skipped",
+                "message": "missing source issue",
+                "recommendation": None,
+                "timings_ms": {"total_ms": round((time.perf_counter() - started) * 1000, 2)},
+            }
+
+        mark = time.perf_counter()
+        analysis = get_latest_analysis_history() or {}
+        analysis_issue = str(analysis.get("issue") or "")
+        timings = {"analysis_ms": round((time.perf_counter() - mark) * 1000, 2)}
+        if analysis_issue != source_issue:
+            return {
+                "status": "skipped",
+                "message": "latest analysis is not for source issue",
+                "reason": "analysis_issue_mismatch",
+                "source_issue": source_issue,
+                "analysis_issue": analysis_issue,
+                "recommendation": None,
+                "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
+            }
+
+        latest_numbers = _recommendation_numbers(analysis.get("numbers"))
+        selected: list[int] = []
+        _append_unique(selected, analysis.get("patch_numbers"))
+        _append_unique(selected, analysis.get("hot_numbers"))
+        _append_unique(selected, analysis.get("missing_numbers"))
+        _append_unique(selected, analysis.get("cold_numbers"))
+        _append_unique(selected, analysis.get("repeated_numbers"))
+        _append_unique(selected, [value for group in (analysis.get("diagonal_pattern") or []) for value in (group or [])])
+        _append_unique(selected, latest_numbers)
+        _append_unique(selected, range(1, 81), exclude=set(latest_numbers))
+        numbers = sorted(selected[:RECOMMENDATION_NUMBER_COUNT])
+        _trace_step(
+            trace,
+            model_name="Production Fast Path",
+            stage="Analysis Merge",
+            input_count=len(selected),
+            output_count=len(numbers),
+            reason="analysis_latest_lightweight_merge",
+        )
+        output = _recommendation_output_status(numbers, trace, {"models": [{"model_name": "Production Fast Path"}]})
+        timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+        confidence = 62 if output.get("is_valid") else 0
+        recommendation = {
+            "issue": source_issue,
+            "target_issue": target_issue,
+            "best_strategy": "ProductionFastPath",
+            "confidence": confidence,
+            "data_quality_status": "ok",
+            "super_recommendation": {"recommended": [{"number": analysis.get("super_number")}]} if analysis.get("super_number") else {"recommended": []},
+            "sync": {"status": "ok", "simulation_issue": source_issue, "recommendation_issue": source_issue, "super_issue": source_issue},
+            "model_scores": {
+                "production_fast_path": {
+                    "label": "Production Fast Path",
+                    "confidence": confidence,
+                    "candidate_numbers": numbers,
+                    "reason": "Built from latest analysis fields without simulation or V7 voting.",
+                }
+            },
+            "winning_model": "production_fast_path",
+            "model_voting": {
+                "status": "skipped",
+                "reason": "production_fast_path_does_not_run_v7_voting",
+                "final_candidates": numbers,
+                "confidence": confidence,
+                "model_scores": {},
+            },
+            "recommendation_trace": trace,
+            "recommendation_output": output,
+            "explanation": "Production fast path built from latest analysis fields while heavy model output is pending.",
+            "context": {**context, "fast_path": True},
+            "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
+            "results": [
+                {
+                    "rank": 1,
+                    "numbers": numbers,
+                    "confidence": confidence,
+                    "total_score": confidence,
+                    "strategy": "ProductionFastPath",
+                    "explanation": "Latest analysis lightweight production fast path.",
+                    "model_scores": {},
+                    "winning_model": "production_fast_path",
+                }
+            ],
+        }
+        return {
+            "status": "ok" if output.get("is_valid") else "skipped",
+            "recommendation": recommendation if output.get("is_valid") else None,
+            "persisted": False,
+            "timings_ms": recommendation["timings_ms"],
+            "reason": None if output.get("is_valid") else "recommendation_insufficient",
+        }
+    except Exception as exc:
+        logger.exception("fast recommendation calculation failed")
+        return {
+            "status": "error",
+            "message": str(exc),
+            "recommendation": None,
+            "persisted": False,
+            "timings_ms": {"total_ms": round((time.perf_counter() - started) * 1000, 2)},
+        }
+
+
 def _record_recommendation_event(event_type: str, status: str, issue: str | None, output: dict) -> None:
     try:
         from services.operations_center import record_operation_event

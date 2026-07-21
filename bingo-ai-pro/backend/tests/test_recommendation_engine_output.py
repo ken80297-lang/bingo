@@ -124,6 +124,45 @@ def test_voting_merge_outputs_20_unique_numbers(monkeypatch):
     assert any(step["stage"] == "Voting Merge" for step in result["trace"])
 
 
+def test_production_fast_path_uses_latest_analysis_without_v7_voting(monkeypatch):
+    monkeypatch.setattr(
+        recommendation_center,
+        "get_latest_analysis_history",
+        lambda: {
+            "issue": "115040918",
+            "numbers": list(range(1, 21)),
+            "patch_numbers": [21, 22, 23, 24],
+            "hot_numbers": [25, 26, 27, 28],
+            "missing_numbers": [29, 30, 31, 32],
+            "cold_numbers": [33, 34, 35, 36],
+            "repeated_numbers": [37, 38],
+            "diagonal_pattern": [[39, 40]],
+            "super_number": 7,
+        },
+    )
+    monkeypatch.setattr(
+        recommendation_center,
+        "build_voting_result",
+        lambda limit=100: (_ for _ in ()).throw(AssertionError("fast path must not call V7 voting")),
+    )
+
+    payload = recommendation_center.calculate_fast_recommendation(
+        "115040918",
+        "115040919",
+        context={"prediction_service": True},
+    )
+
+    recommendation = payload["recommendation"]
+    numbers = recommendation["results"][0]["numbers"]
+
+    assert payload["status"] == "ok"
+    assert len(numbers) == 20
+    assert len(set(numbers)) == 20
+    assert recommendation["best_strategy"] == "ProductionFastPath"
+    assert recommendation["model_voting"]["reason"] == "production_fast_path_does_not_run_v7_voting"
+    assert recommendation["timings_ms"]["total_ms"] >= 0
+
+
 def test_preview_dry_run_does_not_persist_or_record_event(monkeypatch):
     monkeypatch.setattr(
         recommendation_center,

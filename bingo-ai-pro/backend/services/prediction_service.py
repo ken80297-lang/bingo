@@ -12,7 +12,7 @@ from config.production_scope import get_production_generation, is_issue_in_curre
 from config.release import FEATURE_VERSION, GIT_COMMIT_HASH, MODEL_VERSION, RELEASE_VERSION
 from database.prediction_history_store import get_prediction_for_source_target, save_prediction_history
 from services.next_prediction_center import build_prediction_history_record
-from services.recommendation_center import calculate_recommendation
+from services.recommendation_center import calculate_fast_recommendation, calculate_recommendation
 
 logger = logging.getLogger(__name__)
 PREDICTION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_TIMEOUT_SECONDS", "45"))
@@ -404,59 +404,79 @@ def create_for_official_draw(
             "ensure_simulation": False,
         }
         mark = time.perf_counter()
-        recommendation_timeout = min(PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS, _remaining_seconds(start))
-        future = _PREDICTION_EXECUTOR.submit(
-            calculate_recommendation,
+        recommendation_result = calculate_fast_recommendation(
             based_on,
             target,
-            context=recommendation_context,
+            context={**recommendation_context, "path": "prediction_service_fast_path"},
         )
-        try:
-            recommendation_result = future.result(timeout=recommendation_timeout)
-            _stage_done(
-                stages,
-                "recommendation_build",
-                mark,
-                status=(recommendation_result or {}).get("status"),
-                timeout_seconds=round(recommendation_timeout, 3),
-                timed_out=False,
+        _stage_done(
+            stages,
+            "fast_recommendation_build",
+            mark,
+            status=(recommendation_result or {}).get("status"),
+            reason=(recommendation_result or {}).get("reason") or (recommendation_result or {}).get("message"),
+        )
+        if recommendation_result.get("status") == "ok":
+            recommendation_result.setdefault("recommendation_status", "production_fast_path")
+        else:
+            recommendation_result = None
+
+        mark = time.perf_counter()
+        if recommendation_result is None:
+            recommendation_timeout = min(PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS, _remaining_seconds(start))
+            future = _PREDICTION_EXECUTOR.submit(
+                calculate_recommendation,
+                based_on,
+                target,
+                context=recommendation_context,
             )
-        except TimeoutError:
-            _stage_done(
-                stages,
-                "recommendation_build",
-                mark,
-                status="timed_out",
-                timeout_seconds=round(recommendation_timeout, 3),
-                timed_out=True,
-            )
-            _record_event(
-                event_type="prediction_skipped",
-                status="warning",
-                based_on_issue=based_on,
-                target_issue=target,
-                source=source,
-                trigger=trigger,
-                reason="timed_out",
-                started_at=started_at,
-                completed_at=_now(),
-                duration_ms=_duration_ms(start),
-                error_type="timed_out",
-                error_message=f"recommendation_build exceeded {recommendation_timeout:.2f}s",
-            )
-            return {
-                "status": "skipped",
-                "based_on_issue": based_on,
-                "target_issue": target,
-                "prediction_id": None,
-                "recommended_count": 0,
-                "skip_reason": "timed_out",
-                "duration_ms": _duration_ms(start),
-                "persisted": False,
-                "timings": stages,
-                "timeout_stage": "recommendation_build",
-                "pending_usable": False,
-            }
+            try:
+                recommendation_result = future.result(timeout=recommendation_timeout)
+                _stage_done(
+                    stages,
+                    "recommendation_build",
+                    mark,
+                    status=(recommendation_result or {}).get("status"),
+                    timeout_seconds=round(recommendation_timeout, 3),
+                    timed_out=False,
+                )
+            except TimeoutError:
+                future.cancel()
+                _stage_done(
+                    stages,
+                    "recommendation_build",
+                    mark,
+                    status="timed_out",
+                    timeout_seconds=round(recommendation_timeout, 3),
+                    timed_out=True,
+                )
+                _record_event(
+                    event_type="prediction_skipped",
+                    status="warning",
+                    based_on_issue=based_on,
+                    target_issue=target,
+                    source=source,
+                    trigger=trigger,
+                    reason="timed_out",
+                    started_at=started_at,
+                    completed_at=_now(),
+                    duration_ms=_duration_ms(start),
+                    error_type="timed_out",
+                    error_message=f"recommendation_build exceeded {recommendation_timeout:.2f}s",
+                )
+                return {
+                    "status": "skipped",
+                    "based_on_issue": based_on,
+                    "target_issue": target,
+                    "prediction_id": None,
+                    "recommended_count": 0,
+                    "skip_reason": "timed_out",
+                    "duration_ms": _duration_ms(start),
+                    "persisted": False,
+                    "timings": stages,
+                    "timeout_stage": "recommendation_build",
+                    "pending_usable": False,
+                }
         if _duration_ms(start) / 1000 >= PREDICTION_TIMEOUT_SECONDS:
             _stage_done(stages, "timeout_guard", start, status="timed_out")
             return skipped("timed_out")
