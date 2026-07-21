@@ -28,7 +28,14 @@ def test_dashboard_release_candidate_copy_and_endpoints():
     assert "AI 推薦原因" not in html
     assert "release_version" in html
     assert "git_commit_short" in html
+    assert "phase" in html
     assert "production_generation" in html
+    assert "production_start_issue" in html
+    assert "Phase 28" in html
+    assert "v28.0.0" in html
+    assert "Production Generation" in html
+    assert "Production Start Issue" in html
+    assert "115040780" in html
     assert "Model / Feature" in html
 
 

@@ -193,3 +193,42 @@ def test_persist_rejects_insufficient_recommendation(monkeypatch):
     assert result["status"] == "skipped"
     assert result["saved"]["reason"] == "recommendation_insufficient"
     assert events[0][0] == "recommendation_insufficient"
+
+
+def test_persist_valid_recommendation_registers_tracker_without_simulation_scope(monkeypatch):
+    import services.learning_engine as learning_engine
+    import services.prediction_tracker as prediction_tracker
+
+    tracker_calls = []
+    monkeypatch.setattr(recommendation_center, "_latest_issue", lambda: "115000100")
+    monkeypatch.setattr(recommendation_center, "_target_issue", lambda issue: "115000101")
+    monkeypatch.setattr(recommendation_center, "_record_recommendation_event", lambda *args: None)
+    monkeypatch.setattr(
+        recommendation_center,
+        "calculate_recommendation",
+        lambda *args, **kwargs: {
+            "status": "ok",
+            "recommendation": {
+                "issue": "115000100",
+                "target_issue": "115000101",
+                "results": [{"numbers": list(range(1, 21))}],
+                "recommendation_output": {"is_valid": True, "output_count": 20},
+            },
+            "persisted": False,
+        },
+    )
+    monkeypatch.setattr(recommendation_center, "save_recommendation_run", lambda *args, **kwargs: {"status": "ok", "run_id": 7})
+    monkeypatch.setattr(learning_engine, "save_live_prediction_snapshot", lambda payload: {"status": "ok"})
+    monkeypatch.setattr(
+        prediction_tracker,
+        "register_recommendation_prediction",
+        lambda recommendation, recommendation_run_id, simulation_run_id=None: tracker_calls.append(
+            (recommendation_run_id, simulation_run_id)
+        ) or {"status": "ok"},
+    )
+
+    result = recommendation_center.generate_recommendation_center(persist=True)
+
+    assert result["status"] == "ok"
+    assert result["persisted"] is True
+    assert tracker_calls == [(7, None)]

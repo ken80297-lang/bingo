@@ -242,10 +242,6 @@ def register_release(payload: dict, *, activate: bool = False) -> dict:
                             %s::jsonb
                         )
                         on conflict (release_version) do update set
-                            git_commit_hash = excluded.git_commit_hash,
-                            git_commit_short = excluded.git_commit_short,
-                            git_branch = excluded.git_branch,
-                            git_commit_message = excluded.git_commit_message,
                             release_status = excluded.release_status,
                             is_active = excluded.is_active,
                             updated_at = now()
@@ -277,10 +273,6 @@ def register_release(payload: dict, *, activate: bool = False) -> dict:
             )
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(release_version) do update set
-                git_commit_hash = excluded.git_commit_hash,
-                git_commit_short = excluded.git_commit_short,
-                git_branch = excluded.git_branch,
-                git_commit_message = excluded.git_commit_message,
                 release_status = excluded.release_status,
                 is_active = excluded.is_active,
                 updated_at = excluded.updated_at
@@ -295,7 +287,7 @@ def ensure_default_release() -> dict:
         **release_payload(),
         "production_generation": get_production_generation(),
         "production_start_issue": str(get_production_start_issue()),
-        "git_commit_message": "feat: add production reset recovery and release traceability",
+        "git_commit_message": "chore: finalize v28.0.0 release metadata",
         "release_notes": [
             "Production data reset begins at issue 115040780.",
             "Legacy, test, pending, and invalid generation records are excluded from production reads.",

@@ -776,7 +776,7 @@ def generate_recommendation_center(
             run["prediction_tracker"] = register_recommendation_prediction(
                 {**run, "results": results},
                 saved.get("run_id"),
-                simulation.get("id") or simulation.get("run_id"),
+                recommendation.get("simulation_run_id"),
             )
         except Exception as exc:
             logger.exception("prediction tracker registration failed")

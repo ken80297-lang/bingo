@@ -659,10 +659,13 @@
         winning_model: raw.winning_model,
         source: raw.source,
         trigger: raw.trigger,
+        phase: raw.phase || release.phase || "28",
         release_version: raw.release_version || release.release_version,
         git_commit_hash: gitCommit,
         git_commit_short: raw.git_commit_short || release.git_commit_short || (gitCommit ? String(gitCommit).slice(0, 7) : ""),
         production_generation: raw.production_generation || scope.production_generation || release.production_generation,
+        production_start_issue: raw.production_start_issue || scope.production_start_issue || release.production_start_issue,
+        production_start_at: raw.production_start_at || scope.production_start_at || release.production_start_at,
         model_version: raw.model_version || release.model_version,
         feature_version: raw.feature_version || release.feature_version,
         production_valid: raw.production_valid !== false,
@@ -739,6 +742,7 @@
         ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
         : "尚待開獎";
       const basedOnTimeLabel = next.based_on_time_source === "official_draw_saved_event" ? "資料儲存時間" : "依據開獎時間";
+      const phaseLabel = next.phase ? `Phase ${safe(next.phase)}` : "Phase 28";
       document.getElementById("cardNext").innerHTML = `
         <h2>下一期 AI 推薦<br><span class="muted">第${safe(next.prediction_issue)}期</span></h2>
         <div class="grid">
@@ -748,9 +752,11 @@
           ${metric("Prediction 狀態", statusText(status), statusClass(status))}
           ${metric("資料來源", sourceText(next.source))}
           ${metric("Trigger", triggerText(next.trigger))}
+          ${metric("Phase", phaseLabel)}
           ${metric("Release", safe(next.release_version || "v28.0.0"))}
           ${metric("Commit", safe(next.git_commit_short || next.git_commit_hash))}
-          ${metric("Generation", safe(next.production_generation))}
+          ${metric("Production Generation", safe(next.production_generation || "2"))}
+          ${metric("Production Start Issue", safe(next.production_start_issue || "115040780"))}
           ${metric("Model / Feature", `${safe(next.model_version)} / ${safe(next.feature_version)}`)}
           ${metric("Stale 狀態", staleStatusText(next.stale_status, next.lag_issues), staleStatusClass(next.stale_status, next.lag_issues))}
           ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
