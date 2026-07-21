@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 
@@ -12,7 +12,7 @@ OBSERVATION_VERSION = os.getenv("OBSERVATION_VERSION", "22.1.5")
 RULE_LIBRARY_VERSION = os.getenv("RULE_LIBRARY_VERSION", "28.0")
 DASHBOARD_VERSION = os.getenv("DASHBOARD_VERSION", "28.0")
 DATABASE_SCHEMA_VERSION = os.getenv("DATABASE_SCHEMA_VERSION", "28.0")
-GIT_COMMIT_HASH = os.getenv("GIT_COMMIT_HASH") or os.getenv("RENDER_GIT_COMMIT") or "pending"
+GIT_COMMIT_HASH = os.getenv("GIT_COMMIT_HASH") or os.getenv("RENDER_GIT_COMMIT") or "0bf03c8416b1026c3483ff4de8bb10e62331e42c"
 GIT_BRANCH = os.getenv("GIT_BRANCH") or os.getenv("RENDER_GIT_BRANCH") or "runtime"
 
 
@@ -22,7 +22,7 @@ def release_payload() -> dict:
         "release_version": RELEASE_VERSION,
         "phase": RELEASE_PHASE,
         "git_commit_hash": GIT_COMMIT_HASH,
-        "git_commit_short": GIT_COMMIT_HASH[:7] if GIT_COMMIT_HASH and GIT_COMMIT_HASH != "pending" else "pending",
+        "git_commit_short": GIT_COMMIT_HASH[:7] if GIT_COMMIT_HASH and GIT_COMMIT_HASH != "0bf03c8416b1026c3483ff4de8bb10e62331e42c" else "0bf03c8416b1026c3483ff4de8bb10e62331e42c",
         "git_branch": GIT_BRANCH,
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
@@ -32,4 +32,5 @@ def release_payload() -> dict:
         "dashboard_version": DASHBOARD_VERSION,
         "database_schema_version": DATABASE_SCHEMA_VERSION,
     }
+
 

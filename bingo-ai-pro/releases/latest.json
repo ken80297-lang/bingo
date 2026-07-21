@@ -1,16 +1,17 @@
-{
+﻿{
   "current_release": "v28.0.0",
   "previous_release": null,
-  "active_commit": "pending",
+  "active_commit": "0bf03c8416b1026c3483ff4de8bb10e62331e42c",
   "active_generation": 2,
   "production_start_issue": "115040780",
   "production_start_at": "2026-07-20T14:00:00Z",
   "model_version": "v7",
   "feature_version": "28.0",
-  "created_at": "pending",
+  "created_at": "2026-07-21T01:09:00Z",
   "dashboard": {
     "shows_active_release": true,
     "shows_production_scope": true,
     "shows_prediction_traceability": true
   }
 }
+
