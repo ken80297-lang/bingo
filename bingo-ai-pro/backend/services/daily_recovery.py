@@ -115,14 +115,22 @@ def run_daily_recovery(*, force: bool = False, lookback_days: int | None = None)
         "live_prediction_created": False,
     }
     try:
+        from services.catch_up_service import catch_up_missing_issues
         from services.latest_sync import process_latest_official_draw
         from services.official_verification import run_official_verification
         from services.learning_engine import backfill_learning_records, get_learning_status
         from services.collector_runtime import refresh_system_status_cache
 
+        catch_up = catch_up_missing_issues()
+        report["steps"]["production_catch_up"] = catch_up
+        report["checked_issue_count"] += int(catch_up.get("catch_count") or 0)
+        report["repaired_issue_count"] += int(catch_up.get("success_count") or 0)
+        report["failed_issue_count"] += int(catch_up.get("failed_count") or 0)
+        report["catch_up_status"] = catch_up.get("status")
+
         latest = process_latest_official_draw()
         report["steps"]["latest_official_sync"] = latest
-        report["checked_issue_count"] = 1 if latest.get("source_issue") or latest.get("database_latest_issue") else 0
+        report["checked_issue_count"] += 1 if latest.get("source_issue") or latest.get("database_latest_issue") else 0
         report["repaired_issue_count"] += 1 if latest.get("database_saved") else 0
         report["analysis_status"] = "ok" if latest.get("analysis_created") else "pending"
         report["prediction_lifecycle_status"] = "ok" if latest.get("prediction_created") else "pending"
@@ -160,4 +168,3 @@ def run_daily_recovery(*, force: bool = False, lookback_days: int | None = None)
         )
         _LOCK.release()
     return report
-

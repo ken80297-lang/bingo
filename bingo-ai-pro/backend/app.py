@@ -91,7 +91,7 @@ from db import (
 )
 from services.data_quality import run_kuaishou_data_quality_check
 from services.catch_up_service import catch_up_missing_issues
-from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache
+from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache, update_collector_runtime
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
 from services.official_verification import collect_official_today
@@ -105,6 +105,7 @@ from services.daily_recovery import (
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
+CATCH_UP_SCHEDULER_ENABLED = os.getenv("CATCH_UP_SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(title="Bingo AI Pro API")
 STARTUP_TIME = datetime.now(timezone.utc).isoformat()
@@ -235,6 +236,41 @@ def _ensure_scheduler_listener() -> None:
     app.state.scheduler_listener_registered = True
 
 
+def _schedule_production_catch_up_jobs() -> None:
+    if not CATCH_UP_SCHEDULER_ENABLED:
+        update_collector_runtime(
+            catch_up_scheduler_enabled=False,
+            catch_up_startup_job_registered=False,
+            catch_up_interval_job_registered=False,
+        )
+        return
+    scheduler.add_job(
+        catch_up_missing_issues,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=8),
+        id="collector_official_catch_up_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    scheduler.add_job(
+        catch_up_missing_issues,
+        "interval",
+        minutes=2,
+        id="collector_official_catch_up",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    update_collector_runtime(
+        catch_up_scheduler_enabled=True,
+        catch_up_startup_job_registered=True,
+        catch_up_interval_job_registered=True,
+    )
+
+
 def summary_statistics(draws: list[dict]) -> dict:
     return {
         "total_draws": len(draws),
@@ -354,17 +390,7 @@ def startup_event() -> None:
             coalesce=True,
             misfire_grace_time=90,
         )
-        if HISTORICAL_CATCHUP_ENABLED:
-            scheduler.add_job(
-                catch_up_missing_issues,
-                "date",
-                run_date=datetime.utcnow() + timedelta(seconds=8),
-                id="collector_official_catch_up_startup",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-                misfire_grace_time=90,
-            )
+        _schedule_production_catch_up_jobs()
         scheduler.add_job(
             collect_pilio_today,
             "date",
@@ -386,17 +412,6 @@ def startup_event() -> None:
             id="collector_pilio_today",
             replace_existing=True,
         )
-        if HISTORICAL_CATCHUP_ENABLED:
-            scheduler.add_job(
-                catch_up_missing_issues,
-                "interval",
-                minutes=2,
-                id="collector_official_catch_up",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-                misfire_grace_time=90,
-            )
         scheduler.add_job(
             collect_official_today,
             "interval",
