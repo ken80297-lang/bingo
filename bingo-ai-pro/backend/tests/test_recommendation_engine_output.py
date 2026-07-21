@@ -145,6 +145,7 @@ def test_production_fast_path_uses_latest_analysis_without_v7_voting(monkeypatch
         "build_voting_result",
         lambda limit=100: (_ for _ in ()).throw(AssertionError("fast path must not call V7 voting")),
     )
+    monkeypatch.setattr(recommendation_center, "get_latest_prediction_history", lambda: None)
 
     payload = recommendation_center.calculate_fast_recommendation(
         "115040918",
@@ -161,6 +162,53 @@ def test_production_fast_path_uses_latest_analysis_without_v7_voting(monkeypatch
     assert recommendation["best_strategy"] == "ProductionFastPath"
     assert recommendation["model_voting"]["reason"] == "production_fast_path_does_not_run_v7_voting"
     assert recommendation["timings_ms"]["total_ms"] >= 0
+
+
+def test_production_fast_path_balances_zones_tails_and_previous_overlap(monkeypatch):
+    monkeypatch.setattr(
+        recommendation_center,
+        "get_latest_analysis_history",
+        lambda: {
+            "issue": "115040926",
+            "numbers": list(range(1, 21)),
+            "patch_numbers": [4, 5, 6, 7, 22, 23, 44, 65],
+            "hot_numbers": [10, 11, 12, 13, 25, 46, 67],
+            "missing_numbers": [15, 17, 19, 28, 49, 70],
+            "cold_numbers": [24, 26, 31, 52, 73],
+            "repeated_numbers": [8, 29, 50, 71],
+            "diagonal_pattern": [[30, 51], [72, 80]],
+            "super_number": 8,
+        },
+    )
+    monkeypatch.setattr(
+        recommendation_center,
+        "get_latest_prediction_history",
+        lambda: {"recommend_numbers": list(range(1, 21)), "issue": "115040925", "prediction_issue": "115040926"},
+    )
+    monkeypatch.setattr(
+        recommendation_center,
+        "build_voting_result",
+        lambda limit=100: (_ for _ in ()).throw(AssertionError("fast path must not call V7 voting")),
+    )
+
+    payload = recommendation_center.calculate_fast_recommendation(
+        "115040926",
+        "115040927",
+        context={"prediction_service": True},
+    )
+
+    numbers = payload["recommendation"]["results"][0]["numbers"]
+    diversity = payload["recommendation"]["diversity"]
+    zone_counts = diversity["zone_counts"]
+
+    assert payload["status"] == "ok"
+    assert len(numbers) == 20
+    assert len(set(numbers)) == 20
+    assert all(1 <= number <= 80 for number in numbers)
+    assert zone_counts == {"0": 5, "1": 5, "2": 5, "3": 5}
+    assert diversity["tail_count"] >= 7
+    assert diversity["previous_overlap_count"] <= 10
+    assert any(step["stage"] == "Zone Tail Balance" for step in payload["recommendation"]["recommendation_trace"])
 
 
 def test_preview_dry_run_does_not_persist_or_record_event(monkeypatch):

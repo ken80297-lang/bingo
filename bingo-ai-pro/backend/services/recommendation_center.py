@@ -14,6 +14,7 @@ from database.collector_store import (
     get_latest_kuaishou_snapshot,
 )
 from database.data_quality_store import get_data_quality_status
+from database.prediction_history_store import get_latest_prediction_history
 from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
 from database.strategy_ranking_store import get_latest_strategy_rankings
@@ -212,6 +213,179 @@ def _append_unique(result: list[int], values, *, exclude: set[int] | None = None
             result.append(number)
 
 
+def _flatten_number_groups(values) -> list[int]:
+    flattened: list[int] = []
+    for item in values or []:
+        if isinstance(item, (list, tuple, set)):
+            flattened.extend(item)
+        else:
+            flattened.append(item)
+    return _recommendation_numbers(flattened)
+
+
+def _number_zone(number: int) -> int:
+    return min(3, max(0, (int(number) - 1) // 20))
+
+
+def _number_tail(number: int) -> int:
+    return int(number) % 10
+
+
+def _issue_seed(issue: str | None, target_issue: str | None) -> int:
+    text = f"{issue or ''}:{target_issue or ''}"
+    return sum(ord(char) for char in text)
+
+
+def _previous_fast_path_numbers(context: dict) -> list[int]:
+    previous = context.get("previous_recommend_numbers")
+    if previous is not None:
+        return _recommendation_numbers(previous)
+    try:
+        latest = get_latest_prediction_history() or {}
+        return _recommendation_numbers(latest.get("recommend_numbers"))
+    except Exception:
+        logger.exception("fast path previous prediction lookup failed")
+        return []
+
+
+def _build_fast_path_numbers(
+    analysis: dict,
+    *,
+    source_issue: str,
+    target_issue: str | None,
+    previous_numbers: list[int],
+    trace: list[dict],
+) -> tuple[list[int], dict]:
+    source_weights = {
+        "patch_numbers": 9.0,
+        "missing_numbers": 8.0,
+        "cold_numbers": 7.0,
+        "hot_numbers": 6.0,
+        "diagonal_pattern": 5.0,
+        "repeated_numbers": 3.5,
+        "latest_draw_numbers": 1.0,
+    }
+    source_values = {
+        "patch_numbers": _recommendation_numbers(analysis.get("patch_numbers")),
+        "missing_numbers": _recommendation_numbers(analysis.get("missing_numbers")),
+        "cold_numbers": _recommendation_numbers(analysis.get("cold_numbers")),
+        "hot_numbers": _recommendation_numbers(analysis.get("hot_numbers")),
+        "diagonal_pattern": _flatten_number_groups(analysis.get("diagonal_pattern")),
+        "repeated_numbers": _recommendation_numbers(analysis.get("repeated_numbers")),
+        "latest_draw_numbers": _recommendation_numbers(analysis.get("numbers")),
+    }
+    previous_set = set(_recommendation_numbers(previous_numbers))
+    latest_set = set(source_values["latest_draw_numbers"])
+    seed = _issue_seed(source_issue, target_issue)
+    scores: dict[int, float] = {}
+    reasons: dict[int, list[str]] = {}
+
+    for number in range(1, 81):
+        zone = _number_zone(number)
+        tail = _number_tail(number)
+        rotation = ((number * 17 + seed * 7) % 80) / 80
+        middle_bias = 0.25 if zone in (1, 2) else 0
+        score = 1.0 + rotation + middle_bias
+        reason = ["full_pool_fill"]
+        if number in latest_set:
+            score -= 1.4
+            reason.append("latest_draw_downweight")
+        if number in previous_set:
+            score -= 4.0
+            reason.append("previous_prediction_downweight")
+        for source_name, values in source_values.items():
+            if number in values:
+                score += source_weights[source_name]
+                reason.append(source_name)
+        scores[number] = score
+        reasons[number] = reason
+
+    ranked = sorted(range(1, 81), key=lambda number: (-scores[number], _number_zone(number), _number_tail(number), number))
+    selected: list[int] = []
+    zone_counts = {zone: 0 for zone in range(4)}
+    tail_counts = {tail: 0 for tail in range(10)}
+    previous_count = 0
+    zone_quota = {zone: 5 for zone in range(4)}
+    tail_limit = 3
+    previous_limit = 10
+
+    def can_select(number: int, *, relaxed: bool = False) -> bool:
+        if number in selected:
+            return False
+        zone = _number_zone(number)
+        tail = _number_tail(number)
+        if not relaxed and zone_counts[zone] >= zone_quota[zone]:
+            return False
+        if not relaxed and tail_counts[tail] >= tail_limit:
+            return False
+        if not relaxed and number in previous_set and previous_count >= previous_limit:
+            return False
+        return True
+
+    def add_number(number: int) -> None:
+        nonlocal previous_count
+        selected.append(number)
+        zone_counts[_number_zone(number)] += 1
+        tail_counts[_number_tail(number)] += 1
+        if number in previous_set:
+            previous_count += 1
+
+    for zone in range(4):
+        for number in [candidate for candidate in ranked if _number_zone(candidate) == zone]:
+            if zone_counts[zone] >= zone_quota[zone]:
+                break
+            if can_select(number):
+                add_number(number)
+
+    for number in ranked:
+        if len(selected) >= RECOMMENDATION_NUMBER_COUNT:
+            break
+        if can_select(number):
+            add_number(number)
+
+    for number in ranked:
+        if len(selected) >= RECOMMENDATION_NUMBER_COUNT:
+            break
+        if can_select(number, relaxed=True):
+            add_number(number)
+
+    selected = sorted(selected[:RECOMMENDATION_NUMBER_COUNT])
+    top_sources = sum(len(values) for values in source_values.values())
+    _trace_step(
+        trace,
+        model_name="Production Fast Path",
+        stage="Source Scoring",
+        input_count=top_sources + 80,
+        output_count=len(ranked),
+        reason="analysis_weighted_full_pool_scoring",
+    )
+    _trace_step(
+        trace,
+        model_name="Production Fast Path",
+        stage="Previous Recommendation Penalty",
+        input_count=len(previous_set),
+        output_count=previous_count,
+        reason="previous_recommendation_downweighted_overlap_limited",
+    )
+    _trace_step(
+        trace,
+        model_name="Production Fast Path",
+        stage="Zone Tail Balance",
+        input_count=len(ranked),
+        output_count=len(selected),
+        reason="four_zone_quota_tail_cap_hot_cold_missing_balance",
+    )
+    diversity = {
+        "zone_counts": {str(zone): zone_counts[zone] for zone in range(4)},
+        "tail_count": len({number % 10 for number in selected}),
+        "previous_overlap_count": len(set(selected) & previous_set),
+        "previous_overlap_limit": previous_limit,
+        "top_ranked": ranked[:30],
+        "selected_reasons": {str(number): reasons[number] for number in selected},
+    }
+    return selected, diversity
+
+
 def calculate_fast_recommendation(
     issue: str | None,
     target_issue: str | None,
@@ -245,24 +419,21 @@ def calculate_fast_recommendation(
                 "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
             }
 
-        latest_numbers = _recommendation_numbers(analysis.get("numbers"))
-        selected: list[int] = []
-        _append_unique(selected, analysis.get("patch_numbers"))
-        _append_unique(selected, analysis.get("hot_numbers"))
-        _append_unique(selected, analysis.get("missing_numbers"))
-        _append_unique(selected, analysis.get("cold_numbers"))
-        _append_unique(selected, analysis.get("repeated_numbers"))
-        _append_unique(selected, [value for group in (analysis.get("diagonal_pattern") or []) for value in (group or [])])
-        _append_unique(selected, latest_numbers)
-        _append_unique(selected, range(1, 81), exclude=set(latest_numbers))
-        numbers = sorted(selected[:RECOMMENDATION_NUMBER_COUNT])
+        previous_numbers = _previous_fast_path_numbers(context)
+        numbers, diversity = _build_fast_path_numbers(
+            analysis,
+            source_issue=source_issue,
+            target_issue=target_issue,
+            previous_numbers=previous_numbers,
+            trace=trace,
+        )
         _trace_step(
             trace,
             model_name="Production Fast Path",
             stage="Analysis Merge",
-            input_count=len(selected),
+            input_count=80,
             output_count=len(numbers),
-            reason="analysis_latest_lightweight_merge",
+            reason="analysis_diversified_lightweight_merge",
         )
         output = _recommendation_output_status(numbers, trace, {"models": [{"model_name": "Production Fast Path"}]})
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
@@ -280,7 +451,8 @@ def calculate_fast_recommendation(
                     "label": "Production Fast Path",
                     "confidence": confidence,
                     "candidate_numbers": numbers,
-                    "reason": "Built from latest analysis fields without simulation or V7 voting.",
+                    "reason": "Built from latest analysis with zone, tail, source balance, and previous overlap control.",
+                    "diversity": diversity,
                 }
             },
             "winning_model": "production_fast_path",
@@ -293,7 +465,8 @@ def calculate_fast_recommendation(
             },
             "recommendation_trace": trace,
             "recommendation_output": output,
-            "explanation": "Production fast path built from latest analysis fields while heavy model output is pending.",
+            "diversity": diversity,
+            "explanation": "Production fast path built from latest analysis with zone, tail, source balance, and previous overlap control.",
             "context": {**context, "fast_path": True},
             "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
             "results": [
