@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import json
 import random
+import time
 from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
@@ -586,6 +587,9 @@ def calculate_recommendation(
     target_issue: str | None,
     context: dict | None = None,
 ) -> dict:
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
+    mark = started
     try:
         context = context or {}
         issue = str(issue) if issue is not None else _latest_issue()
@@ -601,19 +605,26 @@ def calculate_recommendation(
                 "status": "error",
                 "message": "no latest simulation available",
                 "recommendation": None,
+                "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
             }
+        timings["simulation_ms"] = round((time.perf_counter() - mark) * 1000, 2)
 
+        mark = time.perf_counter()
         rankings = get_latest_strategy_rankings()
         best = _best_strategy(rankings)
         adaptive = get_active_adaptive_weights()
         quality = get_data_quality_status()
+        timings["metadata_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         quality_status = quality.get("status", "unknown")
         issue = simulation.get("source_issue") or issue
         target_issue = target_issue
 
         candidates = simulation.get("results", [])[:5]
+        mark = time.perf_counter()
         voting = build_voting_result(100)
+        timings["voting_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         voting_candidates = voting.get("final_candidates") or []
+        mark = time.perf_counter()
         recommendation_trace = list(voting.get("trace") or [])
         number_sources = _candidate_sources(voting, candidates)
         max_total_score = max(_safe_float(item.get("total_score")) for item in candidates) or 1
@@ -627,7 +638,9 @@ def calculate_recommendation(
             super_recommendation = _build_super_recommendation(simulation, adaptive, best, issue)
             super_issue = super_recommendation.get("based_on_issue") or super_recommendation.get("source_issue")
         sync = _build_sync_status(simulation.get("source_issue"), issue, super_issue)
+        timings["source_merge_ms"] = round((time.perf_counter() - mark) * 1000, 2)
 
+        mark = time.perf_counter()
         results = []
         confidences = []
         if voting_candidates:
@@ -682,6 +695,7 @@ def calculate_recommendation(
 
         first_numbers = results[0].get("numbers") if results else []
         recommendation_output = _recommendation_output_status(first_numbers, recommendation_trace, voting)
+        timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         run_confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0
         run_explanation = _explanation(
             best_strategy,
@@ -706,6 +720,7 @@ def calculate_recommendation(
             "recommendation_output": recommendation_output,
             "explanation": run_explanation,
             "context": context,
+            "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
         }
         return {
             "status": "ok",
@@ -714,10 +729,17 @@ def calculate_recommendation(
                 "results": results,
             },
             "persisted": False,
+            "timings_ms": run["timings_ms"],
         }
     except Exception as exc:
         logger.exception("recommendation calculation failed")
-        return {"status": "error", "message": str(exc), "recommendation": None, "persisted": False}
+        return {
+            "status": "error",
+            "message": str(exc),
+            "recommendation": None,
+            "persisted": False,
+            "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
+        }
 
 
 def generate_recommendation_center(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import sqlite3
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -92,6 +93,30 @@ def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
     assert result["status"] == "skipped"
     assert result["skip_reason"] == "insufficient_recommendations"
     assert result["recommended_count"] == 3
+
+
+def test_prediction_service_times_out_slow_recommendation(monkeypatch):
+    events = []
+    monkeypatch.setattr(prediction_service, "PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: events.append(kwargs))
+
+    def slow_calculate(*args, **kwargs):
+        time.sleep(0.05)
+        return _recommendation()
+
+    monkeypatch.setattr(prediction_service, "calculate_recommendation", slow_calculate)
+
+    result = prediction_service.create_for_official_draw("115040800", source="unit", trigger="test")
+
+    assert result["status"] == "skipped"
+    assert result["skip_reason"] == "timed_out"
+    assert result["timeout_stage"] == "recommendation_build"
+    assert result["pending_usable"] is False
+    assert any(stage["stage"] == "recommendation_build" and stage["timed_out"] for stage in result["timings"])
+    assert prediction_service.prediction_lock_status()["prediction_running"] is False
+    assert events[-1]["reason"] == "timed_out"
 
 
 def test_prediction_service_duplicate_is_idempotent(monkeypatch):
@@ -668,7 +693,7 @@ def test_prediction_lock_stale_after_timeout(monkeypatch):
         def now(tz=None):
             from datetime import datetime, timezone
 
-            return datetime(2026, 7, 21, 0, 0, prediction_service.PREDICTION_TIMEOUT_SECONDS + 1, tzinfo=timezone.utc)
+            return datetime(2026, 7, 21, 0, 0, int(prediction_service.PREDICTION_TIMEOUT_SECONDS) + 1, tzinfo=timezone.utc)
 
         @staticmethod
         def fromisoformat(value):

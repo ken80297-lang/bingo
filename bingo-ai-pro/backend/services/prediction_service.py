@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
 from typing import Any
 
@@ -13,9 +15,11 @@ from services.next_prediction_center import build_prediction_history_record
 from services.recommendation_center import calculate_recommendation
 
 logger = logging.getLogger(__name__)
-PREDICTION_TIMEOUT_SECONDS = 45
+PREDICTION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_TIMEOUT_SECONDS", "45"))
+PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS", "12"))
 PREDICTION_STALE_LOCK_SECONDS = 90
 _PREDICTION_LOCK = threading.Lock()
+_PREDICTION_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prediction-service")
 _LOCK_STATE: dict[str, Any] = {
     "prediction_running": False,
     "prediction_lock_owner": None,
@@ -25,6 +29,8 @@ _LOCK_STATE: dict[str, Any] = {
     "prediction_last_error": None,
     "prediction_recovery_count": 0,
     "prediction_lock_token": 0,
+    "prediction_last_timings": [],
+    "prediction_current_stage": None,
 }
 
 
@@ -34,6 +40,17 @@ def _now() -> str:
 
 def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
+
+
+def _stage_done(stages: list[dict], name: str, start: float, **payload: Any) -> None:
+    stages.append({"stage": name, "duration_ms": _duration_ms(start), **payload})
+    _LOCK_STATE["prediction_current_stage"] = name
+    _LOCK_STATE["prediction_last_timings"] = list(stages)
+
+
+def _remaining_seconds(start: float, reserve_seconds: float = 3.0) -> float:
+    elapsed = time.perf_counter() - start
+    return max(0.1, PREDICTION_TIMEOUT_SECONDS - elapsed - reserve_seconds)
 
 
 def _valid_issue(value: Any) -> str | None:
@@ -62,6 +79,7 @@ def prediction_lock_status() -> dict:
         **_LOCK_STATE,
         "prediction_running_seconds": running_seconds,
         "prediction_timeout_seconds": PREDICTION_TIMEOUT_SECONDS,
+        "prediction_recommendation_timeout_seconds": PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS,
         "prediction_stale_lock_seconds": PREDICTION_STALE_LOCK_SECONDS,
     }
 
@@ -138,6 +156,8 @@ def _acquire_prediction_lock(owner: str) -> tuple[bool, dict]:
                 "prediction_lock_token": token,
                 "prediction_last_started_at": _now(),
                 "prediction_last_error": None,
+                "prediction_last_timings": [],
+                "prediction_current_stage": "lock_acquire",
             }
         )
         return True, {"status": "locked", "lock_owner": owner, "lock_token": token}
@@ -166,6 +186,7 @@ def _release_prediction_lock(owner: str, *, lock_token: int | None = None, succe
             "prediction_last_finished_at": _now(),
             "prediction_last_success_issue": success_issue or _LOCK_STATE.get("prediction_last_success_issue"),
             "prediction_last_error": error,
+            "prediction_current_stage": None,
         }
     )
     try:
@@ -254,6 +275,7 @@ def create_for_official_draw(
 ) -> dict:
     start = time.perf_counter()
     started_at = _now()
+    stages: list[dict] = []
     source = str(source or "unknown")
     trigger = str(trigger or "unknown")
     based_on = _valid_issue(based_on_issue)
@@ -263,6 +285,7 @@ def create_for_official_draw(
     lock_owner = f"{source}:{trigger}:{based_on or 'unknown'}:{target or 'unknown'}"
     locked, lock_payload = _acquire_prediction_lock(lock_owner)
     lock_token = lock_payload.get("lock_token")
+    _stage_done(stages, "lock_acquire", start, status=lock_payload.get("status"))
     if not locked:
         _record_event(
             event_type="prediction_skipped",
@@ -286,6 +309,7 @@ def create_for_official_draw(
             "duration_ms": _duration_ms(start),
             "persisted": False,
             "lock": lock_payload,
+            "timings": stages,
         }
 
     def skipped(reason: str, recommended_count: int = 0) -> dict:
@@ -313,6 +337,7 @@ def create_for_official_draw(
             "skip_reason": reason,
             "duration_ms": duration,
             "persisted": False,
+            "timings": stages,
         }
 
     try:
@@ -327,16 +352,22 @@ def create_for_official_draw(
         )
 
         if not based_on:
+            _stage_done(stages, "validation", start, status="skipped", reason="based_on_missing")
             return skipped("based_on_missing")
         if not target:
+            _stage_done(stages, "validation", start, status="skipped", reason="target_unconfirmed")
             return skipped("target_unconfirmed")
         try:
             if int(target) != int(based_on) + 1:
+                _stage_done(stages, "validation", start, status="skipped", reason="target_unconfirmed")
                 return skipped("target_unconfirmed")
         except Exception:
+            _stage_done(stages, "validation", start, status="skipped", reason="target_unconfirmed")
             return skipped("target_unconfirmed")
 
+        mark = time.perf_counter()
         existing = _existing_prediction(based_on, target)
+        _stage_done(stages, "existing_prediction_lookup", mark, found=bool(existing))
         if existing and not force:
             completed_at = _now()
             duration = _duration_ms(start)
@@ -362,20 +393,72 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": False,
                 "prediction_status": existing.get("prediction_status"),
+                "timings": stages,
             }
 
-        recommendation_result = calculate_recommendation(
+        recommendation_context = {
+            "source": source,
+            "trigger": trigger,
+            "collector_metadata": collector_metadata or {},
+            "prediction_service": True,
+            "ensure_simulation": False,
+        }
+        mark = time.perf_counter()
+        recommendation_timeout = min(PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS, _remaining_seconds(start))
+        future = _PREDICTION_EXECUTOR.submit(
+            calculate_recommendation,
             based_on,
             target,
-            context={
-                "source": source,
-                "trigger": trigger,
-                "collector_metadata": collector_metadata or {},
-                "prediction_service": True,
-                "ensure_simulation": False,
-            },
+            context=recommendation_context,
         )
+        try:
+            recommendation_result = future.result(timeout=recommendation_timeout)
+            _stage_done(
+                stages,
+                "recommendation_build",
+                mark,
+                status=(recommendation_result or {}).get("status"),
+                timeout_seconds=round(recommendation_timeout, 3),
+                timed_out=False,
+            )
+        except TimeoutError:
+            _stage_done(
+                stages,
+                "recommendation_build",
+                mark,
+                status="timed_out",
+                timeout_seconds=round(recommendation_timeout, 3),
+                timed_out=True,
+            )
+            _record_event(
+                event_type="prediction_skipped",
+                status="warning",
+                based_on_issue=based_on,
+                target_issue=target,
+                source=source,
+                trigger=trigger,
+                reason="timed_out",
+                started_at=started_at,
+                completed_at=_now(),
+                duration_ms=_duration_ms(start),
+                error_type="timed_out",
+                error_message=f"recommendation_build exceeded {recommendation_timeout:.2f}s",
+            )
+            return {
+                "status": "skipped",
+                "based_on_issue": based_on,
+                "target_issue": target,
+                "prediction_id": None,
+                "recommended_count": 0,
+                "skip_reason": "timed_out",
+                "duration_ms": _duration_ms(start),
+                "persisted": False,
+                "timings": stages,
+                "timeout_stage": "recommendation_build",
+                "pending_usable": False,
+            }
         if _duration_ms(start) / 1000 >= PREDICTION_TIMEOUT_SECONDS:
+            _stage_done(stages, "timeout_guard", start, status="timed_out")
             return skipped("timed_out")
         if recommendation_result.get("status") != "ok":
             completed_at = _now()
@@ -405,14 +488,18 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "error": error,
                 "persisted": False,
+                "timings": stages,
             }
 
         recommendation = recommendation_result.get("recommendation") or {}
         recommendation["issue"] = based_on
         recommendation["target_issue"] = target
+        mark = time.perf_counter()
         record = build_prediction_history_record(recommendation)
+        _stage_done(stages, "history_record_build", mark, record_built=bool(record))
         recommended = _numbers((record or {}).get("recommend_numbers"))
         if len(recommended) != 20:
+            _stage_done(stages, "recommendation_validation", start, status="skipped", recommended_count=len(recommended))
             return skipped("insufficient_recommendations", len(recommended))
         record["prediction_status"] = "waiting_draw"
         record["learning_used"] = False
@@ -425,7 +512,9 @@ def create_for_official_draw(
         record["git_commit_hash"] = GIT_COMMIT_HASH
         record["model_version"] = MODEL_VERSION
         record["feature_version"] = FEATURE_VERSION
+        mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
+        _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
         completed_at = _now()
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
@@ -452,6 +541,7 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": True,
                 "storage": saved.get("storage"),
+                "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"
         event_type = "prediction_failed" if status == "failed" else "prediction_skipped"
@@ -480,6 +570,7 @@ def create_for_official_draw(
             "duration_ms": duration,
             "persisted": False,
             "storage_result": saved,
+            "timings": stages,
         }
     except Exception as exc:
         _LOCK_STATE["prediction_last_error"] = str(exc)
