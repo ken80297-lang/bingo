@@ -247,6 +247,34 @@ def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
     assert result["prediction"]["target_issue"] == "115039888"
 
 
+def test_catch_up_releases_runtime_lock_before_downstream(monkeypatch):
+    from services import collector_runtime
+
+    downstream_runtime = []
+
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115039887")
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: [_draw(115039887)])
+    monkeypatch.setattr(catch_up_service, "get_official_draw_history", lambda limit=240: [_draw(115039887)])
+    monkeypatch.setattr(catch_up_service, "get_latest_official_draw", lambda: _draw(115039887))
+    monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
+
+    def downstream(draw, start, caller):
+        downstream_runtime.append(collector_runtime.collector_runtime_status())
+        return {
+            "verification": {"status": "ok"},
+            "analysis": {"status": "ok", "issue": draw["issue"]},
+            "prediction": {"status": "created", "target_issue": "115039888"},
+        }
+
+    monkeypatch.setattr(catch_up_service, "_run_live_downstream_for_draw", downstream)
+
+    result = catch_up_service.catch_up_missing_issues()
+
+    assert result["prediction"]["target_issue"] == "115039888"
+    assert downstream_runtime[0]["catch_up_running"] is False
+    assert downstream_runtime[0]["official_lock_owner"] is None
+
+
 def test_catch_up_deadline_skips_downstream(monkeypatch):
     source_draws = [_draw(issue) for issue in range(101, 104)]
 

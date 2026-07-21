@@ -12,6 +12,17 @@ def setup_function():
     latest_sync._LATEST_SYNC_CACHE["snapshot"] = None
     latest_sync._LATEST_SYNC_CACHE["expires_at"] = 0.0
     latest_sync._RECONCILE_IN_FLIGHT.clear()
+    latest_sync._LATEST_SYNC_STATE.update(
+        {
+            "source_issue": None,
+            "analysis_created": False,
+            "prediction_created": False,
+            "analysis_reconcile": None,
+            "prediction_reconcile": None,
+            "last_attempt_at": None,
+            "attempt_count": 0,
+        }
+    )
 
 
 def _draw(issue: str = "115040550", numbers=None):
@@ -197,6 +208,67 @@ def test_latest_sync_downstream_reconcile_creates_analysis_before_prediction(mon
     assert result["analysis_created"] is True
     assert result["prediction_created"] is True
     assert result["failure_stage"] is None
+
+
+def test_latest_sync_snapshot_preserves_fast_reconcile_completion(monkeypatch):
+    draw = _draw("115040899")
+
+    latest_sync._LATEST_SYNC_STATE.update(
+        {
+            "source_issue": None,
+            "analysis_created": False,
+            "prediction_created": False,
+            "prediction_reconcile": None,
+            "analysis_reconcile": None,
+        }
+    )
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": True,
+            "prediction_exists": False,
+            "target_issue": "115040900",
+        },
+    )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
+    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+
+    import services.prediction_refresh as prediction_refresh
+
+    monkeypatch.setattr(
+        prediction_refresh,
+        "ensure_next_prediction",
+        lambda latest: {
+            "status": "created",
+            "refresh_status": "ready",
+            "based_on_issue": latest["issue"],
+            "target_issue": "115040900",
+        },
+    )
+
+    class Future:
+        def result(self):
+            return None
+
+        def add_done_callback(self, callback):
+            callback(self)
+
+    class ImmediateExecutor:
+        def submit(self, fn, *args):
+            fn(*args)
+            return Future()
+
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", ImmediateExecutor())
+
+    result = latest_sync.get_latest_sync_snapshot()
+
+    assert result["analysis_created"] is True
+    assert result["prediction_created"] is True
+    assert result["dashboard_ready"] is True
+    assert result["sync_status"] == "synced"
+    assert result["prediction_reconcile"]["refresh_status"] == "ready"
 
 
 def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):

@@ -241,6 +241,20 @@ def build_next_prediction_dashboard() -> dict:
     timings["prediction_lookup_ms"] = 0.0
     latest_history = prediction
     fallback = None
+    refresh_attempt = None
+    if latest_draw and not prediction:
+        mark = time.perf_counter()
+        try:
+            from services.prediction_refresh import ensure_next_prediction
+
+            refresh_attempt = ensure_next_prediction(latest_draw)
+            context = get_latest_prediction_context()
+            latest_draw = (context or {}).get("draw") or latest_draw
+            prediction = (context or {}).get("prediction")
+            latest_history = prediction
+        except Exception as exc:
+            refresh_attempt = {"status": "failed", "refresh_status": "failed", "refresh_reason": str(exc)}
+        timings["prediction_refresh_ms"] = round((time.perf_counter() - mark) * 1000, 2)
     if not prediction and not latest_draw:
         mark = time.perf_counter()
         latest_history = get_latest_prediction_history()
@@ -265,7 +279,9 @@ def build_next_prediction_dashboard() -> dict:
                 "message": message,
                 "based_on_issue": source_issue,
                 "target_issue": target_issue,
-                "refresh_status": "prediction_pending" if latest_draw else "missing_latest_draw",
+                "refresh_status": (refresh_attempt or {}).get("refresh_status") or ("prediction_pending" if latest_draw else "missing_latest_draw"),
+                "refresh_reason": (refresh_attempt or {}).get("refresh_reason"),
+                "last_refresh_attempt": (refresh_attempt or {}).get("last_refresh_attempt"),
             },
             "laowanjia": {"message": "尚無老玩家特徵資料。"},
             "reasons": [message],

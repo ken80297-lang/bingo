@@ -497,3 +497,48 @@ def test_next_prediction_dashboard_uses_exact_fast_path(monkeypatch):
     assert len(result["next_recommendation"]["candidates"]) == 20
     assert result["history"]["status"] == "fast_path"
     assert result["timings_ms"]["total_ms"] >= 0
+
+
+def test_next_prediction_dashboard_refreshes_missing_latest_prediction(monkeypatch):
+    latest_draw = {"issue": "115040900", "numbers": list(range(1, 21))}
+    prediction = {
+        "id": 2,
+        "issue": "115040900",
+        "prediction_issue": "115040901",
+        "recommend_numbers": list(range(1, 21)),
+        "confidence": 91,
+        "super_number": 9,
+        "prediction_status": "waiting_draw",
+    }
+    contexts = [
+        {"draw": latest_draw, "prediction": None, "target_issue": "115040901"},
+        {"draw": latest_draw, "prediction": prediction, "target_issue": "115040901"},
+    ]
+    refresh_calls = []
+
+    monkeypatch.setattr(next_prediction_center, "get_latest_prediction_context", lambda: contexts.pop(0))
+    monkeypatch.setattr(
+        next_prediction_center,
+        "get_prediction_history_statistics",
+        lambda limit: (_ for _ in ()).throw(AssertionError("fast refreshed path should not load heavy statistics")),
+    )
+
+    import services.prediction_refresh as prediction_refresh_module
+
+    monkeypatch.setattr(
+        prediction_refresh_module,
+        "ensure_next_prediction",
+        lambda draw: refresh_calls.append(draw["issue"]) or {
+            "status": "created",
+            "refresh_status": "ready",
+            "based_on_issue": draw["issue"],
+            "target_issue": "115040901",
+        },
+    )
+
+    result = next_prediction_center.build_next_prediction_dashboard()
+
+    assert refresh_calls == ["115040900"]
+    assert result["status"] == "ok"
+    assert result["next_recommendation"]["based_on_issue"] == "115040900"
+    assert result["next_recommendation"]["target_issue"] == "115040901"

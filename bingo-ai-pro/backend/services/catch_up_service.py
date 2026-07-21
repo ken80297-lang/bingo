@@ -338,8 +338,35 @@ def catch_up_missing_issues() -> dict:
             _log_job_finished(result)
             return result
         result = _catch_up_missing_issues_locked(start)
-        _log_job_finished(result)
+    result = _run_deferred_downstream(result, start)
+    _log_job_finished(result)
+    return result
+
+
+def _defer_downstream(result: dict, draw: dict | None, caller: str) -> dict:
+    if draw:
+        result["_downstream_draw"] = draw
+        result["_downstream_caller"] = caller
+        result.setdefault("verification", {"status": "queued", "reason": "downstream_after_lock_release"})
+        result.setdefault("analysis", {"status": "queued", "reason": "downstream_after_lock_release"})
+        result.setdefault("prediction", {"status": "queued", "reason": "downstream_after_lock_release"})
+        LAST_CATCH_UP_RESULT.update({key: value for key, value in result.items() if not key.startswith("_")})
+    return result
+
+
+def _run_deferred_downstream(result: dict, start: float) -> dict:
+    draw = result.pop("_downstream_draw", None)
+    caller = result.pop("_downstream_caller", "catch_up_downstream")
+    if not draw:
         return result
+    downstream = _run_live_downstream_for_draw(draw, start, caller)
+    result["verification"] = downstream.get("verification")
+    result["analysis"] = downstream.get("analysis")
+    result["prediction"] = downstream.get("prediction")
+    result["verification_scan"] = downstream.get("verification_scan")
+    result["learning"] = downstream.get("learning")
+    LAST_CATCH_UP_RESULT.update(result)
+    return result
 
 
 def _catch_up_missing_issues_locked(start: float) -> dict:
@@ -382,15 +409,11 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
                 break
 
         if database_number is not None and source_number <= database_number and not missing:
-            downstream = _run_live_downstream_for_draw(get_latest_official_draw(), start, "catch_up_already_synced")
             result = _empty_result(start, database_issue, source_issue)
-            result["verification"] = downstream.get("verification")
-            result["analysis"] = downstream.get("analysis")
-            result["prediction"] = downstream.get("prediction")
-            LAST_CATCH_UP_RESULT.update(result)
             result["exit_reason"] = "completed"
             mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="completed")
             _record_event("ok", source_issue, start, "official catch-up already synced")
+            result = _defer_downstream(result, get_latest_official_draw(), "catch_up_already_synced")
             return result
 
         saved = save_official_draws(missing[:MAX_BATCH_SIZE])
@@ -402,10 +425,9 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         prediction = {"status": "skipped", "reason": "deadline_exceeded"}
         if not deadline_hit and success_count:
             latest_saved_draw = missing[min(success_count, len(missing)) - 1]
-            downstream = _run_live_downstream_for_draw(latest_saved_draw, start, "catch_up_saved_draw")
-            verification = downstream.get("verification") or verification
-            analysis = downstream.get("analysis") or analysis
-            prediction = downstream.get("prediction") or prediction
+            verification = {"status": "queued", "reason": "downstream_after_lock_release"}
+            analysis = {"status": "queued", "reason": "downstream_after_lock_release"}
+            prediction = {"status": "queued", "reason": "downstream_after_lock_release"}
 
         elapsed = _elapsed_seconds(start)
         exit_reason = "deadline_exceeded" if deadline_hit else "completed"
@@ -449,6 +471,8 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             last_catch_up_pending_count=len(pending_verification),
         )
         _record_event(result["status"], source_issue, start, f"official catch-up saved {success_count}/{len(missing)} draws")
+        if not deadline_hit and success_count:
+            result = _defer_downstream(result, latest_saved_draw, "catch_up_saved_draw")
         return result
     except Exception as exc:
         logger.exception("official catch-up failed")
