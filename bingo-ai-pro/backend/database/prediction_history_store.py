@@ -587,7 +587,9 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     if _cloud_enabled():
         try:
-            return _query_cloud(sql, params)
+            rows = _query_cloud(sql, params)
+            if rows:
+                return rows
         except Exception:
             logger.exception("cloud prediction_history query failed")
     try:
@@ -743,8 +745,7 @@ PREDICTION_SELECT_COLUMNS_P = """
 
 def get_latest_prediction_history() -> dict | None:
     _ensure_initialized()
-    rows = _query_with_fallback(
-        """
+    cloud_sql = """
         select {columns}
         from prediction_history p
         left join official_draw_history o on o.issue = p.prediction_issue
@@ -768,8 +769,8 @@ def get_latest_prediction_history() -> dict | None:
           and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
         order by p.prediction_issue::bigint desc, p.created_at desc, p.id desc
         limit 1
-        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
-        sqlite_sql="""
+        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH)
+    sqlite_sql = """
         select {columns}
         from prediction_history p
         left join official_draw_history o on o.issue = p.prediction_issue
@@ -793,13 +794,27 @@ def get_latest_prediction_history() -> dict | None:
           and coalesce(lower(p.strategy), '') not like '%synthetic%'
         order by cast(p.prediction_issue as integer) desc, p.created_at desc, p.id desc
         limit 1
-        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
-    )
+        """.format(columns=PREDICTION_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH)
+    rows = _query_with_fallback(cloud_sql, sqlite_sql=sqlite_sql)
+    if _cloud_enabled():
+        try:
+            rows = list(rows or []) + _query_sqlite(sqlite_sql)
+        except Exception:
+            logger.exception("sqlite prediction_history latest sidecar query failed")
     if not rows:
         return None
-    record = _row_to_prediction(rows[0])
-    if not is_production_prediction(record):
+    records = [_row_to_prediction(row) for row in rows]
+    records = [record for record in records if is_production_prediction(record)]
+    if not records:
         return None
+    record = max(
+        records,
+        key=lambda item: (
+            int(item.get("prediction_issue") or 0),
+            str(item.get("created_at") or ""),
+            int(item.get("id") or 0),
+        ),
+    )
     record["read_layer"] = {
         "data_source": "database",
         "table_name": "prediction_history",
@@ -1214,10 +1229,13 @@ def get_latest_prediction_context() -> dict | None:
     draw = _row_to_official(row[:15])
     prediction = _row_to_prediction(row[15:]) if row[15] is not None else None
     source_issue = _valid_issue(draw.get("issue"))
+    target_issue = str(int(source_issue) + 1) if source_issue else None
+    if prediction is None and source_issue and target_issue:
+        prediction = get_prediction_for_source_target(source_issue, target_issue)
     return {
         "draw": draw,
         "prediction": prediction,
-        "target_issue": str(int(source_issue) + 1) if source_issue else None,
+        "target_issue": target_issue,
     }
 
 

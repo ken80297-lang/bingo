@@ -76,3 +76,29 @@ def test_system_status_cache_stale_detection():
 
     assert payload["cache_state"] == "stale"
     assert payload["stale"] is True
+
+
+def test_official_lock_stale_recovery_clears_runtime(monkeypatch):
+    acquired = collector_runtime._OFFICIAL_LOCK.acquire(blocking=False)
+    collector_runtime._STATE.update(
+        {
+            "collector_running": True,
+            "catch_up_running": False,
+            "official_lock_owner": "official_collector",
+            "last_collector_started_at": (datetime.now(timezone.utc) - timedelta(seconds=collector_runtime.OFFICIAL_LOCK_STALE_SECONDS + 1)).isoformat(),
+            "last_collector_finished_at": None,
+            "last_collector_exit_reason": None,
+        }
+    )
+
+    try:
+        assert collector_runtime._release_stale_official_lock() is True
+        status = collector_runtime.collector_runtime_status()
+        assert status["collector_running"] is False
+        assert status["official_lock_owner"] is None
+    finally:
+        if acquired:
+            try:
+                collector_runtime._OFFICIAL_LOCK.release()
+            except RuntimeError:
+                pass

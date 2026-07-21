@@ -11,6 +11,7 @@ from typing import Any, Iterator
 logger = logging.getLogger(__name__)
 
 SYSTEM_STATUS_CACHE_TTL_SECONDS = 30
+OFFICIAL_LOCK_STALE_SECONDS = 180
 
 _OFFICIAL_LOCK = threading.Lock()
 _STATE_LOCK = threading.RLock()
@@ -147,6 +148,50 @@ def update_collector_runtime(**kwargs: Any) -> None:
         _STATE.update(kwargs)
 
 
+def _runtime_seconds_since(value: Any) -> float | None:
+    parsed = _parse_time(value)
+    if not parsed:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _official_lock_is_stale() -> bool:
+    with _STATE_LOCK:
+        owner = _STATE.get("official_lock_owner")
+        started = _STATE.get("last_catch_up_started_at") if owner == "catch_up" else _STATE.get("last_collector_started_at")
+        finished = _STATE.get("last_catch_up_finished_at") if owner == "catch_up" else _STATE.get("last_collector_finished_at")
+        running = bool(_STATE.get("catch_up_running")) if owner == "catch_up" else bool(_STATE.get("collector_running"))
+        exit_reason = _STATE.get("last_catch_up_exit_reason") if owner == "catch_up" else _STATE.get("last_collector_exit_reason")
+    if not owner or not running:
+        return False
+    started_at = _parse_time(started)
+    finished_at = _parse_time(finished)
+    if started_at and finished_at and finished_at >= started_at and exit_reason in {"completed", "deadline_exceeded", "exception"}:
+        return True
+    age = _runtime_seconds_since(started)
+    return bool(age is not None and age >= OFFICIAL_LOCK_STALE_SECONDS)
+
+
+def _release_stale_official_lock() -> bool:
+    if not _official_lock_is_stale():
+        return False
+    with _STATE_LOCK:
+        stale_owner = _STATE.get("official_lock_owner")
+        _STATE["official_lock_owner"] = None
+        _STATE["collector_running"] = False
+        _STATE["catch_up_running"] = False
+        _STATE["last_job_exit_reason"] = "stale_lock_recovered"
+        if stale_owner == "catch_up":
+            _STATE["last_catch_up_exit_reason"] = _STATE.get("last_catch_up_exit_reason") or "stale_lock_recovered"
+        else:
+            _STATE["last_collector_exit_reason"] = _STATE.get("last_collector_exit_reason") or "stale_lock_recovered"
+    try:
+        _OFFICIAL_LOCK.release()
+        return True
+    except RuntimeError:
+        return False
+
+
 def mark_success(owner: str, duration_ms: float | None = None, **kwargs: Any) -> None:
     exit_reason = kwargs.pop("exit_reason", "completed")
     with _STATE_LOCK:
@@ -210,6 +255,8 @@ def mark_scheduler_event(event_type: str, job_id: str | None = None, error: Exce
 def official_collection_lock(owner: str) -> Iterator[tuple[bool, dict]]:
     acquired = _OFFICIAL_LOCK.acquire(blocking=False)
     start = time.perf_counter()
+    if not acquired and _release_stale_official_lock():
+        acquired = _OFFICIAL_LOCK.acquire(blocking=False)
     if not acquired:
         with _STATE_LOCK:
             _STATE["scheduler_skipped_count"] = int(_STATE.get("scheduler_skipped_count") or 0) + 1

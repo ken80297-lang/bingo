@@ -68,7 +68,8 @@ def prediction_lock_status() -> dict:
 def _lock_is_stale() -> bool:
     status = prediction_lock_status()
     seconds = status.get("prediction_running_seconds")
-    return bool(_LOCK_STATE.get("prediction_running") and seconds is not None and seconds >= PREDICTION_STALE_LOCK_SECONDS)
+    stale_after = min(PREDICTION_STALE_LOCK_SECONDS, PREDICTION_TIMEOUT_SECONDS)
+    return bool(_LOCK_STATE.get("prediction_running") and seconds is not None and seconds >= stale_after)
 
 
 def _acquire_prediction_lock(owner: str) -> tuple[bool, dict]:

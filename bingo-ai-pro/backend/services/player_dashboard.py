@@ -50,6 +50,9 @@ def _cached_summary() -> dict | None:
         based_on = ((payload.get("next_prediction") or {}).get("based_on_issue"))
         if latest and not is_production_prediction({"issue": based_on, "prediction_issue": latest, "recommend_numbers": (payload.get("next_prediction") or {}).get("recommend_numbers")}):
             return None
+        next_prediction = payload.get("next_prediction") or {}
+        if next_prediction.get("status") == "expired" or int(next_prediction.get("lag_issues") or 0) > 1:
+            return None
         cached = deepcopy(payload)
         cached["cached"] = True
         return cached
@@ -360,6 +363,8 @@ def _prediction_from_history(
         target_issue_source = "derived_from_source_issue" if derived else "unavailable"
     status = _target_status(target_issue, current_issue)
     freshness = _dashboard_prediction_freshness(target_issue, current_issue)
+    if freshness.get("lag_issues") is not None and freshness.get("lag_issues") > 1:
+        return None
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
     based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
@@ -466,6 +471,39 @@ def _prediction_by_target_issue(target_issue: Any) -> dict | None:
     except Exception:
         logger.exception("dashboard direct prediction lookup failed target_issue=%s", issue)
     return None
+
+
+def _pending_next_prediction(current_draw: dict | None, detected_latest_issue: Any = None) -> dict:
+    database_latest_issue = (current_draw or {}).get("issue")
+    current_issue = detected_latest_issue or database_latest_issue
+    expected_target = _derive_next_issue(current_issue)
+    return {
+        "target_issue": expected_target,
+        "prediction_issue": expected_target,
+        "target_issue_source": "expected_from_latest_issue",
+        "based_on_issue": current_issue,
+        "latest_official_issue": current_issue,
+        "database_latest_issue": database_latest_issue,
+        "expected_target_issue": expected_target,
+        "is_current": False,
+        "status": "prediction_pending",
+        "target_status": "pending",
+        "stale_status": "prediction_pending",
+        "stale_status_label": "prediction_pending",
+        "refresh_status": "prediction_pending",
+        "refresh_reason": "latest_prediction_missing_or_expired",
+        "is_stale": True,
+        "lag_issues": None,
+        "main_numbers": [],
+        "recommend_numbers": [],
+        "recommendation_warning": "Latest production prediction is pending for the newest official draw.",
+        "production_valid": False,
+        "read_layer": {"query_name": "production_latest_prediction_pending", "production_filtered": True},
+        "reasons": ["Latest production prediction is pending for the newest official draw."],
+        "alerts": {},
+        "history": {},
+        "laowanjia": {},
+    }
 
 
 def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
@@ -909,7 +947,7 @@ def build_player_dashboard_summary() -> dict:
             "source_issue": current.get("issue"),
             "message": "analysis_history is pending for latest official draw",
         }
-    next_prediction = _prediction_from_history(latest_prediction, current, detected_latest_issue) or {}
+    next_prediction = _prediction_from_history(latest_prediction, current, detected_latest_issue) or _pending_next_prediction(current, detected_latest_issue)
     if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
         next_prediction["sync_status"] = "database_behind"
         next_prediction["recommendation_warning"] = (

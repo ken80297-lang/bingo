@@ -228,8 +228,8 @@ def test_dashboard_marks_prediction_stale_when_database_lags_detected_source(mon
     assert payload["sync"]["detected_latest_issue"] == "115040888"
     assert payload["sync"]["lag_count"] == 38
     assert payload["sync"]["is_synced"] is False
-    assert next_payload["status"] == "expired"
-    assert next_payload["stale_status"] == "possibly_expired"
-    assert next_payload["lag_issues"] == 38
+    assert next_payload["status"] == "prediction_pending"
+    assert next_payload["stale_status"] == "prediction_pending"
+    assert next_payload["prediction_issue"] == "115040889"
     assert next_payload["sync_status"] == "database_behind"
     assert "Production sync stale" in next_payload["recommendation_warning"]

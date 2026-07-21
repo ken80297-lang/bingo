@@ -162,6 +162,7 @@ def test_latest_prediction_history_uses_numeric_production_order(monkeypatch):
 
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", lambda sql, params=(): [])
 
     assert prediction_history_store.get_latest_prediction_history() is None
     assert "left join official_draw_history" in captured["sql"]
@@ -402,6 +403,68 @@ def test_latest_prediction_history_includes_waiting_draw_without_official_result
     assert latest["prediction_status"] == "waiting_draw"
 
 
+def test_latest_prediction_history_merges_cloud_and_sqlite_fallback(monkeypatch):
+    def row(row_id, issue, target, created_at):
+        values = [
+            row_id,
+            issue,
+            target,
+            created_at,
+            "V7",
+            88,
+            "[" + ",".join(str(n) for n in range(1, 21)) + "]",
+            7,
+            "[1,2,3]",
+            "[1,2,3,4]",
+            "[]",
+            "[]",
+            "[]",
+            "[]",
+            "balanced",
+            "balanced",
+            "[]",
+            "[]",
+            0,
+            0,
+            0,
+            0,
+            0,
+            created_at,
+            created_at,
+            "{}",
+            None,
+            "waiting_draw",
+            None,
+            None,
+            "[]",
+            "[]",
+            20,
+            0,
+            0,
+            None,
+            0,
+            0,
+            2,
+            1,
+            "v28.0.0",
+            "abc123",
+            "v7",
+            "28.0",
+        ]
+        return tuple(values)
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_query_cloud", lambda sql, params=(): [row(1, "115040850", "115040851", "2026-07-21T01:00:00")])
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", lambda sql, params=(): [row(2, "115040906", "115040907", "2026-07-21T07:00:00")])
+    monkeypatch.setattr(prediction_history_store, "_prediction_event_metadata", lambda record: {})
+
+    latest = prediction_history_store.get_latest_prediction_history()
+
+    assert latest["issue"] == "115040906"
+    assert latest["prediction_issue"] == "115040907"
+
+
 def test_is_production_prediction_allows_legacy_source_null_with_official_shape():
     assert prediction_history_store.is_production_prediction({
         "issue": "115040899",
@@ -542,3 +605,39 @@ def test_next_prediction_dashboard_refreshes_missing_latest_prediction(monkeypat
     assert result["status"] == "ok"
     assert result["next_recommendation"]["based_on_issue"] == "115040900"
     assert result["next_recommendation"]["target_issue"] == "115040901"
+
+
+def test_prediction_lock_stale_after_timeout(monkeypatch):
+    stale_started = "2026-07-21T00:00:00+00:00"
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": True,
+            "prediction_lock_owner": "unit-test:stale",
+            "prediction_last_started_at": stale_started,
+            "prediction_last_error": None,
+        }
+    )
+
+    class FixedDateTime:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 21, 0, 0, prediction_service.PREDICTION_TIMEOUT_SECONDS + 1, tzinfo=timezone.utc)
+
+        @staticmethod
+        def fromisoformat(value):
+            from datetime import datetime
+
+            return datetime.fromisoformat(value)
+
+    monkeypatch.setattr(prediction_service, "datetime", FixedDateTime)
+
+    assert prediction_service._lock_is_stale() is True
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": False,
+            "prediction_lock_owner": None,
+            "prediction_last_started_at": None,
+        }
+    )
