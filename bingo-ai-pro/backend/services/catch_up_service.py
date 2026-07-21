@@ -279,6 +279,7 @@ def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) 
     return {
         "lifecycle": lifecycle,
         "verification": lifecycle.get("verification") if isinstance(lifecycle, dict) else {"status": "error"},
+        "analysis": lifecycle.get("analysis") if isinstance(lifecycle, dict) else {"status": "error"},
         "verification_scan": verification_scan,
         "learning": lifecycle.get("learning") if isinstance(lifecycle, dict) else {"status": "error"},
         "prediction": lifecycle.get("prediction") if isinstance(lifecycle, dict) else {"status": "error"},
@@ -384,6 +385,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             downstream = _run_live_downstream_for_draw(get_latest_official_draw(), start, "catch_up_already_synced")
             result = _empty_result(start, database_issue, source_issue)
             result["verification"] = downstream.get("verification")
+            result["analysis"] = downstream.get("analysis")
             result["prediction"] = downstream.get("prediction")
             LAST_CATCH_UP_RESULT.update(result)
             result["exit_reason"] = "completed"
@@ -396,11 +398,13 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         failed_count = max(0, len(missing) - success_count)
         deadline_hit = _deadline_exceeded(start)
         verification = {"status": "skipped", "reason": "deadline_exceeded"}
+        analysis = {"status": "skipped", "reason": "deadline_exceeded"}
         prediction = {"status": "skipped", "reason": "deadline_exceeded"}
         if not deadline_hit and success_count:
             latest_saved_draw = missing[min(success_count, len(missing)) - 1]
             downstream = _run_live_downstream_for_draw(latest_saved_draw, start, "catch_up_saved_draw")
             verification = downstream.get("verification") or verification
+            analysis = downstream.get("analysis") or analysis
             prediction = downstream.get("prediction") or prediction
 
         elapsed = _elapsed_seconds(start)
@@ -424,6 +428,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "elapsed_seconds": elapsed,
             "saved": saved,
             "verification": verification,
+            "analysis": analysis,
             "prediction": prediction,
             "last_successful_collect_time": datetime.utcnow().isoformat() if success_count else LAST_CATCH_UP_RESULT.get("last_successful_collect_time"),
             "last_collect_duration": elapsed,

@@ -125,6 +125,80 @@ def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeyp
     assert result["timings_ms"]["total_ms"] >= 0
 
 
+def test_latest_sync_snapshot_queues_missing_analysis_and_prediction(monkeypatch):
+    draw = _draw("115040899")
+    submitted = []
+
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": False,
+            "prediction_exists": False,
+            "target_issue": "115040900",
+        },
+    )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
+    latest_sync._RECONCILE_IN_FLIGHT.clear()
+
+    class Executor:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
+
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
+    result = latest_sync.get_latest_sync_snapshot()
+
+    assert len(submitted) == 1
+    assert result["source_issue"] == "115040899"
+    assert result["target_issue"] == "115040900"
+    assert result["database_saved"] is True
+    assert result["analysis_created"] is False
+    assert result["prediction_created"] is False
+    assert result["sync_status"] == "analysis_pending"
+    assert result["prediction_reconcile"]["status"] == "queued"
+    assert result["prediction_reconcile"]["analysis_created"] is False
+    assert result["stages"]["analysis"]["status"] == "pending"
+
+
+def test_latest_sync_downstream_reconcile_creates_analysis_before_prediction(monkeypatch):
+    draw = _draw("115040899")
+    calls = []
+
+    monkeypatch.setattr(
+        latest_sync,
+        "save_analysis_history",
+        lambda latest: calls.append(("analysis", latest["issue"])) or {"status": "ok", "issue": latest["issue"]},
+    )
+    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
+    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+
+    import services.prediction_refresh as prediction_refresh
+
+    monkeypatch.setattr(
+        prediction_refresh,
+        "ensure_next_prediction",
+        lambda latest: calls.append(("prediction", latest["issue"])) or {
+            "status": "created",
+            "refresh_status": "ready",
+            "based_on_issue": latest["issue"],
+            "target_issue": "115040900",
+        },
+    )
+
+    result = latest_sync._reconcile_latest_downstream(
+        draw,
+        "115040899",
+        "115040900",
+        analysis_created=False,
+    )
+
+    assert calls == [("analysis", "115040899"), ("prediction", "115040899")]
+    assert result["analysis_created"] is True
+    assert result["prediction_created"] is True
+    assert result["failure_stage"] is None
+
+
 def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):
     draw = _draw("115040625")
     prediction = {

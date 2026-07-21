@@ -25,6 +25,13 @@ def test_process_official_draw_lifecycle_verifies_learns_and_creates_next(monkey
                     return {"status": "ok", "issue": issue, "learned": True}
 
             return Learning
+        if name == "database.analysis_store":
+            class AnalysisStore:
+                @staticmethod
+                def save_analysis_history(draw):
+                    return {"status": "ok", "issue": draw["issue"]}
+
+            return AnalysisStore
         if name == "services.operations_center":
             class Operations:
                 @staticmethod
@@ -49,6 +56,7 @@ def test_process_official_draw_lifecycle_verifies_learns_and_creates_next(monkey
 
     assert result["status"] == "ok"
     assert result["verification"]["prediction_status"] == "verified"
+    assert result["analysis"]["status"] == "ok"
     assert result["learning"]["learned"] is True
     assert result["prediction"]["target_issue"] == "100000003"
     assert [event["event_type"] for event in events] == [
@@ -74,6 +82,13 @@ def test_process_official_draw_lifecycle_can_disable_next_prediction(monkeypatch
                     return {"status": "ok", "issue": issue}
 
             return Learning
+        if name == "database.analysis_store":
+            class AnalysisStore:
+                @staticmethod
+                def save_analysis_history(draw):
+                    return {"status": "ok", "issue": draw["issue"]}
+
+            return AnalysisStore
         return real_import(name, *args, **kwargs)
 
     real_import = __import__

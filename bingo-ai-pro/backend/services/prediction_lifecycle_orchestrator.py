@@ -121,6 +121,14 @@ def process_official_draw_lifecycle(
     )
 
     try:
+        from database.analysis_store import save_analysis_history
+
+        analysis = save_analysis_history({**official_draw, "issue": issue, "numbers": numbers})
+    except Exception as exc:
+        logger.exception("lifecycle analysis save failed")
+        analysis = {"status": "error", "message": str(exc)}
+
+    try:
         from services.learning_engine import evaluate_verified_issue
 
         learning = evaluate_verified_issue(issue)
@@ -134,7 +142,12 @@ def process_official_draw_lifecycle(
         prediction = {"status": "skipped", "reason": "create_next_prediction_disabled"}
 
     status = "ok"
-    if verification.get("status") == "failed" or learning.get("status") == "error" or prediction.get("status") == "failed":
+    if (
+        verification.get("status") == "failed"
+        or analysis.get("status") == "error"
+        or learning.get("status") == "error"
+        or prediction.get("status") == "failed"
+    ):
         status = "error"
     _record_event(
         "official_draw_lifecycle_completed",
@@ -149,6 +162,7 @@ def process_official_draw_lifecycle(
         "status": status,
         "issue": issue,
         "verification": verification,
+        "analysis": analysis,
         "learning": learning,
         "prediction": prediction,
         "elapsed_ms": _duration_ms(start),

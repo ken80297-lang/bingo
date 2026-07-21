@@ -239,63 +239,119 @@ def _snapshot_stages(
     }
 
 
-def _reconcile_missing_prediction(latest: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
+def _analysis_created_from_result(result: dict[str, Any], source_issue: str) -> bool:
+    return result.get("status") == "ok" or _analysis_exists(source_issue)
+
+
+def _prediction_created_from_result(result: dict[str, Any], source_issue: str) -> bool:
+    return (
+        result.get("refresh_status") in {"ready", "existing"}
+        or result.get("status") in {"created", "already_exists", "existing"}
+        or _prediction_exists_for_latest(source_issue)
+    )
+
+
+def _reconcile_latest_downstream(
+    latest: dict,
+    source_issue: str,
+    target_issue: str,
+    *,
+    analysis_created: bool,
+) -> dict[str, Any]:
     with _STATE_LOCK:
         attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
     try:
         from services.prediction_refresh import ensure_next_prediction
 
-        result = ensure_next_prediction(latest)
+        analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
+        if not analysis_created:
+            analysis_result = save_analysis_history(latest)
+            analysis_created = _analysis_created_from_result(analysis_result, source_issue)
+
+        if analysis_created:
+            prediction_result = ensure_next_prediction(latest)
+            prediction_created = _prediction_created_from_result(prediction_result, source_issue)
+            failure_stage = None if prediction_created else "prediction"
+            failure_reason = None if prediction_created else "latest_prediction_missing"
+            next_retry = None if prediction_created else (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+        else:
+            prediction_result = {"status": "skipped", "reason": "analysis_missing"}
+            prediction_created = False
+            failure_stage = "analysis"
+            failure_reason = "latest_analysis_missing"
+            next_retry = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+
         return {
             "attempt_count": attempt_count,
             "last_attempt_at": _now(),
-            "prediction_reconcile": result,
-            "prediction_created": result.get("refresh_status") in {"ready", "existing"}
-            or result.get("status") in {"created", "already_exists", "existing"},
-            "failure_stage": None,
-            "failure_reason": None,
-            "next_retry_expected_at": None,
+            "analysis_reconcile": analysis_result,
+            "prediction_reconcile": prediction_result,
+            "analysis_created": analysis_created,
+            "prediction_created": prediction_created,
+            "failure_stage": failure_stage,
+            "failure_reason": failure_reason,
+            "next_retry_expected_at": next_retry,
         }
     except Exception as exc:
         logger.exception(
-            "latest sync prediction reconcile failed source_issue=%s target_issue=%s",
+            "latest sync downstream reconcile failed source_issue=%s target_issue=%s",
             source_issue,
             target_issue,
         )
         return {
             "attempt_count": attempt_count,
             "last_attempt_at": _now(),
-            "prediction_reconcile": {"status": "failed", "error": str(exc)},
+            "analysis_reconcile": {"status": "failed", "error": str(exc)},
+            "prediction_reconcile": {"status": "skipped", "reason": "analysis_or_downstream_reconcile_failed"},
+            "analysis_created": False,
             "prediction_created": False,
-            "failure_stage": "prediction",
+            "failure_stage": "downstream",
             "failure_reason": str(exc),
             "next_retry_expected_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
         }
 
 
-def _run_prediction_reconcile(latest: dict, source_issue: str, target_issue: str) -> None:
+def _run_latest_downstream_reconcile(
+    latest: dict,
+    source_issue: str,
+    target_issue: str,
+    analysis_created: bool,
+) -> None:
     try:
-        result = _reconcile_missing_prediction(latest, source_issue, target_issue)
+        result = _reconcile_latest_downstream(
+            latest,
+            source_issue,
+            target_issue,
+            analysis_created=analysis_created,
+        )
+        analysis_created = bool(result.get("analysis_created")) or _analysis_exists(source_issue)
         prediction_created = bool(result.get("prediction_created")) or _prediction_exists_for_latest(source_issue)
-        if prediction_created:
-            _update_state(
-                source_issue=source_issue,
-                target_issue=target_issue,
-                prediction_created=True,
-                dashboard_ready=bool(_LATEST_SYNC_STATE.get("database_saved") and _LATEST_SYNC_STATE.get("analysis_created")),
-                failure_stage=None,
-                failure_reason=None,
-                next_retry_expected_at=None,
-                last_attempt_at=result.get("last_attempt_at"),
-                attempt_count=result.get("attempt_count", _LATEST_SYNC_STATE.get("attempt_count")),
-                prediction_reconcile=result.get("prediction_reconcile"),
-            )
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            analysis_created=analysis_created,
+            prediction_created=prediction_created,
+            dashboard_ready=bool(_LATEST_SYNC_STATE.get("database_saved") and analysis_created and prediction_created),
+            failure_stage=None if analysis_created and prediction_created else result.get("failure_stage"),
+            failure_reason=None if analysis_created and prediction_created else result.get("failure_reason"),
+            next_retry_expected_at=None if analysis_created and prediction_created else result.get("next_retry_expected_at"),
+            last_attempt_at=result.get("last_attempt_at"),
+            attempt_count=result.get("attempt_count", _LATEST_SYNC_STATE.get("attempt_count")),
+            analysis_reconcile=result.get("analysis_reconcile"),
+            prediction_reconcile=result.get("prediction_reconcile"),
+        )
     finally:
         with _RECONCILE_LOCK:
             _RECONCILE_IN_FLIGHT.discard(source_issue)
 
 
-def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
+def _queue_latest_downstream_reconcile(
+    latest: dict,
+    source_issue: str,
+    target_issue: str,
+    *,
+    analysis_created: bool,
+) -> dict[str, Any]:
     with _RECONCILE_LOCK:
         if source_issue in _RECONCILE_IN_FLIGHT:
             with _STATE_LOCK:
@@ -317,9 +373,14 @@ def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: s
         target_issue=target_issue,
         last_attempt_at=queued_at,
         attempt_count=attempt_count,
-        failure_stage="prediction",
-        failure_reason="latest_prediction_missing",
+        failure_stage="prediction" if analysis_created else "analysis",
+        failure_reason="latest_prediction_missing" if analysis_created else "latest_analysis_missing",
         next_retry_expected_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        analysis_reconcile={
+            "status": "existing" if analysis_created else "queued",
+            "issue": source_issue,
+            "queued_at": queued_at,
+        },
         prediction_reconcile={
             "status": "queued",
             "refresh_status": "queued",
@@ -328,12 +389,19 @@ def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: s
             "queued_at": queued_at,
         },
     )
-    _RECONCILE_EXECUTOR.submit(_run_prediction_reconcile, dict(latest), source_issue, target_issue)
+    _RECONCILE_EXECUTOR.submit(
+        _run_latest_downstream_reconcile,
+        dict(latest),
+        source_issue,
+        target_issue,
+        analysis_created,
+    )
     return {
         "status": "queued",
         "refresh_status": "queued",
         "based_on_issue": source_issue,
         "target_issue": target_issue,
+        "analysis_created": analysis_created,
         "queued_at": queued_at,
         "attempt_count": attempt_count,
     }
@@ -373,8 +441,13 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         timings["analysis_lookup_ms"] = 0.0
         prediction_created = bool((sync_status or {}).get("prediction_exists"))
         timings["prediction_lookup_ms"] = 0.0
-        if is_complete_official_draw(latest) and analysis_created and not prediction_created and target_issue:
-            reconcile = _queue_prediction_reconcile(latest, source_issue, target_issue)
+        if is_complete_official_draw(latest) and (not analysis_created or not prediction_created) and target_issue:
+            reconcile = _queue_latest_downstream_reconcile(
+                latest,
+                source_issue,
+                target_issue,
+                analysis_created=analysis_created,
+            )
     with _STATE_LOCK:
         detected = detected_issue or _LATEST_SYNC_STATE.get("official_detected_issue")
         existing_attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0)
@@ -391,8 +464,8 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         failure_stage = None if reconcile else "prediction"
         failure_reason = "latest_prediction_queued" if reconcile else "latest_prediction_missing"
     elif database_saved and not analysis_created:
-        failure_stage = "analysis"
-        failure_reason = "latest_analysis_missing"
+        failure_stage = None if reconcile else "analysis"
+        failure_reason = "latest_analysis_queued" if reconcile else "latest_analysis_missing"
     elif not database_saved and detected:
         failure_stage = "database"
         failure_reason = "latest_official_draw_missing_or_incomplete"
