@@ -52,6 +52,7 @@ FEATURE_LABELS = {
 }
 
 RECOMMENDATION_NUMBER_COUNT = 20
+FAST_PATH_STRATEGY_VERSION = "28.0-diversity-v1"
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -211,6 +212,26 @@ def _append_unique(result: list[int], values, *, exclude: set[int] | None = None
     for number in _recommendation_numbers(values):
         if number not in excluded and number not in result:
             result.append(number)
+
+
+def fast_path_strategy_version_from_prediction(prediction: dict | None) -> str | None:
+    if not prediction:
+        return None
+    model_scores = prediction.get("model_scores") or {}
+    if not isinstance(model_scores, dict):
+        model_scores = {}
+    fast_path = model_scores.get("production_fast_path") or {}
+    if not isinstance(fast_path, dict):
+        fast_path = {}
+    return (
+        prediction.get("fast_path_strategy_version")
+        or fast_path.get("fast_path_strategy_version")
+        or model_scores.get("fast_path_strategy_version")
+    )
+
+
+def fast_path_prediction_is_current(prediction: dict | None) -> bool:
+    return fast_path_strategy_version_from_prediction(prediction) == FAST_PATH_STRATEGY_VERSION
 
 
 def _flatten_number_groups(values) -> list[int]:
@@ -442,6 +463,9 @@ def calculate_fast_recommendation(
             "issue": source_issue,
             "target_issue": target_issue,
             "best_strategy": "ProductionFastPath",
+            "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+            "regenerated_reason": context.get("regenerated_reason"),
+            "previous_strategy_version": context.get("previous_strategy_version"),
             "confidence": confidence,
             "data_quality_status": "ok",
             "super_recommendation": {"recommended": [{"number": analysis.get("super_number")}]} if analysis.get("super_number") else {"recommended": []},
@@ -453,6 +477,9 @@ def calculate_fast_recommendation(
                     "candidate_numbers": numbers,
                     "reason": "Built from latest analysis with zone, tail, source balance, and previous overlap control.",
                     "diversity": diversity,
+                    "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                    "regenerated_reason": context.get("regenerated_reason"),
+                    "previous_strategy_version": context.get("previous_strategy_version"),
                 }
             },
             "winning_model": "production_fast_path",

@@ -12,6 +12,25 @@ from database import prediction_history_store
 from services import next_prediction_center, prediction_refresh, prediction_service
 
 
+def setup_function():
+    try:
+        prediction_service._PREDICTION_LOCK.release()
+    except RuntimeError:
+        pass
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": False,
+            "prediction_lock_owner": None,
+            "prediction_last_started_at": None,
+            "prediction_last_finished_at": None,
+            "prediction_last_success_issue": None,
+            "prediction_last_error": None,
+            "prediction_current_stage": None,
+            "prediction_last_timings": [],
+        }
+    )
+
+
 def _recommendation(numbers=None):
     numbers = numbers or list(range(1, 21))
     return {
@@ -63,7 +82,12 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     assert saved[0][1] == "prediction_service"
     assert saved[0][0]["prediction_status"] == "waiting_draw"
     assert saved[0][0]["learning_used"] is False
-    assert [event["event_type"] for event in events] == ["prediction_create_started", "prediction_created"]
+    own_events = [
+        event["event_type"]
+        for event in events
+        if event.get("based_on_issue") == "115040800" and event.get("target_issue") == "115040801"
+    ]
+    assert own_events == ["prediction_create_started", "prediction_created"]
 
 
 def test_prediction_service_uses_fast_path_before_heavy_recommendation(monkeypatch):
@@ -150,7 +174,18 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
         "get_prediction_for_source_target",
-        lambda source_issue, target_issue: {"id": 9, "issue": "115040800", "prediction_issue": "115040801", "recommend_numbers": list(range(1, 21)), "prediction_status": "waiting_draw"},
+        lambda source_issue, target_issue: {
+            "id": 9,
+            "issue": "115040800",
+            "prediction_issue": "115040801",
+            "recommend_numbers": list(range(1, 21)),
+            "prediction_status": "waiting_draw",
+            "model_scores": {
+                "production_fast_path": {
+                    "fast_path_strategy_version": prediction_service.FAST_PATH_STRATEGY_VERSION,
+                }
+            },
+        },
     )
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not calculate")))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
@@ -160,6 +195,46 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
 
     assert result["status"] == "already_exists"
     assert result["prediction_id"] == 9
+
+
+def test_prediction_service_regenerates_stale_fast_path_strategy(monkeypatch):
+    saved = []
+    contexts = []
+    stale_existing = {
+        "id": 9,
+        "issue": "115040800",
+        "prediction_issue": "115040801",
+        "recommend_numbers": list(range(1, 21)),
+        "prediction_status": "waiting_draw",
+        "model_scores": {"production_fast_path": {"fast_path_strategy_version": "28.0-old"}},
+    }
+    fast = _recommendation(list(range(21, 41)))
+    fast["recommendation"]["best_strategy"] = "ProductionFastPath"
+    fast["recommendation"]["model_scores"] = {
+        "production_fast_path": {
+            "candidate_numbers": list(range(21, 41)),
+            "fast_path_strategy_version": prediction_service.FAST_PATH_STRATEGY_VERSION,
+        }
+    }
+
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: stale_existing)
+    monkeypatch.setattr(
+        prediction_service,
+        "calculate_fast_recommendation",
+        lambda *args, **kwargs: contexts.append(kwargs.get("context") or {}) or fast,
+    )
+    monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("heavy recommendation should not run")))
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 9, "storage": "cloud"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    result = prediction_service.create_for_official_draw("115040800", source="unit", trigger="test")
+
+    assert result["status"] == "created"
+    assert result["regenerated_reason"] == "fast_path_strategy_version_changed"
+    assert result["previous_strategy_version"] == "28.0-old"
+    assert contexts[0]["regenerated_reason"] == "fast_path_strategy_version_changed"
+    assert saved[0]["model_scores"]["production_fast_path"]["fast_path_strategy_version"] == prediction_service.FAST_PATH_STRATEGY_VERSION
+    assert saved[0]["model_scores"]["production_fast_path"]["previous_strategy_version"] == "28.0-old"
 
 
 def test_prediction_service_persists_requested_source_and_target_from_fallback(monkeypatch):
@@ -576,6 +651,46 @@ def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     assert calls[0][1]["source"] == "official_collector"
     assert calls[0][1]["trigger"] == "official_draw_saved"
     assert "prediction_service_called" in [event[0] for event in events]
+
+
+def test_prediction_refresh_regenerates_stale_fast_path_existing(monkeypatch):
+    calls = []
+    stale_existing = {
+        "id": 77,
+        "issue": "115040800",
+        "prediction_issue": "115040801",
+        "recommend_numbers": list(range(1, 21)),
+        "model_scores": {"production_fast_path": {"fast_path_strategy_version": "28.0-old"}},
+    }
+    monkeypatch.setattr(prediction_refresh, "_existing_prediction", lambda source_issue, target_issue: stale_existing)
+    monkeypatch.setattr(prediction_refresh, "_record_refresh_event", lambda payload, start: None)
+    monkeypatch.setattr(prediction_refresh, "_record_trigger_event", lambda *args, **kwargs: None)
+
+    def fake_create(based_on_issue, **kwargs):
+        calls.append((based_on_issue, kwargs))
+        return {
+            "status": "created",
+            "prediction_id": 77,
+            "recommended_count": 20,
+            "target_issue": kwargs.get("target_issue"),
+            "fast_path_strategy_version": prediction_service.FAST_PATH_STRATEGY_VERSION,
+            "regenerated_reason": "fast_path_strategy_version_changed",
+            "previous_strategy_version": "28.0-old",
+        }
+
+    import services.prediction_service as prediction_service_module
+
+    monkeypatch.setattr(prediction_service_module, "create_for_official_draw", fake_create)
+
+    result = prediction_refresh.refresh_next_prediction_for_draw(
+        {"issue": "115040800", "numbers": list(range(1, 21))}
+    )
+
+    assert result["status"] == "created"
+    assert result["refresh_status"] == "ready"
+    assert calls[0][1]["force"] is True
+    assert calls[0][1]["collector_metadata"]["regenerated_reason"] == "fast_path_strategy_version_changed"
+    assert calls[0][1]["collector_metadata"]["previous_strategy_version"] == "28.0-old"
 
 
 def test_prediction_refresh_recovers_already_running_lock(monkeypatch):

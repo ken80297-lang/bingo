@@ -55,6 +55,21 @@ def _patch_downstream(monkeypatch):
     monkeypatch.setattr(orchestrator, "process_official_draw_lifecycle", lifecycle)
 
 
+def test_latest_sync_treats_stale_fast_path_prediction_as_missing(monkeypatch):
+    monkeypatch.setattr(
+        latest_sync,
+        "get_prediction_for_source_target",
+        lambda source_issue, target_issue: {
+            "issue": source_issue,
+            "prediction_issue": target_issue,
+            "recommend_numbers": list(range(1, 21)),
+            "model_scores": {"production_fast_path": {"fast_path_strategy_version": "28.0-old"}},
+        },
+    )
+
+    assert latest_sync._prediction_exists_for_latest("115040927") is False
+
+
 def test_latest_sync_existing_draw_does_not_save_duplicate(monkeypatch):
     saved_calls = []
     draw = _draw()
@@ -319,6 +334,11 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
         "issue": "115040625",
         "prediction_issue": "115040626",
         "recommend_numbers": list(range(1, 21)),
+        "model_scores": {
+            "production_fast_path": {
+                "fast_path_strategy_version": "28.0-diversity-v1",
+            }
+        },
     }
     latest_sync._LATEST_SYNC_STATE.update(
         {
@@ -352,6 +372,7 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
         },
     )
     monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
+    monkeypatch.setattr(latest_sync, "get_prediction_for_source_target", lambda source_issue, target_issue: prediction)
 
     import services.prediction_refresh as prediction_refresh
 

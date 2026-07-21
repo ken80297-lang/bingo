@@ -20,6 +20,7 @@ from database.official_draw_store import (
 )
 from database.prediction_history_store import get_prediction_for_source_target
 from services.collector_runtime import update_collector_runtime
+from services.recommendation_center import fast_path_prediction_is_current
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ def _latest_prediction_for_issue(issue: str) -> dict | None:
 
 
 def _prediction_exists_for_latest(issue: str) -> bool:
-    return _latest_prediction_for_issue(issue) is not None
+    return fast_path_prediction_is_current(_latest_prediction_for_issue(issue))
 
 
 def _sync_status(payload: dict[str, Any]) -> str:
@@ -558,7 +559,7 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
     if source_issue:
         analysis_created = bool((sync_status or {}).get("analysis_exists"))
         timings["analysis_lookup_ms"] = 0.0
-        prediction_created = bool((sync_status or {}).get("prediction_exists"))
+        prediction_created = _prediction_exists_for_latest(source_issue)
         timings["prediction_lookup_ms"] = 0.0
         if is_complete_official_draw(latest) and (not analysis_created or not prediction_created) and target_issue:
             reconcile = _queue_latest_downstream_reconcile(
@@ -574,9 +575,21 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         existing_last_attempt_at = _LATEST_SYNC_STATE.get("last_attempt_at")
         state_source_issue = _LATEST_SYNC_STATE.get("source_issue")
         existing_analysis_created = bool(_LATEST_SYNC_STATE.get("analysis_created")) if state_source_issue == source_issue else False
-        existing_prediction_created = bool(_LATEST_SYNC_STATE.get("prediction_created")) if state_source_issue == source_issue else False
         existing_analysis_reconcile = _LATEST_SYNC_STATE.get("analysis_reconcile") if state_source_issue == source_issue else None
         existing_prediction_reconcile = _LATEST_SYNC_STATE.get("prediction_reconcile") if state_source_issue == source_issue else None
+        existing_reconcile_ready = (
+            isinstance(existing_prediction_reconcile, dict)
+            and (
+                existing_prediction_reconcile.get("refresh_status") in {"ready", "existing"}
+                or existing_prediction_reconcile.get("status") in {"created", "already_exists", "existing"}
+            )
+        )
+        existing_prediction_created = (
+            bool(_LATEST_SYNC_STATE.get("prediction_created"))
+            and (prediction_created or existing_reconcile_ready)
+            if state_source_issue == source_issue
+            else False
+        )
     analysis_created = analysis_created or existing_analysis_created
     prediction_created = prediction_created or existing_prediction_created
     database_saved = is_complete_official_draw(latest)

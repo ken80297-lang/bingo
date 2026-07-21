@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from database.prediction_history_store import get_prediction_for_source_target
+from services.recommendation_center import (
+    FAST_PATH_STRATEGY_VERSION,
+    fast_path_strategy_version_from_prediction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +184,9 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
 
     try:
         existing = _existing_prediction(source_issue, target_issue)
-        if existing:
+        previous_strategy_version = fast_path_strategy_version_from_prediction(existing)
+        existing_is_current = previous_strategy_version == FAST_PATH_STRATEGY_VERSION
+        if existing and existing_is_current:
             payload = {
                 "status": "existing",
                 "refresh_status": "existing",
@@ -188,6 +194,7 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                 "last_refresh_success": existing.get("predict_time") or existing.get("created_at"),
                 "prediction_id": existing.get("id"),
                 "prediction_status": existing.get("prediction_status"),
+                "fast_path_strategy_version": previous_strategy_version,
                 "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
                 **base_payload,
             }
@@ -201,6 +208,7 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             )
             _record_refresh_event(payload, start)
             return payload
+        regenerated_reason = "fast_path_strategy_version_changed" if existing else None
 
         from services.prediction_service import create_for_official_draw, recover_prediction_lock_for_target
 
@@ -216,7 +224,14 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             source="official_collector",
             trigger="official_draw_saved",
             target_issue=target_issue,
-            collector_metadata={"draw_issue": source_issue, "draw_number_count": len(draw_numbers)},
+            collector_metadata={
+                "draw_issue": source_issue,
+                "draw_number_count": len(draw_numbers),
+                "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                "regenerated_reason": regenerated_reason,
+                "previous_strategy_version": previous_strategy_version,
+            },
+            force=bool(regenerated_reason),
         )
         if service_result.get("status") == "already_running":
             recovery = recover_prediction_lock_for_target(
@@ -225,7 +240,8 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                 reason="prediction_refresh_already_running_recovery",
             )
             existing_after_recovery = _existing_prediction(source_issue, target_issue)
-            if existing_after_recovery:
+            recovery_previous_version = fast_path_strategy_version_from_prediction(existing_after_recovery)
+            if existing_after_recovery and recovery_previous_version == FAST_PATH_STRATEGY_VERSION:
                 service_result = {
                     "status": "already_exists",
                     "based_on_issue": source_issue,
@@ -233,9 +249,11 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                     "prediction_id": existing_after_recovery.get("id"),
                     "recommended_count": len(existing_after_recovery.get("recommend_numbers") or []),
                     "prediction_status": existing_after_recovery.get("prediction_status"),
+                    "fast_path_strategy_version": recovery_previous_version,
                     "lock_recovery": recovery,
                 }
             elif recovery.get("status") == "recovered":
+                recovery_regenerated_reason = "fast_path_strategy_version_changed" if existing_after_recovery else regenerated_reason
                 service_result = create_for_official_draw(
                     source_issue,
                     source="official_collector",
@@ -245,7 +263,11 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                         "draw_issue": source_issue,
                         "draw_number_count": len(draw_numbers),
                         "lock_recovery": recovery.get("status"),
+                        "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                        "regenerated_reason": recovery_regenerated_reason,
+                        "previous_strategy_version": recovery_previous_version or previous_strategy_version,
                     },
+                    force=bool(recovery_regenerated_reason),
                 )
                 service_result["lock_recovery"] = recovery
         status = service_result.get("status")

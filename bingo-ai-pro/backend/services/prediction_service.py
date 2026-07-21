@@ -12,7 +12,12 @@ from config.production_scope import get_production_generation, is_issue_in_curre
 from config.release import FEATURE_VERSION, GIT_COMMIT_HASH, MODEL_VERSION, RELEASE_VERSION
 from database.prediction_history_store import get_prediction_for_source_target, save_prediction_history
 from services.next_prediction_center import build_prediction_history_record
-from services.recommendation_center import calculate_fast_recommendation, calculate_recommendation
+from services.recommendation_center import (
+    FAST_PATH_STRATEGY_VERSION,
+    calculate_fast_recommendation,
+    calculate_recommendation,
+    fast_path_strategy_version_from_prediction,
+)
 
 logger = logging.getLogger(__name__)
 PREDICTION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_TIMEOUT_SECONDS", "45"))
@@ -264,6 +269,17 @@ def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
     return get_prediction_for_source_target(based_on_issue, target_issue)
 
 
+def _existing_fast_path_status(existing: dict | None) -> dict:
+    previous_version = fast_path_strategy_version_from_prediction(existing)
+    is_current = previous_version == FAST_PATH_STRATEGY_VERSION
+    return {
+        "is_current": is_current,
+        "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+        "previous_strategy_version": previous_version,
+        "regenerated_reason": None if is_current else "fast_path_strategy_version_changed",
+    }
+
+
 def create_for_official_draw(
     based_on_issue: str,
     *,
@@ -367,8 +383,18 @@ def create_for_official_draw(
 
         mark = time.perf_counter()
         existing = _existing_prediction(based_on, target)
-        _stage_done(stages, "existing_prediction_lookup", mark, found=bool(existing))
-        if existing and not force:
+        existing_strategy = _existing_fast_path_status(existing)
+        should_regenerate_existing = bool(existing and not existing_strategy["is_current"])
+        _stage_done(
+            stages,
+            "existing_prediction_lookup",
+            mark,
+            found=bool(existing),
+            fast_path_strategy_version=FAST_PATH_STRATEGY_VERSION,
+            previous_strategy_version=existing_strategy["previous_strategy_version"],
+            regenerated_reason=existing_strategy["regenerated_reason"] if should_regenerate_existing else None,
+        )
+        if existing and not force and not should_regenerate_existing:
             completed_at = _now()
             duration = _duration_ms(start)
             _record_event(
@@ -393,8 +419,15 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": False,
                 "prediction_status": existing.get("prediction_status"),
+                "fast_path_strategy_version": existing_strategy["previous_strategy_version"],
                 "timings": stages,
             }
+        regenerated_reason = None
+        previous_strategy_version = None
+        if should_regenerate_existing:
+            regenerated_reason = existing_strategy["regenerated_reason"]
+            previous_strategy_version = existing_strategy["previous_strategy_version"]
+            force = True
 
         recommendation_context = {
             "source": source,
@@ -402,6 +435,9 @@ def create_for_official_draw(
             "collector_metadata": collector_metadata or {},
             "prediction_service": True,
             "ensure_simulation": False,
+            "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+            "regenerated_reason": regenerated_reason,
+            "previous_strategy_version": previous_strategy_version,
         }
         mark = time.perf_counter()
         recommendation_result = calculate_fast_recommendation(
@@ -532,6 +568,17 @@ def create_for_official_draw(
         record["git_commit_hash"] = GIT_COMMIT_HASH
         record["model_version"] = MODEL_VERSION
         record["feature_version"] = FEATURE_VERSION
+        model_scores = record.get("model_scores") if isinstance(record.get("model_scores"), dict) else {}
+        fast_path_scores = model_scores.get("production_fast_path") if isinstance(model_scores.get("production_fast_path"), dict) else {}
+        fast_path_scores.update(
+            {
+                "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                "regenerated_reason": regenerated_reason,
+                "previous_strategy_version": previous_strategy_version,
+            }
+        )
+        model_scores["production_fast_path"] = fast_path_scores
+        record["model_scores"] = model_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
@@ -561,6 +608,9 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": True,
                 "storage": saved.get("storage"),
+                "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                "regenerated_reason": regenerated_reason,
+                "previous_strategy_version": previous_strategy_version,
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"

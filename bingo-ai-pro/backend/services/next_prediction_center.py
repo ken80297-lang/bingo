@@ -17,6 +17,7 @@ from database.prediction_history_store import (
 from database.recommendation_center_store import get_latest_recommendation_run
 from config.production_scope import production_scope_payload
 from database.release_store import get_current_release
+from services.recommendation_center import fast_path_strategy_version_from_prediction
 from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,8 @@ def build_next_prediction_dashboard() -> dict:
 
     numbers = _as_int_list(prediction.get("recommend_numbers"))
     super_number = prediction.get("super_number")
+    fast_path_strategy_version = fast_path_strategy_version_from_prediction(prediction)
+    production_fast_path = ((prediction.get("model_scores") or {}).get("production_fast_path") or {})
     laowanjia_score = (analysis or {}).get("laowanjia_score") or 0
     conclusion = "老玩家模式成立" if laowanjia_score >= 60 else "老玩家模式觀察中"
 
@@ -314,6 +317,9 @@ def build_next_prediction_dashboard() -> dict:
             "odd_even": prediction.get("odd_even") or _odd_even(numbers),
             "model_scores": prediction.get("model_scores") or {},
             "winning_model": prediction.get("winning_model"),
+            "fast_path_strategy_version": fast_path_strategy_version,
+            "regenerated_reason": production_fast_path.get("regenerated_reason") if isinstance(production_fast_path, dict) else None,
+            "previous_strategy_version": production_fast_path.get("previous_strategy_version") if isinstance(production_fast_path, dict) else None,
             "release_version": prediction.get("release_version") or release.get("release_version"),
             "git_commit_hash": prediction.get("git_commit_hash") or release.get("git_commit_hash"),
             "production_generation": prediction.get("production_generation") or scope.get("production_generation"),

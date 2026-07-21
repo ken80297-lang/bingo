@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 *.db
 *.sqlite3
 data/
