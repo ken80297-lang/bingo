@@ -6,7 +6,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from collectors.taiwan_lottery_collector import fetch_official_bingo_results
+from collectors.taiwan_lottery_collector import fetch_official_bingo_results, get_last_official_fetch_diagnostics
 from database.official_draw_store import (
     get_official_draw_history,
     get_latest_official_draw,
@@ -141,6 +141,14 @@ def fetch_source_today_draws(max_pages: int = 3, page_size: int = 100) -> list[d
         if len(draws) < page_size:
             break
     return sorted(collected.values(), key=lambda item: int(item.get("issue") or 0))
+
+
+def _source_fetch_diagnostics() -> list[dict]:
+    try:
+        return get_last_official_fetch_diagnostics()[-10:]
+    except Exception:
+        logger.exception("failed to load official source diagnostics")
+        return []
 
 
 def get_source_latest_issue() -> str | None:
@@ -345,6 +353,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
         if source_number is None:
             result = _empty_result(start, database_issue, source_issue, status="warning")
             result["reason"] = "source_latest_issue_unavailable"
+            result["source_fetch_diagnostics"] = _source_fetch_diagnostics()
             LAST_CATCH_UP_RESULT.update(result)
             result["exit_reason"] = "source_error"
             mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="source_error")
@@ -421,6 +430,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "catch_up_available": True,
             "deadline_exceeded": deadline_hit,
             "exit_reason": exit_reason,
+            "source_fetch_diagnostics": _source_fetch_diagnostics(),
         }
         LAST_CATCH_UP_RESULT.update(result)
         if deadline_hit:
@@ -454,6 +464,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "last_collect_duration": elapsed,
             "catch_up_available": True,
             "exit_reason": "exception",
+            "source_fetch_diagnostics": _source_fetch_diagnostics(),
         }
         LAST_CATCH_UP_RESULT.update(result)
         mark_error("catch_up", exc, elapsed * 1000)

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_BINGO_URL = "https://api.taiwanlottery.com/TLCAPIWeB/Lottery/BingoResult"
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+_LAST_FETCH_DIAGNOSTICS: list[dict] = []
 
 
 def _as_int(value: Any) -> int | None:
@@ -28,6 +29,20 @@ def _as_numbers(values: Any) -> list[int]:
         if number is not None and number not in numbers:
             numbers.append(number)
     return numbers
+
+
+def _remember_diagnostic(payload: dict) -> None:
+    _LAST_FETCH_DIAGNOSTICS.append(payload)
+    del _LAST_FETCH_DIAGNOSTICS[:-20]
+
+
+def get_last_official_fetch_diagnostics() -> list[dict]:
+    return list(_LAST_FETCH_DIAGNOSTICS)
+
+
+def _rt_code_ok(value: Any) -> bool:
+    text = str(value).strip()
+    return text in {"0", "00", "000", "0000"}
 
 
 def _draw_date(open_date: str, d_date: str | None) -> str:
@@ -92,6 +107,13 @@ def fetch_official_bingo_results(
     query_date = open_date.isoformat() if isinstance(open_date, date) else str(open_date)
     page_num = max(1, int(page_num or 1))
     page_size = max(1, min(int(page_size or 10), 100))
+    diagnostic = {
+        "open_date": query_date,
+        "page_num": page_num,
+        "page_size": page_size,
+        "ok": False,
+        "parsed_count": 0,
+    }
     try:
         params = {
             "openDate": query_date,
@@ -108,15 +130,31 @@ def fetch_official_bingo_results(
             ),
         }
         result = safe_get_json(OFFICIAL_BINGO_URL, params=params, headers=headers)
+        diagnostic.update(
+            {
+                "http_ok": result.get("ok"),
+                "error_type": result.get("error_type"),
+                "message": result.get("message"),
+                "elapsed_ms": result.get("elapsed_ms"),
+                "ssl_fallback": result.get("ssl_fallback"),
+                "attempts": result.get("attempts"),
+            }
+        )
         if not result.get("ok"):
             logger.warning("official bingo api fetch skipped: %s", result)
+            _remember_diagnostic(diagnostic)
             return []
         payload = result.get("data") or {}
-        if payload.get("rtCode") != 0:
+        diagnostic["rt_code"] = payload.get("rtCode")
+        if not _rt_code_ok(payload.get("rtCode")):
             logger.error("official bingo api returned error: %s", payload)
+            diagnostic["message"] = payload.get("rtMsg") or "rt_code_error"
+            _remember_diagnostic(diagnostic)
             return []
 
         rows = ((payload.get("content") or {}).get("bingoQueryResult") or [])
+        diagnostic["row_count"] = len(rows)
+        diagnostic["total_size"] = (payload.get("content") or {}).get("totalSize")
         draws = []
         for row in rows:
             issue = row.get("drawTerm")
@@ -140,7 +178,13 @@ def fetch_official_bingo_results(
                     "raw_json": row,
                 }
             )
+        diagnostic["ok"] = True
+        diagnostic["parsed_count"] = len(draws)
+        _remember_diagnostic(diagnostic)
         return draws
-    except Exception:
+    except Exception as exc:
+        diagnostic["error_type"] = exc.__class__.__name__
+        diagnostic["message"] = str(exc)
+        _remember_diagnostic(diagnostic)
         logger.exception("official bingo api fetch failed")
         return []

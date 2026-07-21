@@ -42,10 +42,31 @@ def test_safe_get_json_success(monkeypatch):
     assert result["data"] == {"rtCode": 0}
     assert result["ssl_fallback"] is False
     assert calls[0]["verify"] is True
-    assert calls[0]["timeout"] == (5, 15)
+    assert calls[0]["timeout"] == (5, 30)
 
 
-def test_safe_get_json_ssl_failure_stays_verified_true_only(monkeypatch):
+def test_safe_get_json_ssl_failure_uses_marked_fallback(monkeypatch):
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("verify") is True:
+            raise requests.exceptions.SSLError("certificate failed")
+        return DummyResponse({"rtCode": 0})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    result = safe_get_json("https://example.test/api")
+
+    assert result["ok"] is True
+    assert result["data"] == {"rtCode": 0}
+    assert result["ssl_fallback"] is True
+    assert len(calls) == 2
+    assert calls[0]["verify"] is True
+    assert calls[1]["verify"] is False
+
+
+def test_safe_get_json_ssl_failure_reports_fallback_failure(monkeypatch):
     calls = []
 
     def fake_get(*args, **kwargs):
@@ -58,25 +79,9 @@ def test_safe_get_json_ssl_failure_stays_verified_true_only(monkeypatch):
 
     assert result["ok"] is False
     assert result["error_type"] == "ssl"
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["verify"] is True
-
-
-def test_safe_get_json_ssl_failure_does_not_retry_unverified(monkeypatch):
-    calls = []
-
-    def fake_get(*args, **kwargs):
-        calls.append(kwargs)
-        raise requests.exceptions.SSLError("certificate failed")
-
-    monkeypatch.setattr(requests, "get", fake_get)
-
-    result = safe_get_json("https://example.test/api")
-
-    assert result["ok"] is False
-    assert result["error_type"] == "ssl"
-    assert len(calls) == 1
-    assert calls[0]["verify"] is True
+    assert calls[1]["verify"] is False
 
 
 @pytest.mark.parametrize(
@@ -87,12 +92,19 @@ def test_safe_get_json_ssl_failure_does_not_retry_unverified(monkeypatch):
     ],
 )
 def test_safe_get_json_timeout(monkeypatch, exception, error_type):
-    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: (_ for _ in ()).throw(exception))
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append(kwargs)
+        raise exception
+
+    monkeypatch.setattr(requests, "get", fake_get)
 
     result = safe_get_json("https://example.test/api")
 
     assert result["ok"] is False
     assert result["error_type"] == error_type
+    assert len(calls) == 2
 
 
 def test_safe_get_json_http_error_does_not_use_ssl_fallback(monkeypatch):

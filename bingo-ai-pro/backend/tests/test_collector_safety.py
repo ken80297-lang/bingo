@@ -43,6 +43,44 @@ def test_taiwan_lottery_draw_time_parser_normalizes_to_utc():
     assert reason == "invalid_datetime_format"
 
 
+def test_taiwan_lottery_fetch_accepts_string_rt_code(monkeypatch):
+    monkeypatch.setattr(
+        taiwan_lottery_collector,
+        "safe_get_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "elapsed_ms": 12,
+            "ssl_fallback": True,
+            "attempts": 2,
+            "data": {
+                "rtCode": "0",
+                "content": {
+                    "totalSize": 1,
+                    "bingoQueryResult": [
+                        {
+                            "drawTerm": 115040897,
+                            "dDate": "0001-01-01T00:00:00",
+                            "bigShowOrder": [f"{number:02d}" for number in range(1, 21)],
+                            "openShowOrder": [f"{number:02d}" for number in range(1, 21)],
+                            "bullEyeTop": "20",
+                            "winNoOnly": True,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    draws = taiwan_lottery_collector.fetch_official_bingo_results("2026-07-21", page_num=1, page_size=100)
+    diagnostics = taiwan_lottery_collector.get_last_official_fetch_diagnostics()
+
+    assert draws[0]["issue"] == "115040897"
+    assert len(draws[0]["numbers"]) == 20
+    assert diagnostics[-1]["ok"] is True
+    assert diagnostics[-1]["ssl_fallback"] is True
+    assert diagnostics[-1]["parsed_count"] == 1
+
+
 def test_official_draw_upsert_keeps_existing_draw_time_when_incoming_null(tmp_path, monkeypatch):
     monkeypatch.setattr(official_draw_store, "SQLITE_PATH", tmp_path / "bingo.db")
     monkeypatch.setattr(official_draw_store, "_cloud_enabled", lambda: False)
@@ -229,6 +267,22 @@ def test_catch_up_deadline_skips_downstream(monkeypatch):
     assert result["deadline_exceeded"] is True
     assert result["verification"]["status"] == "skipped"
     assert result["prediction"]["status"] == "skipped"
+
+
+def test_catch_up_source_error_includes_fetch_diagnostics(monkeypatch):
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115040850")
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: [])
+    monkeypatch.setattr(
+        catch_up_service,
+        "get_last_official_fetch_diagnostics",
+        lambda: [{"open_date": "2026-07-21", "error_type": "ssl", "ok": False}],
+    )
+
+    result = catch_up_service.catch_up_missing_issues()
+
+    assert result["exit_reason"] == "source_error"
+    assert result["reason"] == "source_latest_issue_unavailable"
+    assert result["source_fetch_diagnostics"][-1]["error_type"] == "ssl"
 
 
 def test_official_collector_deadline_skips_downstream(monkeypatch):
