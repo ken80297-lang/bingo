@@ -11,6 +11,7 @@ from services.catch_up_service import catch_up_missing_issues
 from services.collector_gap_service import scan_collector_gaps
 from services.collector_runtime import collector_runtime_status
 from services.latest_sync import get_latest_sync_snapshot
+from config.production_scope import production_scope_payload
 
 router = APIRouter(prefix="/api", tags=["Collectors"])
 
@@ -21,6 +22,8 @@ def api_collector_status():
     return {
         "status": "ok",
         "collector": get_collector_status(),
+        "production_scope": production_scope_payload(),
+        "test_data_ignored": True,
         **runtime,
     }
 

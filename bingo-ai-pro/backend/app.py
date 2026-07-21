@@ -45,6 +45,8 @@ from api.player_dashboard import router as player_dashboard_router
 from api.predictions import router as predictions_router
 from api.prediction_tracker import router as prediction_tracker_router
 from api.recommendation_center import router as recommendation_center_router
+from api.recovery import router as recovery_router
+from api.releases import router as releases_router
 from api.simulation import router as simulation_router
 from api.simulation_evaluation import router as simulation_evaluation_router
 from api.strategy_evolution import router as strategy_evolution_router
@@ -65,7 +67,10 @@ from database.operations_store import init_operations_tables
 from database.official_draw_store import init_official_draw_tables
 from database.prediction_history_store import init_prediction_history_tables
 from database.prediction_tracker_store import init_prediction_tracker_tables
+from database.production_scope_store import init_production_scope_tables
 from database.recommendation_center_store import init_recommendation_center_tables
+from database.recovery_store import init_recovery_tables
+from database.release_store import init_release_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
 from database.simulation_store import init_simulation_tables
 from database.strategy_evolution_store import init_strategy_evolution_tables
@@ -90,6 +95,13 @@ from services.collector_runtime import mark_scheduler_event, refresh_system_stat
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
 from services.official_verification import collect_official_today
+from services.daily_recovery import (
+    DAILY_RECOVERY_ENABLED,
+    DAILY_RECOVERY_HOUR,
+    DAILY_RECOVERY_MINUTE,
+    DAILY_RECOVERY_TIMEZONE,
+    run_daily_recovery,
+)
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
@@ -118,6 +130,8 @@ app.include_router(player_dashboard_router)
 app.include_router(predictions_router)
 app.include_router(prediction_tracker_router)
 app.include_router(recommendation_center_router)
+app.include_router(recovery_router)
+app.include_router(releases_router)
 app.include_router(simulation_router)
 app.include_router(simulation_evaluation_router)
 app.include_router(strategy_evolution_router)
@@ -291,10 +305,13 @@ def startup_event() -> None:
         init_strategy_evolution_tables()
         init_system_health_tables()
         init_operations_tables()
+        init_production_scope_tables()
         init_official_draw_tables()
         init_prediction_history_tables()
         init_learning_tables()
         init_recommendation_center_tables()
+        init_recovery_tables()
+        init_release_tables()
         init_laowanjia_feature_tables()
         init_prediction_tracker_tables()
         try:
@@ -409,6 +426,19 @@ def startup_event() -> None:
             max_instances=1,
             coalesce=True,
         )
+        if DAILY_RECOVERY_ENABLED:
+            scheduler.add_job(
+                run_daily_recovery,
+                "cron",
+                hour=DAILY_RECOVERY_HOUR,
+                minute=DAILY_RECOVERY_MINUTE,
+                timezone=DAILY_RECOVERY_TIMEZONE,
+                id="daily_recovery",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=300,
+            )
     except Exception as exc:
         print(f"Collector scheduler setup failed: {exc}")
 

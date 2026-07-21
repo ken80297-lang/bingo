@@ -16,6 +16,8 @@ from database.prediction_history_store import get_latest_verified_prediction_at_
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
 from database.prediction_history_store import is_production_prediction
+from config.production_scope import production_scope_payload
+from database.release_store import get_current_release
 from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
@@ -392,6 +394,10 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "odd_even": record.get("odd_even") or _odd_even(numbers),
         "confidence": record.get("confidence") or 0,
         "model_version": "V7",
+        "release_version": record.get("release_version"),
+        "git_commit_hash": record.get("git_commit_hash"),
+        "production_generation": record.get("production_generation"),
+        "feature_version": record.get("feature_version"),
         "model_scores": record.get("model_scores") or {},
         "winning_model": record.get("winning_model"),
         "source": record.get("source") or "production_history",
@@ -566,6 +572,11 @@ def _history_item(record: dict) -> dict:
         "source": record.get("source") or "production_history",
         "trigger": record.get("trigger") or "production_read_layer",
         "production_valid": is_production_prediction(record),
+        "release_version": record.get("release_version"),
+        "git_commit_hash": record.get("git_commit_hash"),
+        "production_generation": record.get("production_generation"),
+        "model_version": record.get("model_version"),
+        "feature_version": record.get("feature_version"),
     }
 
 
@@ -870,6 +881,8 @@ def build_player_dashboard_summary() -> dict:
     prediction_stats = _history_stats(history_records)
     prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
+    active_release = get_current_release()
+    production_scope = production_scope_payload()
 
     current = _current_draw(official)
     if current and analysis and str(analysis.get("issue") or "") != str(current.get("issue") or ""):
@@ -903,6 +916,9 @@ def build_player_dashboard_summary() -> dict:
         "generated_at": generated_at,
         "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
         "production_filtered": True,
+        "production_scope": production_scope,
+        "active_release": active_release,
+        "release": active_release,
         "current_draw": current,
         "sync": {
             "database_latest_issue": database_issue,

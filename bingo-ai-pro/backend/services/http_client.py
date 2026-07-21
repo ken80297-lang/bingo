@@ -4,9 +4,7 @@ import logging
 import time
 
 import requests
-import urllib3
 from requests.exceptions import HTTPError, SSLError, Timeout
-from urllib3.exceptions import InsecureRequestWarning
 
 logger = logging.getLogger(__name__)
 
@@ -43,27 +41,8 @@ def safe_get_json(
             "ssl_fallback": False,
         }
     except SSLError as exc:
-        logger.warning("official http ssl verification failed; retrying once without certificate verification")
-        try:
-            urllib3.disable_warnings(InsecureRequestWarning)
-            response = requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
-            response.raise_for_status()
-            data = response.json()
-            return {
-                "ok": True,
-                "source": "official",
-                "data": data,
-                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
-                "ssl_fallback": True,
-            }
-        except Timeout as retry_exc:
-            return _error("timeout", str(retry_exc), start)
-        except HTTPError as retry_exc:
-            return _error("http", str(retry_exc), start, retryable=False)
-        except ValueError as retry_exc:
-            return _error("parse", str(retry_exc), start, retryable=False)
-        except Exception as retry_exc:
-            return _error("ssl", str(retry_exc), start)
+        logger.warning("official http ssl verification failed; keeping result pending_verification")
+        return _error("ssl", str(exc), start)
     except Timeout as exc:
         return _error("timeout", str(exc), start)
     except HTTPError as exc:

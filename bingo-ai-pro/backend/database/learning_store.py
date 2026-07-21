@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from config.production_scope import get_production_generation, is_issue_in_current_generation, is_pending_issue
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +102,16 @@ def init_learning_tables() -> dict:
                         "model_weight": "jsonb",
                         "predicted_count": "integer default 0",
                         "official_coverage": "double precision default 0",
+                        "production_generation": "integer default 2",
+                        "sample_issue": "text",
+                        "snapshot_status": "text",
+                        "feature_version": "text",
+                        "model_version_before": "text",
+                        "model_version_after": "text",
+                        "weight_changed": "boolean default false",
+                        "applied_to_prediction_issue": "text",
+                        "resolved_at": "timestamptz",
+                        "resolved_to_issue": "text",
                     }.items():
                         cur.execute(
                             f"alter table learning_history add column if not exists {column} {column_type}",
@@ -164,6 +176,16 @@ def init_learning_tables() -> dict:
                 "model_weight": "text",
                 "predicted_count": "integer default 0",
                 "official_coverage": "real default 0",
+                "production_generation": "integer default 2",
+                "sample_issue": "text",
+                "snapshot_status": "text",
+                "feature_version": "text",
+                "model_version_before": "text",
+                "model_version_after": "text",
+                "weight_changed": "integer default 0",
+                "applied_to_prediction_issue": "text",
+                "resolved_at": "text",
+                "resolved_to_issue": "text",
             }.items():
                 if column not in existing:
                     conn.execute(f"alter table learning_history add column {column} {column_type}")
@@ -208,6 +230,16 @@ def _record_params(record: dict) -> tuple:
         record.get("learned_status"),
         record.get("learned_at"),
         record.get("error_message"),
+        int(record.get("production_generation") or get_production_generation()),
+        record.get("sample_issue") or record.get("issue"),
+        record.get("snapshot_status") or ("pending" if is_pending_issue(record.get("issue")) else "saved"),
+        record.get("feature_version"),
+        record.get("model_version_before"),
+        record.get("model_version_after") or record.get("model_version"),
+        bool(record.get("weight_changed", False)),
+        record.get("applied_to_prediction_issue") or record.get("target_issue"),
+        record.get("resolved_at"),
+        record.get("resolved_to_issue"),
     )
 
 
@@ -227,12 +259,16 @@ def upsert_learning_record(record: dict) -> dict:
                             predicted_count, hit_count, precision_score, official_coverage,
                             rank_score, top_n, prediction_snapshot,
                             analysis_snapshot, verification_status, learned_status, learned_at,
-                            error_message, updated_at
+                            error_message, production_generation, sample_issue, snapshot_status,
+                            feature_version, model_version_before, model_version_after,
+                            weight_changed, applied_to_prediction_issue, resolved_at,
+                            resolved_to_issue, updated_at
                         )
                         values (
                             %s, %s, %s, %s, %s, %s, %s, %s, %s,
                             %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
-                            %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, now()
+                            %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
                         )
                         on conflict (issue, model_name, model_version, prediction_type, top_n)
                         do update set
@@ -257,6 +293,16 @@ def upsert_learning_record(record: dict) -> dict:
                             learned_status = excluded.learned_status,
                             learned_at = excluded.learned_at,
                             error_message = excluded.error_message,
+                            production_generation = excluded.production_generation,
+                            sample_issue = excluded.sample_issue,
+                            snapshot_status = excluded.snapshot_status,
+                            feature_version = excluded.feature_version,
+                            model_version_before = excluded.model_version_before,
+                            model_version_after = excluded.model_version_after,
+                            weight_changed = excluded.weight_changed,
+                            applied_to_prediction_issue = excluded.applied_to_prediction_issue,
+                            resolved_at = excluded.resolved_at,
+                            resolved_to_issue = excluded.resolved_to_issue,
                             updated_at = now()
                         returning id
                         """,
@@ -282,9 +328,12 @@ def upsert_learning_record(record: dict) -> dict:
                     predicted_count, hit_count, precision_score, official_coverage,
                     rank_score, top_n, prediction_snapshot,
                     analysis_snapshot, verification_status, learned_status, learned_at,
-                    error_message, updated_at
+                    error_message, production_generation, sample_issue, snapshot_status,
+                    feature_version, model_version_before, model_version_after,
+                    weight_changed, applied_to_prediction_issue, resolved_at,
+                    resolved_to_issue, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(issue, model_name, model_version, prediction_type, top_n)
                 do update set
                     draw_time = excluded.draw_time,
@@ -308,6 +357,16 @@ def upsert_learning_record(record: dict) -> dict:
                     learned_status = excluded.learned_status,
                     learned_at = excluded.learned_at,
                     error_message = excluded.error_message,
+                    production_generation = excluded.production_generation,
+                    sample_issue = excluded.sample_issue,
+                    snapshot_status = excluded.snapshot_status,
+                    feature_version = excluded.feature_version,
+                    model_version_before = excluded.model_version_before,
+                    model_version_after = excluded.model_version_after,
+                    weight_changed = excluded.weight_changed,
+                    applied_to_prediction_issue = excluded.applied_to_prediction_issue,
+                    resolved_at = excluded.resolved_at,
+                    resolved_to_issue = excluded.resolved_to_issue,
                     updated_at = excluded.updated_at
                 """,
                 (*_record_params(record), _now()),
@@ -375,6 +434,16 @@ def _row_to_record(row: Any) -> dict:
         "model_weight": _json_loads(row[26]) if len(row) > 26 else {},
         "predicted_count": row[27] if len(row) > 27 else 0,
         "official_coverage": row[28] if len(row) > 28 else 0,
+        "production_generation": row[29] if len(row) > 29 and row[29] is not None else get_production_generation(),
+        "sample_issue": row[30] if len(row) > 30 else None,
+        "snapshot_status": row[31] if len(row) > 31 else None,
+        "feature_version": row[32] if len(row) > 32 else None,
+        "model_version_before": row[33] if len(row) > 33 else None,
+        "model_version_after": row[34] if len(row) > 34 else None,
+        "weight_changed": bool(row[35]) if len(row) > 35 else False,
+        "applied_to_prediction_issue": row[36] if len(row) > 36 else None,
+        "resolved_at": str(row[37]) if len(row) > 37 and row[37] is not None else None,
+        "resolved_to_issue": row[38] if len(row) > 38 else None,
     }
 
 
@@ -392,6 +461,8 @@ def get_learning_records(
     offset = max(0, int(offset or 0))
     clauses = []
     params: list[Any] = []
+    clauses.append("production_generation = %s")
+    params.append(get_production_generation())
     for column, value in (
         ("issue", issue),
         ("model_name", model_name),
@@ -412,7 +483,9 @@ def get_learning_records(
                analysis_snapshot, verification_status, learned_status, learned_at,
                created_at, updated_at, error_message, source_issue, target_issue,
                history_cutoff_issue, prediction_created_at, model_weight,
-               predicted_count, official_coverage
+               predicted_count, official_coverage, production_generation, sample_issue,
+               snapshot_status, feature_version, model_version_before, model_version_after,
+               weight_changed, applied_to_prediction_issue, resolved_at, resolved_to_issue
         from learning_history
         {where}
         order by issue desc, model_name asc, top_n asc
@@ -426,7 +499,9 @@ def get_learning_records(
                analysis_snapshot, verification_status, learned_status, learned_at,
                created_at, updated_at, error_message, source_issue, target_issue,
                history_cutoff_issue, prediction_created_at, model_weight,
-               predicted_count, official_coverage
+               predicted_count, official_coverage, production_generation, sample_issue,
+               snapshot_status, feature_version, model_version_before, model_version_after,
+               weight_changed, applied_to_prediction_issue, resolved_at, resolved_to_issue
         from learning_history
         {where.replace('%s', '?')}
         order by issue desc, model_name asc, top_n asc
@@ -451,6 +526,27 @@ def get_learning_status_counts() -> dict:
             max(issue) as latest_learned_issue,
             max(learned_at) as latest_learned_at
         from learning_history
+        where production_generation = %s
+          and issue not like 'pending:%%'
+          and issue not like '99%%'
+        """,
+        (get_production_generation(),),
+        sqlite_sql="""
+        select
+            count(*) as total_records,
+            sum(case when learned_status = 'learned' then 1 else 0 end) as learned_records,
+            sum(case when learned_status = 'pending' then 1 else 0 end) as pending_records,
+            sum(case when learned_status = 'missing_snapshot' then 1 else 0 end) as missing_snapshot_records,
+            sum(case when learned_status = 'failed' then 1 else 0 end) as failed_records,
+            count(distinct model_name) as model_count,
+            sum(case when prediction_type = 'live_prediction' then 1 else 0 end) as live_prediction_count,
+            sum(case when prediction_type = 'historical_backtest' then 1 else 0 end) as historical_backtest_count,
+            max(issue) as latest_learned_issue,
+            max(learned_at) as latest_learned_at
+        from learning_history
+        where production_generation = ?
+          and issue not like 'pending:%'
+          and issue not like '99%'
         """,
     )
     if not rows:

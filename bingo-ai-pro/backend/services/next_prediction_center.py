@@ -15,6 +15,8 @@ from database.prediction_history_store import (
     is_production_prediction,
 )
 from database.recommendation_center_store import get_latest_recommendation_run
+from config.production_scope import production_scope_payload
+from database.release_store import get_current_release
 from services.prediction_refresh import prediction_refresh_status
 
 logger = logging.getLogger(__name__)
@@ -251,6 +253,8 @@ def build_next_prediction_dashboard() -> dict:
     analysis = None
     timings["analysis_ms"] = 0.0
     stats = _fast_history_stats() if latest_draw else get_prediction_history_statistics(100)
+    release = get_current_release()
+    scope = production_scope_payload()
 
     if not prediction:
         message = "尚未累積 AI 預測紀錄，系統已開始保存後續推薦。"
@@ -267,6 +271,8 @@ def build_next_prediction_dashboard() -> dict:
             "reasons": [message],
             "alerts": {},
             "history": stats,
+            "release": release,
+            "production_scope": scope,
             "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
         }
 
@@ -292,6 +298,11 @@ def build_next_prediction_dashboard() -> dict:
             "odd_even": prediction.get("odd_even") or _odd_even(numbers),
             "model_scores": prediction.get("model_scores") or {},
             "winning_model": prediction.get("winning_model"),
+            "release_version": prediction.get("release_version") or release.get("release_version"),
+            "git_commit_hash": prediction.get("git_commit_hash") or release.get("git_commit_hash"),
+            "production_generation": prediction.get("production_generation") or scope.get("production_generation"),
+            "model_version": prediction.get("model_version") or release.get("model_version"),
+            "feature_version": prediction.get("feature_version") or release.get("feature_version"),
             "refresh_status": refresh.get("refresh_status"),
             "refresh_reason": refresh.get("refresh_reason"),
             "last_refresh_attempt": refresh.get("last_refresh_attempt"),
@@ -320,6 +331,8 @@ def build_next_prediction_dashboard() -> dict:
         "confidence": prediction.get("confidence") or 0,
         "alerts": _alerts(numbers, super_number),
         "history": stats,
+        "release": release,
+        "production_scope": scope,
         "fallback": latest_history is None,
         "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
     }

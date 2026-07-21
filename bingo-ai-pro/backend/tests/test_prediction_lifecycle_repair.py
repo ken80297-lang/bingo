@@ -168,8 +168,14 @@ def test_live_verification_updates_by_target_issue_without_history_selector(monk
                 super_number_hit integer,
                 verification_version text,
                 learning_used integer,
-                model_score real
-            );
+                model_score real,
+                production_generation integer default 2,
+                production_valid integer default 1,
+                release_version text,
+                git_commit_hash text,
+                model_version text,
+                feature_version text
+                );
             """
         )
         conn.execute(
@@ -184,7 +190,7 @@ def test_live_verification_updates_by_target_issue_without_history_selector(monk
                 missed_numbers, prediction_count, hit_rate, super_number_hit,
                 verification_version, learning_used, model_score
             ) values (
-                1, '115000100', '115000101', '2026-07-17T00:00:00', 'V7', 88,
+                1, '115040800', '115040801', '2026-07-17T00:00:00', 'V7', 88,
                 '[1,2,3,4,5]', 7, '[1,2,3]', '[1,2,3,4]', '[]',
                 '[]', '[]', '[]', 'balanced', 'balanced', '[]',
                 '[]', 0, 0, 0, 0,
@@ -202,7 +208,7 @@ def test_live_verification_updates_by_target_issue_without_history_selector(monk
     monkeypatch.setattr(prediction_history_store, "get_prediction_history_records", lambda limit: [])
 
     result = prediction_history_store.update_prediction_history_result(
-        {"issue": "115000101", "numbers": list(range(1, 21)), "super_number": 7}
+        {"issue": "115040801", "numbers": list(range(1, 21)), "super_number": 7}
     )
 
     assert result["updated"] == 1
@@ -212,7 +218,7 @@ def test_live_verification_updates_by_target_issue_without_history_selector(monk
             "select prediction_status, verified_issue, winning_numbers, matched_numbers, missed_numbers, hit_count from prediction_history where id = 1"
         ).fetchone()
     assert row[0] == "verified"
-    assert row[1] == "115000101"
+    assert row[1] == "115040801"
     assert row[5] == 5
     assert row[2] != "[]"
     assert row[3] != "[]"

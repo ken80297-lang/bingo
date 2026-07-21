@@ -278,10 +278,10 @@ def _run_prediction_reconcile(latest: dict, source_issue: str, target_issue: str
 
 
 def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
-    with _STATE_LOCK:
-        attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
     with _RECONCILE_LOCK:
         if source_issue in _RECONCILE_IN_FLIGHT:
+            with _STATE_LOCK:
+                attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0)
             return {
                 "status": "queued",
                 "refresh_status": "queued",
@@ -291,6 +291,8 @@ def _queue_prediction_reconcile(latest: dict, source_issue: str, target_issue: s
                 "attempt_count": attempt_count,
             }
         _RECONCILE_IN_FLIGHT.add(source_issue)
+    with _STATE_LOCK:
+        attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
     queued_at = _now()
     _update_state(
         source_issue=source_issue,

@@ -318,6 +318,11 @@ def _learning_status() -> dict:
 def _minimal_system_status_payload(scheduler_status: str = "unknown") -> dict:
     runtime = collector_runtime_status()
     now = _now()
+    from config.production_scope import production_scope_payload
+    from database.release_store import get_current_release
+    from services.daily_recovery import get_recovery_status
+    from services.prediction_service import prediction_lock_status
+
     return {
         "status": "ok",
         "provider": "kuaishou",
@@ -341,6 +346,10 @@ def _minimal_system_status_payload(scheduler_status: str = "unknown") -> dict:
         "collector": {"status": "unknown"},
         "data_quality": {"status": "unknown"},
         "learning": {"status": "unknown"},
+        "production_scope": production_scope_payload(),
+        "release": get_current_release(),
+        "daily_recovery": get_recovery_status(),
+        "prediction_lock": prediction_lock_status(),
         "cache_refreshed_at": now,
     }
 
@@ -366,6 +375,10 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
         from database.prediction_history_store import get_prediction_history_count
         from db import get_statistics
         from services.catch_up_service import get_catch_up_status
+        from config.production_scope import production_scope_payload
+        from database.release_store import get_current_release
+        from services.daily_recovery import get_recovery_status, build_health_report
+        from services.prediction_service import prediction_lock_status
 
         try:
             stats = get_statistics()
@@ -401,6 +414,11 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
             "collector": get_collector_status(),
             "data_quality": get_data_quality_status(),
             "learning": _learning_status(),
+            "production_scope": production_scope_payload(),
+            "release": get_current_release(),
+            "daily_recovery": get_recovery_status(),
+            "prediction_lock": prediction_lock_status(),
+            "ai_daily_health_report": build_health_report(),
             "cache_refreshed_at": _now(),
         }
         duration_ms = round((time.perf_counter() - start) * 1000, 2)

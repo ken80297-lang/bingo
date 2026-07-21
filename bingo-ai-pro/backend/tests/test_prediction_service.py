@@ -16,8 +16,8 @@ def _recommendation(numbers=None):
     return {
         "status": "ok",
         "recommendation": {
-            "issue": "115000100",
-            "target_issue": "115000101",
+            "issue": "115040800",
+            "target_issue": "115040801",
             "best_strategy": "unit-test",
             "confidence": 88,
             "super_recommendation": {"recommended": [{"number": 7}]},
@@ -50,13 +50,13 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: events.append(kwargs))
 
     result = prediction_service.create_for_official_draw(
-        "115000100",
+        "115040800",
         source="official_collector",
         trigger="draw_collected",
     )
 
     assert result["status"] == "created"
-    assert result["target_issue"] == "115000101"
+    assert result["target_issue"] == "115040801"
     assert result["recommended_count"] == 20
     assert contexts[0]["ensure_simulation"] is False
     assert saved[0][1] == "prediction_service"
@@ -71,10 +71,10 @@ def test_prediction_service_skips_invalid_target(monkeypatch):
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
 
     result = prediction_service.create_for_official_draw(
-        "115000100",
+        "115040800",
         source="unit",
         trigger="test",
-        target_issue="115000200",
+        target_issue="115040820",
     )
 
     assert result["status"] == "skipped"
@@ -87,7 +87,7 @@ def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
 
-    result = prediction_service.create_for_official_draw("115000100", source="unit", trigger="test")
+    result = prediction_service.create_for_official_draw("115040800", source="unit", trigger="test")
 
     assert result["status"] == "skipped"
     assert result["skip_reason"] == "insufficient_recommendations"
@@ -98,13 +98,13 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
         "get_prediction_for_source_target",
-        lambda source_issue, target_issue: {"id": 9, "issue": "115000100", "prediction_issue": "115000101", "recommend_numbers": list(range(1, 21)), "prediction_status": "waiting_draw"},
+        lambda source_issue, target_issue: {"id": 9, "issue": "115040800", "prediction_issue": "115040801", "recommend_numbers": list(range(1, 21)), "prediction_status": "waiting_draw"},
     )
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not calculate")))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
 
-    result = prediction_service.create_for_official_draw("115000100", source="unit", trigger="test")
+    result = prediction_service.create_for_official_draw("115040800", source="unit", trigger="test")
 
     assert result["status"] == "already_exists"
     assert result["prediction_id"] == 9
@@ -113,8 +113,8 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
 def test_prediction_service_persists_requested_source_and_target_from_fallback(monkeypatch):
     saved = []
     fallback = _recommendation()
-    fallback["recommendation"]["issue"] = "115000001"
-    fallback["recommendation"]["target_issue"] = "115000002"
+    fallback["recommendation"]["issue"] = "115040781"
+    fallback["recommendation"]["target_issue"] = "115040782"
 
     monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: fallback)
@@ -122,15 +122,15 @@ def test_prediction_service_persists_requested_source_and_target_from_fallback(m
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
 
     result = prediction_service.create_for_official_draw(
-        "115000200",
+        "115040820",
         source="official_collector",
         trigger="official_draw_saved",
-        target_issue="115000201",
+        target_issue="115040821",
     )
 
     assert result["status"] == "created"
-    assert saved[0]["issue"] == "115000200"
-    assert saved[0]["prediction_issue"] == "115000201"
+    assert saved[0]["issue"] == "115040820"
+    assert saved[0]["prediction_issue"] == "115040821"
 
 
 def test_writer_guard_rejects_direct_prediction_history_write(monkeypatch):
@@ -140,8 +140,8 @@ def test_writer_guard_rejects_direct_prediction_history_write(monkeypatch):
 
     result = prediction_history_store.save_prediction_history(
         {
-            "issue": "115000100",
-            "prediction_issue": "115000101",
+            "issue": "115040800",
+            "prediction_issue": "115040801",
             "recommend_numbers": list(range(1, 21)),
             "strategy": "unit-test",
         }
@@ -217,8 +217,14 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
                 super_number_hit integer,
                 verification_version text,
                 learning_used integer,
-                model_score real
-            );
+                model_score real,
+                production_generation integer default 2,
+                production_valid integer default 1,
+                release_version text,
+                git_commit_hash text,
+                model_version text,
+                feature_version text
+                );
             create table official_draw_history (issue text primary key);
             create table operation_events (
                 id integer primary key,
@@ -235,7 +241,7 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
         numbers = "[" + ",".join(str(n) for n in range(1, 21)) + "]"
         rows = [
             (1, "120", "121", "unit", "2026-07-17T10:00:00"),
-            (2, "115039899", "115039900", "V7", "2026-07-17T09:00:00"),
+            (2, "115040899", "115040900", "V7", "2026-07-17T09:00:00"),
             (3, "215039999", "215040000", "simulation", "2026-07-17T11:00:00"),
         ]
         for row_id, issue, target, strategy, created_at in rows:
@@ -269,8 +275,8 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
             insert into operation_events (
                 id, issue, component, event_type, status, message, duration_ms, created_at
             ) values (
-                1, '115039899', 'prediction', 'prediction_created', 'ok',
-                '{"event_type":"prediction_created","based_on_issue":"115039899","target_issue":"115039900","source":"official_collector","trigger":"official_draw_saved","recommended_count":20}',
+                1, '115040899', 'prediction', 'prediction_created', 'ok',
+                '{"event_type":"prediction_created","based_on_issue":"115040899","target_issue":"115040900","source":"official_collector","trigger":"official_draw_saved","recommended_count":20}',
                 1, '2026-07-17T09:01:00'
             )
             """
@@ -283,12 +289,12 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
     latest = prediction_history_store.get_latest_prediction_history()
     records = prediction_history_store.get_prediction_history_records(10)
 
-    assert latest["issue"] == "115039899"
-    assert latest["prediction_issue"] == "115039900"
+    assert latest["issue"] == "115040899"
+    assert latest["prediction_issue"] == "115040900"
     assert latest["source"] == "official_collector"
     assert latest["trigger"] == "official_draw_saved"
     assert latest["read_layer"]["production_filtered"] is True
-    assert [record["prediction_issue"] for record in records] == ["115039900"]
+    assert [record["prediction_issue"] for record in records] == ["115040900"]
 
 
 def test_latest_prediction_history_includes_waiting_draw_without_official_result(monkeypatch, tmp_path):
@@ -338,8 +344,14 @@ def test_latest_prediction_history_includes_waiting_draw_without_official_result
                 super_number_hit integer,
                 verification_version text,
                 learning_used integer,
-                model_score real
-            );
+                model_score real,
+                production_generation integer default 2,
+                production_valid integer default 1,
+                release_version text,
+                git_commit_hash text,
+                model_version text,
+                feature_version text
+                );
             create table official_draw_history (issue text primary key);
             create table operation_events (
                 id integer primary key,
@@ -366,7 +378,7 @@ def test_latest_prediction_history_includes_waiting_draw_without_official_result
                 missed_numbers, prediction_count, hit_rate, super_number_hit,
                 verification_version, learning_used, model_score
             ) values (
-                1, '115040100', '115040101', '2026-07-17T09:00:00', 'V7', 88,
+                1, '115040900', '115040901', '2026-07-17T09:00:00', 'V7', 88,
                 ?, 7, '[1,2,3]', '[1,2,3,4]', '[]',
                 '[]', '[]', '[]', 'balanced', 'balanced', '[]',
                 '[]', 0, 0, 0, 0,
@@ -385,15 +397,15 @@ def test_latest_prediction_history_includes_waiting_draw_without_official_result
 
     latest = prediction_history_store.get_latest_prediction_history()
 
-    assert latest["issue"] == "115040100"
-    assert latest["prediction_issue"] == "115040101"
+    assert latest["issue"] == "115040900"
+    assert latest["prediction_issue"] == "115040901"
     assert latest["prediction_status"] == "waiting_draw"
 
 
 def test_is_production_prediction_allows_legacy_source_null_with_official_shape():
     assert prediction_history_store.is_production_prediction({
-        "issue": "115039899",
-        "prediction_issue": "115039900",
+        "issue": "115040899",
+        "prediction_issue": "115040900",
         "recommend_numbers": list(range(1, 21)),
         "source": None,
         "trigger": None,
@@ -409,7 +421,7 @@ def test_recommendation_api_preview_does_not_persist_prediction(monkeypatch):
     monkeypatch.setattr(
         recommendation_api,
         "generate_recommendation_center",
-        lambda **kwargs: {"status": "ok", "recommendation": {"issue": "115000100"}, "persisted": kwargs.get("persist", True)},
+        lambda **kwargs: {"status": "ok", "recommendation": {"issue": "115040800"}, "persisted": kwargs.get("persist", True)},
     )
 
     result = recommendation_api.api_recommendation_center_generate()
@@ -439,13 +451,13 @@ def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     monkeypatch.setattr(prediction_service_module, "create_for_official_draw", fake_create)
 
     result = prediction_refresh.refresh_next_prediction_for_draw(
-        {"issue": "115000100", "numbers": list(range(1, 21))}
+        {"issue": "115040800", "numbers": list(range(1, 21))}
     )
 
     assert result["status"] == "created"
     assert result["refresh_status"] == "ready"
-    assert calls[0][0] == "115000100"
-    assert calls[0][1]["target_issue"] == "115000101"
+    assert calls[0][0] == "115040800"
+    assert calls[0][1]["target_issue"] == "115040801"
     assert calls[0][1]["source"] == "official_collector"
     assert calls[0][1]["trigger"] == "official_draw_saved"
     assert "prediction_service_called" in [event[0] for event in events]

@@ -10,6 +10,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from config.production_scope import (
+    get_production_generation,
+    get_production_start_issue,
+    is_issue_in_current_generation,
+)
+from config.release import FEATURE_VERSION, GIT_COMMIT_HASH, MODEL_VERSION, RELEASE_VERSION
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +42,14 @@ LIFECYCLE_COLUMNS = {
     "verification_version": ("text", "text"),
     "learning_used": ("boolean default false", "integer default 0"),
     "model_score": ("double precision default 0", "real default 0"),
+}
+TRACEABILITY_COLUMNS = {
+    "production_generation": ("integer default 2", "integer default 2"),
+    "production_valid": ("boolean default true", "integer default 1"),
+    "release_version": ("text", "text"),
+    "git_commit_hash": ("text", "text"),
+    "model_version": ("text", "text"),
+    "feature_version": ("text", "text"),
 }
 ALLOWED_PREDICTION_STATUSES = {"pending", "waiting_draw", "verified", "expired", "failed"}
 
@@ -98,6 +113,8 @@ def _valid_production_issue(value: Any) -> str | None:
     issue = _valid_issue(value)
     if not issue or len(issue) < MIN_PRODUCTION_ISSUE_LENGTH:
         return None
+    if not is_issue_in_current_generation(issue):
+        return None
     return issue
 
 
@@ -135,6 +152,8 @@ def _validate_prediction_item(item: dict) -> tuple[bool, str | None]:
             return False, "target_unconfirmed"
     except Exception:
         return False, "target_unconfirmed"
+    if not is_issue_in_current_generation(based_on) or not is_issue_in_current_generation(target):
+        return False, "outside_current_generation"
     recommended = _normalize_numbers(item.get("recommend_numbers", []))
     if not recommended:
         return False, "insufficient_draw_data"
@@ -275,6 +294,11 @@ def init_prediction_history_tables() -> dict:
                             f"alter table prediction_history add column if not exists {column} {cloud_type}",
                             prepare=False,
                         )
+                    for column, (cloud_type, _) in TRACEABILITY_COLUMNS.items():
+                        cur.execute(
+                            f"alter table prediction_history add column if not exists {column} {cloud_type}",
+                            prepare=False,
+                        )
                     for index_sql in (
                         "create index if not exists idx_prediction_history_created_at on prediction_history (created_at)",
                         "create index if not exists idx_prediction_history_updated_at on prediction_history (updated_at)",
@@ -332,6 +356,9 @@ def init_prediction_history_tables() -> dict:
             for column, (_, sqlite_type) in LIFECYCLE_COLUMNS.items():
                 if column not in existing:
                     conn.execute(f"alter table prediction_history add column {column} {sqlite_type}")
+            for column, (_, sqlite_type) in TRACEABILITY_COLUMNS.items():
+                if column not in existing:
+                    conn.execute(f"alter table prediction_history add column {column} {sqlite_type}")
             for index_sql in (
                 "create index if not exists idx_prediction_history_created_at on prediction_history (created_at)",
                 "create index if not exists idx_prediction_history_updated_at on prediction_history (updated_at)",
@@ -380,6 +407,12 @@ def _prediction_params(item: dict) -> tuple:
         item.get("prediction_status") or "waiting_draw",
         len(recommended or []),
         bool(item.get("learning_used", False)),
+        int(item.get("production_generation") or get_production_generation()),
+        bool(item.get("production_valid", True)),
+        item.get("release_version") or RELEASE_VERSION,
+        item.get("git_commit_hash") or GIT_COMMIT_HASH,
+        item.get("model_version") or MODEL_VERSION,
+        item.get("feature_version") or FEATURE_VERSION,
     )
 
 
@@ -419,11 +452,13 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                             recommend_numbers, super_number, three_star, four_star, twins,
                             consecutive, patch_numbers, tails, big_small, odd_even, reasons,
                             model_scores, winning_model, prediction_status, prediction_count,
-                            learning_used, updated_at
+                            learning_used, production_generation, production_valid,
+                            release_version, git_commit_hash, model_version, feature_version,
+                            updated_at
                         )
                         values (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb,
                                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb,
-                                %s::jsonb, %s, %s, %s, %s, now())
+                                %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                         on conflict (prediction_issue, strategy) do update set
                             issue = excluded.issue,
                             predict_time = excluded.predict_time,
@@ -447,6 +482,12 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                                 else excluded.prediction_status
                             end,
                             prediction_count = excluded.prediction_count,
+                            production_generation = excluded.production_generation,
+                            production_valid = excluded.production_valid,
+                            release_version = excluded.release_version,
+                            git_commit_hash = excluded.git_commit_hash,
+                            model_version = excluded.model_version,
+                            feature_version = excluded.feature_version,
                             updated_at = now()
                         returning id
                         """,
@@ -478,9 +519,11 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     recommend_numbers, super_number, three_star, four_star, twins,
                     consecutive, patch_numbers, tails, big_small, odd_even, reasons,
                     model_scores, winning_model, prediction_status, prediction_count,
-                    learning_used, updated_at
+                    learning_used, production_generation, production_valid,
+                    release_version, git_commit_hash, model_version, feature_version,
+                    updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(prediction_issue, strategy) do update set
                     issue = excluded.issue,
                     predict_time = excluded.predict_time,
@@ -504,6 +547,12 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                         else excluded.prediction_status
                     end,
                     prediction_count = excluded.prediction_count,
+                    production_generation = excluded.production_generation,
+                    production_valid = excluded.production_valid,
+                    release_version = excluded.release_version,
+                    git_commit_hash = excluded.git_commit_hash,
+                    model_version = excluded.model_version,
+                    feature_version = excluded.feature_version,
                     updated_at = excluded.updated_at
                 """,
                 (*_prediction_params(item), _now()),
@@ -600,6 +649,12 @@ def _row_to_prediction(row: Any) -> dict:
         "verification_version": row[35] if len(row) > 35 else None,
         "learning_used": bool(row[36]) if len(row) > 36 else False,
         "model_score": row[37] if len(row) > 37 else None,
+        "production_generation": row[38] if len(row) > 38 and row[38] is not None else get_production_generation(),
+        "production_valid": bool(row[39]) if len(row) > 39 else True,
+        "release_version": row[40] if len(row) > 40 else RELEASE_VERSION,
+        "git_commit_hash": row[41] if len(row) > 41 else GIT_COMMIT_HASH,
+        "model_version": row[42] if len(row) > 42 else MODEL_VERSION,
+        "feature_version": row[43] if len(row) > 43 else FEATURE_VERSION,
     }
 
 
@@ -667,7 +722,9 @@ PREDICTION_SELECT_COLUMNS = """
         accuracy, created_at, updated_at, model_scores, winning_model,
         prediction_status, verified_issue, verified_at, matched_numbers,
         missed_numbers, prediction_count, hit_rate, super_number_hit,
-        verification_version, learning_used, model_score
+        verification_version, learning_used, model_score,
+        production_generation, production_valid, release_version,
+        git_commit_hash, model_version, feature_version
 """
 
 PREDICTION_SELECT_COLUMNS_P = """
@@ -678,7 +735,9 @@ PREDICTION_SELECT_COLUMNS_P = """
         p.accuracy, p.created_at, p.updated_at, p.model_scores, p.winning_model,
         p.prediction_status, p.verified_issue, p.verified_at, p.matched_numbers,
         p.missed_numbers, p.prediction_count, p.hit_rate, p.super_number_hit,
-        p.verification_version, p.learning_used, p.model_score
+        p.verification_version, p.learning_used, p.model_score,
+        p.production_generation, p.production_valid, p.release_version,
+        p.git_commit_hash, p.model_version, p.feature_version
 """
 
 
@@ -739,6 +798,8 @@ def get_latest_prediction_history() -> dict | None:
     if not rows:
         return None
     record = _row_to_prediction(rows[0])
+    if not is_production_prediction(record):
+        return None
     record["read_layer"] = {
         "data_source": "database",
         "table_name": "prediction_history",
@@ -807,6 +868,8 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
     records = []
     for row in rows:
         record = _row_to_prediction(row)
+        if not is_production_prediction(record):
+            continue
         record["read_layer"] = {
             "data_source": "database",
             "table_name": "prediction_history",

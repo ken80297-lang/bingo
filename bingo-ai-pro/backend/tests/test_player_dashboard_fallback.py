@@ -12,8 +12,8 @@ from services import player_dashboard
 def test_player_dashboard_timeout_uses_last_good_cache(monkeypatch):
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS", 0.01)
     player_dashboard._PLAYER_COMPONENT_CACHE["latest_prediction"] = {
-        "issue": "115000001",
-        "prediction_issue": "115000002",
+        "issue": "115040781",
+        "prediction_issue": "115040782",
         "recommend_numbers": list(range(1, 21)),
     }
     future = Future()
@@ -21,7 +21,7 @@ def test_player_dashboard_timeout_uses_last_good_cache(monkeypatch):
 
     result = player_dashboard._future_result("latest_prediction", future, warnings)
 
-    assert result["prediction_issue"] == "115000002"
+    assert result["prediction_issue"] == "115040782"
     assert warnings == ["latest_prediction fallback cache"]
 
 
