@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
 from database.official_draw_store import (
+    get_official_draw_history,
     get_latest_official_draw,
     save_draw_verification,
     save_official_draws,
@@ -36,7 +38,8 @@ LAST_CATCH_UP_RESULT: dict[str, Any] = {
     "last_collect_duration": None,
     "catch_up_available": True,
 }
-MAX_BATCH_SIZE = 20
+MAX_BATCH_SIZE = int(os.getenv("CATCH_UP_MAX_BATCH_SIZE", "120"))
+MAX_SOURCE_PAGES = int(os.getenv("CATCH_UP_MAX_SOURCE_PAGES", "10"))
 JOB_TIME_BUDGET_SECONDS = 75
 PER_ISSUE_RETRY_LIMIT = 1
 
@@ -126,7 +129,7 @@ def get_database_latest_issue() -> str | None:
 def fetch_source_today_draws(max_pages: int = 3, page_size: int = 100) -> list[dict]:
     collected: dict[str, dict] = {}
     query_date = _today_taipei()
-    page_size = max(1, min(int(page_size or 20), 20))
+    page_size = max(1, min(int(page_size or 20), 100))
     for page in range(1, max(1, int(max_pages or 1)) + 1):
         draws = fetch_official_bingo_results(query_date, page_num=page, page_size=page_size)
         if not draws:
@@ -199,6 +202,18 @@ def _record_structured_event(
         )
     except Exception:
         logger.exception("failed to record structured catch-up operation event")
+
+
+def _known_database_issues(limit: int = 200) -> set[int]:
+    try:
+        return {
+            issue
+            for issue in (_issue_int(item.get("issue")) for item in get_official_draw_history(limit))
+            if issue is not None
+        }
+    except Exception:
+        logger.exception("failed to load known official issue set for catch-up")
+        return set()
 
 
 def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) -> dict:
@@ -321,10 +336,11 @@ def catch_up_missing_issues() -> dict:
 def _catch_up_missing_issues_locked(start: float) -> dict:
     database_issue = get_database_latest_issue()
     try:
-        source_draws = fetch_source_today_draws(page_size=20)
+        source_draws = fetch_source_today_draws(max_pages=MAX_SOURCE_PAGES, page_size=100)
         source_issue = _latest_issue_from_draws(source_draws)
         database_number = _issue_int(database_issue)
         source_number = _issue_int(source_issue)
+        known_database_issues = _known_database_issues(max(MAX_BATCH_SIZE * 2, 200))
 
         if source_number is None:
             result = _empty_result(start, database_issue, source_issue, status="warning")
@@ -335,7 +351,27 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             _record_event("warning", database_issue, start, "official catch-up skipped: source unavailable")
             return result
 
-        if database_number is not None and source_number <= database_number:
+        missing = []
+        pending_verification = []
+        for draw in source_draws:
+            if _deadline_exceeded(start):
+                break
+            issue_number = _issue_int(draw.get("issue"))
+            if issue_number is None:
+                continue
+            issue_missing_from_database = issue_number not in known_database_issues
+            issue_newer_than_database = database_number is None or database_number < issue_number <= source_number
+            if issue_newer_than_database or issue_missing_from_database:
+                if _valid_draw(draw):
+                    missing.append(draw)
+                else:
+                    pending_issue = draw.get("issue")
+                    pending_verification.append(pending_issue)
+                    _mark_pending_verification(pending_issue, "invalid_or_incomplete_official_draw")
+            if len(missing) >= MAX_BATCH_SIZE:
+                break
+
+        if database_number is not None and source_number <= database_number and not missing:
             downstream = _run_live_downstream_for_draw(get_latest_official_draw(), start, "catch_up_already_synced")
             result = _empty_result(start, database_issue, source_issue)
             result["verification"] = downstream.get("verification")
@@ -345,24 +381,6 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="completed")
             _record_event("ok", source_issue, start, "official catch-up already synced")
             return result
-
-        missing = []
-        pending_verification = []
-        for draw in source_draws:
-            if _deadline_exceeded(start):
-                break
-            issue_number = _issue_int(draw.get("issue"))
-            if issue_number is None:
-                continue
-            if database_number is None or database_number < issue_number <= source_number:
-                if _valid_draw(draw):
-                    missing.append(draw)
-                else:
-                    pending_issue = draw.get("issue")
-                    pending_verification.append(pending_issue)
-                    _mark_pending_verification(pending_issue, "invalid_or_incomplete_official_draw")
-            if len(missing) >= MAX_BATCH_SIZE:
-                break
 
         saved = save_official_draws(missing[:MAX_BATCH_SIZE])
         success_count = int(saved.get("saved") or 0) if saved.get("status") == "ok" else 0
@@ -391,6 +409,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "pending_verification_count": len(pending_verification),
             "pending_verification": pending_verification[:20],
             "max_batch_size": MAX_BATCH_SIZE,
+            "max_source_pages": MAX_SOURCE_PAGES,
             "job_time_budget_seconds": JOB_TIME_BUDGET_SECONDS,
             "per_issue_retry_limit": PER_ISSUE_RETRY_LIMIT,
             "elapsed_seconds": elapsed,

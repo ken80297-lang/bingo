@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from database.collector_store import get_latest_kuaishou_snapshot
 from database.analysis_store import get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
 from database.operations_store import get_latest_operation_event
@@ -23,7 +24,7 @@ from services.prediction_refresh import prediction_refresh_status
 logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 30
-PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 10
+PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_HISTORY_LIMIT = 10
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
@@ -32,7 +33,7 @@ _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "prediction_history": [],
 }
 PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
-_PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="player-dashboard")
+_PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="player-dashboard")
 
 
 def _now() -> str:
@@ -120,6 +121,12 @@ def _derive_next_issue(source_issue: Any) -> str | None:
         return str(int(issue) + 1)
     except Exception:
         return None
+
+
+def _max_issue(*values: Any) -> str | None:
+    issues = [_as_int(value) for value in values if value not in (None, "")]
+    issues = [issue for issue in issues if issue is not None]
+    return str(max(issues)) if issues else None
 
 
 def _target_status(target_issue: Any, current_issue: Any) -> dict:
@@ -325,13 +332,18 @@ def _patch_numbers(numbers: list[int]) -> list[int]:
     return sorted(candidates[:8])
 
 
-def _prediction_from_history(record: dict | None, current_draw: dict | None) -> dict | None:
+def _prediction_from_history(
+    record: dict | None,
+    current_draw: dict | None,
+    detected_latest_issue: Any = None,
+) -> dict | None:
     if not record:
         return None
     numbers = _as_int_list(record.get("recommend_numbers"))
     if not numbers:
         return None
-    current_issue = (current_draw or {}).get("issue")
+    database_latest_issue = (current_draw or {}).get("issue")
+    current_issue = detected_latest_issue or database_latest_issue
     based_on_issue = (
         record.get("issue")
         or current_issue
@@ -364,6 +376,7 @@ def _prediction_from_history(record: dict | None, current_draw: dict | None) -> 
         "based_on_time_source": based_time["based_on_time_source"],
         "based_on_draw_exists": bool(based_draw),
         "latest_official_issue": current_issue,
+        "database_latest_issue": database_latest_issue,
         "expected_target_issue": freshness.get("expected_target_issue") or refresh.get("expected_target_issue"),
         "is_current": status["is_current"],
         "status": freshness["dashboard_status"],
@@ -872,12 +885,14 @@ def build_player_dashboard_summary() -> dict:
         "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT)),
         "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
         "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
+        "kuaishou": _PLAYER_EXECUTOR.submit(get_latest_kuaishou_snapshot),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
     latest_prediction = _future_result("latest_prediction", futures["latest_prediction"], warnings)
     history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
+    kuaishou = _future_result("kuaishou", futures["kuaishou"], warnings, {}) or {}
     prediction_stats = _history_stats(history_records)
     prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
@@ -885,6 +900,7 @@ def build_player_dashboard_summary() -> dict:
     production_scope = production_scope_payload()
 
     current = _current_draw(official)
+    detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
     if current and analysis and str(analysis.get("issue") or "") != str(current.get("issue") or ""):
         warnings.append("analysis_pending")
         analysis = {
@@ -893,7 +909,13 @@ def build_player_dashboard_summary() -> dict:
             "source_issue": current.get("issue"),
             "message": "analysis_history is pending for latest official draw",
         }
-    next_prediction = _prediction_from_history(latest_prediction, current) or {}
+    next_prediction = _prediction_from_history(latest_prediction, current, detected_latest_issue) or {}
+    if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
+        next_prediction["sync_status"] = "database_behind"
+        next_prediction["recommendation_warning"] = (
+            f"Production sync stale: database latest issue {(current or {}).get('issue')} "
+            f"is behind detected issue {detected_latest_issue}."
+        )
     next_prediction["history"] = prediction_stats
     next_prediction["rule_library"] = _rule_library(analysis, next_prediction)
     previous_target_issue = next_prediction.get("based_on_issue")
@@ -906,7 +928,7 @@ def build_player_dashboard_summary() -> dict:
     previous_verification["displayed_target_issue"] = displayed_target_issue
 
     database_issue = (current or {}).get("issue")
-    official_issue = (current or {}).get("issue")
+    official_issue = detected_latest_issue or (current or {}).get("issue")
     database_int = _as_int(database_issue)
     official_int = _as_int(official_issue)
     lag_count = max((official_int or 0) - (database_int or 0), 0) if database_int and official_int else 0
@@ -922,9 +944,11 @@ def build_player_dashboard_summary() -> dict:
         "current_draw": current,
         "sync": {
             "database_latest_issue": database_issue,
-            "official_latest_issue": official_issue,
+            "official_latest_issue": detected_latest_issue or official_issue,
+            "detected_latest_issue": detected_latest_issue,
+            "latest_kuaishou_issue": (kuaishou or {}).get("issue"),
             "lag_count": lag_count,
-            "is_synced": lag_count == 0,
+            "is_synced": lag_count == 0 and str(detected_latest_issue or official_issue or "") == str(database_issue or ""),
             "last_successful_collection": (current or {}).get("collected_at"),
             "collection_duration_seconds": None,
         },

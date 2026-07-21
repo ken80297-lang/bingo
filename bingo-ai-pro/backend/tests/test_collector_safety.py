@@ -98,12 +98,13 @@ def test_latest_official_draw_uses_numeric_production_order(monkeypatch):
 
 
 def test_catch_up_limits_batch(monkeypatch):
-    source_draws = [_draw(issue) for issue in range(101, 125)]
+    source_draws = [_draw(issue) for issue in range(101, 245)]
     saved_batches = []
     prediction_calls = []
 
     monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "100")
-    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: source_draws)
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: source_draws)
+    monkeypatch.setattr(catch_up_service, "get_official_draw_history", lambda limit=200: [_draw(100)])
     monkeypatch.setattr(catch_up_service, "run_official_verification", lambda limit=10: {"status": "ok"})
     monkeypatch.setattr(catch_up_service, "save_draw_verification", lambda item: {"status": "ok"})
 
@@ -130,19 +131,59 @@ def test_catch_up_limits_batch(monkeypatch):
     result = catch_up_service.catch_up_missing_issues()
 
     assert result["status"] == "ok"
-    assert result["max_batch_size"] == 20
-    assert result["catch_count"] == 20
-    assert result["success_count"] == 20
-    assert len(saved_batches[0]) == 20
-    assert prediction_calls[0]["issue"] == "120"
+    assert result["max_batch_size"] == 120
+    assert result["catch_count"] == 120
+    assert result["success_count"] == 120
+    assert len(saved_batches[0]) == 120
+    assert prediction_calls[0]["issue"] == "220"
     assert result["prediction"]["status"] == "created"
+
+
+def test_catch_up_recovers_missing_source_issues_at_or_below_database_latest(monkeypatch):
+    source_draws = [_draw(issue) for issue in range(101, 106)]
+    saved_batches = []
+
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "105")
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: source_draws)
+    monkeypatch.setattr(catch_up_service, "get_official_draw_history", lambda limit=240: [_draw(101), _draw(102), _draw(104), _draw(105)])
+    monkeypatch.setattr(catch_up_service, "run_official_verification", lambda limit=10: {"status": "ok"})
+    monkeypatch.setattr(catch_up_service, "save_draw_verification", lambda item: {"status": "ok"})
+    monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
+
+    def fake_save(draws):
+        saved_batches.append(draws)
+        return {"status": "ok", "saved": len(draws), "storage": "test"}
+
+    monkeypatch.setattr(catch_up_service, "save_official_draws", fake_save)
+
+    import services.prediction_lifecycle_orchestrator as lifecycle_orchestrator
+
+    monkeypatch.setattr(
+        lifecycle_orchestrator,
+        "process_official_draw_lifecycle",
+        lambda draw, **kwargs: {
+            "status": "ok",
+            "verification": {"status": "ok"},
+            "learning": {"status": "ok"},
+            "prediction": {"status": "created", "target_issue": str(int(draw["issue"]) + 1)},
+        },
+    )
+
+    result = catch_up_service.catch_up_missing_issues()
+
+    assert result["status"] == "ok"
+    assert result["catch_count"] == 1
+    assert [draw["issue"] for draw in saved_batches[0]] == ["103"]
+    assert result["start_issue"] == "103"
+    assert result["end_issue"] == "103"
 
 
 def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
     prediction_calls = []
 
     monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115039887")
-    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: [_draw(115039887)])
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: [_draw(115039887)])
+    monkeypatch.setattr(catch_up_service, "get_official_draw_history", lambda limit=240: [_draw(115039887)])
     monkeypatch.setattr(catch_up_service, "get_latest_official_draw", lambda: _draw(115039887))
     monkeypatch.setattr(catch_up_service, "run_official_verification", lambda limit=10: {"status": "ok"})
     monkeypatch.setattr(catch_up_service, "_record_structured_event", lambda *args, **kwargs: None)
@@ -173,7 +214,8 @@ def test_catch_up_deadline_skips_downstream(monkeypatch):
 
     monkeypatch.setattr(catch_up_service, "JOB_TIME_BUDGET_SECONDS", 0)
     monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "100")
-    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda page_size=20: source_draws)
+    monkeypatch.setattr(catch_up_service, "fetch_source_today_draws", lambda max_pages=10, page_size=100: source_draws)
+    monkeypatch.setattr(catch_up_service, "get_official_draw_history", lambda limit=240: [_draw(100)])
     monkeypatch.setattr(catch_up_service, "save_official_draws", lambda draws: {"status": "ok", "saved": len(draws)})
     monkeypatch.setattr(
         catch_up_service,

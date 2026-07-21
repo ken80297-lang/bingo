@@ -66,3 +66,30 @@ def test_register_release_preserves_existing_commit_metadata(monkeypatch, tmp_pa
     assert current["git_commit_hash"] == DEFAULT_GIT_COMMIT_HASH
     assert current["git_commit_short"] == DEFAULT_GIT_COMMIT_HASH[:7]
     assert current["git_commit_message"] == "chore: finalize v28.0.0 release metadata"
+
+
+def test_ensure_default_release_repairs_phase_28_canonical_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_store, "SQLITE_PATH", tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "_cloud_enabled", lambda: False)
+
+    release_store.init_release_tables()
+    with release_store._sqlite_connection() as conn:
+        conn.execute(
+            """
+            update production_release_registry
+            set git_commit_hash = ?,
+                git_commit_short = ?,
+                git_commit_message = ?
+            where release_version = ?
+            """,
+            ("d" * 40, "ddddddd", "Render deploy commit", "v28.0.0"),
+        )
+
+    release_store.ensure_default_release()
+
+    current = release_store.get_current_release()
+
+    assert current["release_version"] == "v28.0.0"
+    assert current["git_commit_hash"] == DEFAULT_GIT_COMMIT_HASH
+    assert current["git_commit_short"] == DEFAULT_GIT_COMMIT_HASH[:7]
+    assert current["git_commit_message"] == "chore: finalize v28.0.0 release metadata"

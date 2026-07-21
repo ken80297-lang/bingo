@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
+from database.collector_store import get_latest_kuaishou_snapshot
 from database.analysis_store import get_analysis_history, save_analysis_history
 from database.official_draw_store import (
     get_latest_official_draw_sync_status,
@@ -87,6 +88,23 @@ def _next_issue(issue: Any) -> str | None:
         if issue_number is None:
             return None
         return str(issue_number + 1)
+
+
+def _latest_kuaishou_issue() -> str | None:
+    try:
+        latest = get_latest_kuaishou_snapshot()
+        issue = str((latest or {}).get("issue") or "").strip()
+        if issue and issue.isdigit() and not issue.startswith("99"):
+            return issue
+    except Exception:
+        logger.exception("latest sync kuaishou issue lookup failed")
+    return None
+
+
+def _max_issue(*values: Any) -> str | None:
+    issues = [_issue_int(value) for value in values if value not in (None, "")]
+    issues = [issue for issue in issues if issue is not None]
+    return str(max(issues)) if issues else None
 
 
 def _valid_numbers(values: Any) -> list[int]:
@@ -344,6 +362,8 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
     latest = (sync_status or {}).get("draw")
     timings["read_latest_draw_ms"] = round((time.perf_counter() - mark) * 1000, 2)
     source_issue = str(latest["issue"]) if latest and latest.get("issue") else None
+    external_detected_issue = _latest_kuaishou_issue()
+    detected_issue = _max_issue(source_issue, external_detected_issue)
     target_issue = (sync_status or {}).get("target_issue") or (_next_issue(source_issue) if source_issue else None)
     prediction_created = False
     analysis_created = False
@@ -356,7 +376,7 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         if is_complete_official_draw(latest) and analysis_created and not prediction_created and target_issue:
             reconcile = _queue_prediction_reconcile(latest, source_issue, target_issue)
     with _STATE_LOCK:
-        detected = source_issue or _LATEST_SYNC_STATE.get("official_detected_issue")
+        detected = detected_issue or _LATEST_SYNC_STATE.get("official_detected_issue")
         existing_attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0)
         existing_detected_at = _LATEST_SYNC_STATE.get("detected_at")
         existing_last_attempt_at = _LATEST_SYNC_STATE.get("last_attempt_at")
@@ -364,7 +384,10 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
     dashboard_ready = database_saved and analysis_created and prediction_created
     failure_stage = reconcile.get("failure_stage")
     failure_reason = reconcile.get("failure_reason")
-    if database_saved and analysis_created and not prediction_created and not failure_stage:
+    if detected and source_issue and _issue_int(detected) and _issue_int(source_issue) and _issue_int(detected) > _issue_int(source_issue):
+        failure_stage = "database"
+        failure_reason = "database_latest_issue_behind_detected_source"
+    elif database_saved and analysis_created and not prediction_created and not failure_stage:
         failure_stage = None if reconcile else "prediction"
         failure_reason = "latest_prediction_queued" if reconcile else "latest_prediction_missing"
     elif database_saved and not analysis_created:
@@ -384,6 +407,7 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
     timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
     snapshot = _update_state(
         official_detected_issue=detected,
+        external_detected_issue=external_detected_issue,
         source_issue=source_issue,
         database_latest_issue=(latest or {}).get("issue"),
         dashboard_latest_issue=(latest or {}).get("issue"),

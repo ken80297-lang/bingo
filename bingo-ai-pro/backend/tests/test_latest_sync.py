@@ -8,6 +8,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from services import latest_sync
 
 
+def setup_function():
+    latest_sync._LATEST_SYNC_CACHE["snapshot"] = None
+    latest_sync._LATEST_SYNC_CACHE["expires_at"] = 0.0
+    latest_sync._RECONCILE_IN_FLIGHT.clear()
+
+
 def _draw(issue: str = "115040550", numbers=None):
     return {
         "issue": issue,
@@ -42,6 +48,7 @@ def test_latest_sync_existing_draw_does_not_save_duplicate(monkeypatch):
     saved_calls = []
     draw = _draw()
     monkeypatch.setattr(latest_sync, "_latest_draw_from_source", lambda: draw)
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: draw)
     monkeypatch.setattr(latest_sync, "save_official_draws", lambda draws: saved_calls.append(draws) or {"status": "ok", "saved": 1})
     _patch_downstream(monkeypatch)
@@ -56,6 +63,7 @@ def test_latest_sync_existing_draw_does_not_save_duplicate(monkeypatch):
 def test_latest_sync_rejects_invalid_numbers_before_save(monkeypatch):
     saved_calls = []
     monkeypatch.setattr(latest_sync, "_latest_draw_from_source", lambda: _draw(numbers=list(range(0, 20))))
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: None)
     monkeypatch.setattr(latest_sync, "save_official_draws", lambda draws: saved_calls.append(draws) or {"status": "ok", "saved": 1})
 
@@ -69,6 +77,7 @@ def test_latest_sync_rejects_invalid_numbers_before_save(monkeypatch):
 def test_latest_sync_database_failure_does_not_mark_saved(monkeypatch):
     draw = _draw()
     monkeypatch.setattr(latest_sync, "_latest_draw_from_source", lambda: draw)
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: None)
     monkeypatch.setattr(latest_sync, "save_official_draws", lambda draws: {"status": "error", "saved": 0, "error": "boom"})
 
@@ -93,6 +102,7 @@ def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeyp
             "target_issue": "115040626",
         },
     )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
     latest_sync._RECONCILE_IN_FLIGHT.clear()
 
     class Executor:
@@ -154,6 +164,7 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
             "target_issue": "115040626",
         },
     )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
 
     import services.prediction_refresh as prediction_refresh
 
@@ -177,3 +188,27 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
     assert result["attempt_count"] == 0
     assert result["stages"]["database"]["status"] == "completed"
     assert result["stages"]["prediction"]["status"] == "completed"
+
+
+def test_latest_sync_snapshot_marks_database_behind_kuaishou(monkeypatch):
+    draw = _draw("115040850")
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": True,
+            "prediction_exists": True,
+            "target_issue": "115040851",
+        },
+    )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: {"issue": "115040888"})
+
+    result = latest_sync.get_latest_sync_snapshot()
+
+    assert result["official_detected_issue"] == "115040888"
+    assert result["external_detected_issue"] == "115040888"
+    assert result["database_latest_issue"] == "115040850"
+    assert result["issues_behind"] == 38
+    assert result["sync_status"] == "database_behind"
+    assert result["failure_stage"] == "database"

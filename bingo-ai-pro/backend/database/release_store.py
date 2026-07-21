@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from config.production_scope import get_production_generation, get_production_start_issue
-from config.release import release_payload
+from config.release import DEFAULT_GIT_COMMIT_HASH, release_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
@@ -242,12 +242,36 @@ def register_release(payload: dict, *, activate: bool = False) -> dict:
                             %s::jsonb
                         )
                         on conflict (release_version) do update set
+                            git_commit_hash = case
+                                when excluded.release_version = 'v28.0.0'
+                                 and excluded.git_commit_hash = %s
+                                then excluded.git_commit_hash
+                                else production_release_registry.git_commit_hash
+                            end,
+                            git_commit_short = case
+                                when excluded.release_version = 'v28.0.0'
+                                 and excluded.git_commit_hash = %s
+                                then excluded.git_commit_short
+                                else production_release_registry.git_commit_short
+                            end,
+                            git_branch = case
+                                when excluded.release_version = 'v28.0.0'
+                                 and excluded.git_commit_hash = %s
+                                then excluded.git_branch
+                                else production_release_registry.git_branch
+                            end,
+                            git_commit_message = case
+                                when excluded.release_version = 'v28.0.0'
+                                 and excluded.git_commit_hash = %s
+                                then excluded.git_commit_message
+                                else production_release_registry.git_commit_message
+                            end,
                             release_status = excluded.release_status,
                             is_active = excluded.is_active,
                             updated_at = now()
                         returning id
                         """,
-                        _release_params(init_payload),
+                        (*_release_params(init_payload), DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH),
                         prepare=False,
                     )
                     row_id = int(cur.fetchone()[0])
@@ -273,11 +297,35 @@ def register_release(payload: dict, *, activate: bool = False) -> dict:
             )
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(release_version) do update set
+                git_commit_hash = case
+                    when excluded.release_version = 'v28.0.0'
+                     and excluded.git_commit_hash = ?
+                    then excluded.git_commit_hash
+                    else production_release_registry.git_commit_hash
+                end,
+                git_commit_short = case
+                    when excluded.release_version = 'v28.0.0'
+                     and excluded.git_commit_hash = ?
+                    then excluded.git_commit_short
+                    else production_release_registry.git_commit_short
+                end,
+                git_branch = case
+                    when excluded.release_version = 'v28.0.0'
+                     and excluded.git_commit_hash = ?
+                    then excluded.git_branch
+                    else production_release_registry.git_branch
+                end,
+                git_commit_message = case
+                    when excluded.release_version = 'v28.0.0'
+                     and excluded.git_commit_hash = ?
+                    then excluded.git_commit_message
+                    else production_release_registry.git_commit_message
+                end,
                 release_status = excluded.release_status,
                 is_active = excluded.is_active,
                 updated_at = excluded.updated_at
             """,
-            (*_release_params(init_payload), _now()),
+            (*_release_params(init_payload), _now(), DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH, DEFAULT_GIT_COMMIT_HASH),
         )
     return {"status": "ok", "storage": "sqlite", "id": int(cursor.lastrowid or 0)}
 
