@@ -623,6 +623,9 @@
     function normalizeNext(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const raw = player && player.next_prediction ? player.next_prediction : (data.next && data.next.next_recommendation) || data.next || {};
+      const release = (player && (player.active_release || player.release)) || (data.next && data.next.release) || {};
+      const scope = (player && player.production_scope) || (data.next && data.next.production_scope) || {};
+      const gitCommit = raw.git_commit_hash || release.git_commit_hash || "";
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
         target_issue_source: raw.target_issue_source,
@@ -656,6 +659,12 @@
         winning_model: raw.winning_model,
         source: raw.source,
         trigger: raw.trigger,
+        release_version: raw.release_version || release.release_version,
+        git_commit_hash: gitCommit,
+        git_commit_short: raw.git_commit_short || release.git_commit_short || (gitCommit ? String(gitCommit).slice(0, 7) : ""),
+        production_generation: raw.production_generation || scope.production_generation || release.production_generation,
+        model_version: raw.model_version || release.model_version,
+        feature_version: raw.feature_version || release.feature_version,
         production_valid: raw.production_valid !== false,
         is_stale: raw.is_stale,
         reasons: raw.reasons || [],
@@ -739,6 +748,10 @@
           ${metric("Prediction 狀態", statusText(status), statusClass(status))}
           ${metric("資料來源", sourceText(next.source))}
           ${metric("Trigger", triggerText(next.trigger))}
+          ${metric("Release", safe(next.release_version || "v28.0.0"))}
+          ${metric("Commit", safe(next.git_commit_short || next.git_commit_hash))}
+          ${metric("Generation", safe(next.production_generation))}
+          ${metric("Model / Feature", `${safe(next.model_version)} / ${safe(next.feature_version)}`)}
           ${metric("Stale 狀態", staleStatusText(next.stale_status, next.lag_issues), staleStatusClass(next.stale_status, next.lag_issues))}
           ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
           ${metric("AI 信心值", `${fmtNumber(next.confidence)}%`)}

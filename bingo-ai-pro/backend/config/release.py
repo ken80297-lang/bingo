@@ -2,6 +2,8 @@
 
 import os
 
+DEFAULT_GIT_COMMIT_HASH = "c4b88de494cdbfee9a3e1e0c2e185bc85e8dc5ff"
+
 RELEASE_NAME = os.getenv("RELEASE_NAME", "Phase 28 Production Reset")
 RELEASE_VERSION = os.getenv("RELEASE_VERSION", "v28.0.0")
 RELEASE_PHASE = os.getenv("RELEASE_PHASE", "28")
@@ -12,7 +14,7 @@ OBSERVATION_VERSION = os.getenv("OBSERVATION_VERSION", "22.1.5")
 RULE_LIBRARY_VERSION = os.getenv("RULE_LIBRARY_VERSION", "28.0")
 DASHBOARD_VERSION = os.getenv("DASHBOARD_VERSION", "28.0")
 DATABASE_SCHEMA_VERSION = os.getenv("DATABASE_SCHEMA_VERSION", "28.0")
-GIT_COMMIT_HASH = os.getenv("GIT_COMMIT_HASH") or os.getenv("RENDER_GIT_COMMIT") or "0bf03c8416b1026c3483ff4de8bb10e62331e42c"
+GIT_COMMIT_HASH = os.getenv("GIT_COMMIT_HASH") or os.getenv("RENDER_GIT_COMMIT") or DEFAULT_GIT_COMMIT_HASH
 GIT_BRANCH = os.getenv("GIT_BRANCH") or os.getenv("RENDER_GIT_BRANCH") or "runtime"
 
 
@@ -22,7 +24,7 @@ def release_payload() -> dict:
         "release_version": RELEASE_VERSION,
         "phase": RELEASE_PHASE,
         "git_commit_hash": GIT_COMMIT_HASH,
-        "git_commit_short": GIT_COMMIT_HASH[:7] if GIT_COMMIT_HASH and GIT_COMMIT_HASH != "0bf03c8416b1026c3483ff4de8bb10e62331e42c" else "0bf03c8416b1026c3483ff4de8bb10e62331e42c",
+        "git_commit_short": GIT_COMMIT_HASH[:7] if GIT_COMMIT_HASH else "",
         "git_branch": GIT_BRANCH,
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,

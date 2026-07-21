@@ -12,6 +12,7 @@ from config.release import release_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+LEGACY_PLACEHOLDER_COMMIT_HASH = "0bf03c8416b1026c3483ff4de8bb10e62331e42c"
 
 
 def _now() -> str:
@@ -297,7 +298,7 @@ def ensure_default_release() -> dict:
         "git_commit_message": "feat: add production reset recovery and release traceability",
         "release_notes": [
             "Production data reset begins at issue 115040780.",
-            "Legacy, test, 0bf03c8416b1026c3483ff4de8bb10e62331e42c, and invalid generation records are excluded from production reads.",
+            "Legacy, test, pending, and invalid generation records are excluded from production reads.",
             "Prediction history includes release, commit, model, feature, and generation traceability.",
         ],
     }
@@ -388,8 +389,10 @@ def rollback_readiness(release_version: str) -> dict:
     if not release:
         return {"status": "blocked", "ready": False, "reason": "release_not_found"}
     warnings = []
-    if release.get("git_commit_hash") in (None, "", "0bf03c8416b1026c3483ff4de8bb10e62331e42c"):
-        warnings.append("git_commit_hash_0bf03c8416b1026c3483ff4de8bb10e62331e42c")
+    if release.get("git_commit_hash") in (None, ""):
+        warnings.append("git_commit_hash_missing")
+    elif release.get("git_commit_hash") == LEGACY_PLACEHOLDER_COMMIT_HASH:
+        warnings.append("git_commit_hash_legacy_placeholder")
     if int(release.get("production_generation") or 0) != get_production_generation():
         warnings.append("generation_mismatch")
     status = "warning" if warnings else "ready"

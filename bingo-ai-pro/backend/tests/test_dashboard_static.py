@@ -26,6 +26,10 @@ def test_dashboard_release_candidate_copy_and_endpoints():
     assert "AI推薦10碼" not in html
     assert "Prediction History" not in html
     assert "AI 推薦原因" not in html
+    assert "release_version" in html
+    assert "git_commit_short" in html
+    assert "production_generation" in html
+    assert "Model / Feature" in html
 
 
 def test_dashboard_collapsible_sections_default_closed():
