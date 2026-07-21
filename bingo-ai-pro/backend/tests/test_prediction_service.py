@@ -526,6 +526,51 @@ def test_prediction_refresh_routes_through_prediction_service(monkeypatch):
     assert "prediction_service_called" in [event[0] for event in events]
 
 
+def test_prediction_refresh_recovers_already_running_lock(monkeypatch):
+    calls = []
+    monkeypatch.setattr(prediction_refresh, "_existing_prediction", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_refresh, "_record_refresh_event", lambda payload, start: None)
+    monkeypatch.setattr(prediction_refresh, "_record_trigger_event", lambda *args, **kwargs: None)
+
+    def fake_create(based_on_issue, **kwargs):
+        calls.append((based_on_issue, kwargs))
+        if len(calls) == 1:
+            return {
+                "status": "already_running",
+                "based_on_issue": based_on_issue,
+                "target_issue": kwargs.get("target_issue"),
+                "skip_reason": "already_running",
+            }
+        return {
+            "status": "created",
+            "prediction_id": 88,
+            "recommended_count": 20,
+            "target_issue": kwargs.get("target_issue"),
+        }
+
+    import services.prediction_service as prediction_service_module
+
+    monkeypatch.setattr(prediction_service_module, "create_for_official_draw", fake_create)
+    monkeypatch.setattr(
+        prediction_service_module,
+        "recover_prediction_lock_for_target",
+        lambda based_on, target, reason=None: {
+            "status": "recovered",
+            "based_on_issue": based_on,
+            "target_issue": target,
+        },
+    )
+
+    result = prediction_refresh.refresh_next_prediction_for_draw(
+        {"issue": "115040915", "numbers": list(range(1, 21))}
+    )
+
+    assert result["status"] == "created"
+    assert result["refresh_status"] == "ready"
+    assert len(calls) == 2
+    assert calls[1][1]["target_issue"] == "115040916"
+
+
 def test_next_prediction_dashboard_uses_exact_fast_path(monkeypatch):
     prediction = {
         "id": 1,
@@ -665,3 +710,35 @@ def test_prediction_lock_release_token_prevents_old_owner_unlocking_new_owner():
             "prediction_lock_token": 3,
         }
     )
+
+
+def test_prediction_lock_recovery_allows_newer_target(monkeypatch):
+    prediction_service._LOCK_STATE.update(
+        {
+            "prediction_running": True,
+            "prediction_lock_owner": "official_collector:official_draw_saved:115040913:115040914",
+            "prediction_last_started_at": "2026-07-21T00:00:00+00:00",
+            "prediction_lock_token": 4,
+        }
+    )
+
+    class FixedDateTime:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 21, 0, 0, 10, tzinfo=timezone.utc)
+
+        @staticmethod
+        def fromisoformat(value):
+            from datetime import datetime
+
+            return datetime.fromisoformat(value)
+
+    monkeypatch.setattr(prediction_service, "datetime", FixedDateTime)
+
+    result = prediction_service.recover_prediction_lock_for_target("115040915", "115040916", reason="unit_test")
+
+    assert result["status"] == "recovered"
+    assert prediction_service._LOCK_STATE["prediction_running"] is False
+    assert prediction_service._LOCK_STATE["prediction_lock_owner"] is None

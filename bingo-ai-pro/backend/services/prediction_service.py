@@ -107,6 +107,27 @@ def _recover_prediction_lock(reason: str) -> None:
         pass
 
 
+def recover_prediction_lock_for_target(based_on_issue: str | None, target_issue: str | None, *, reason: str = "manual_recovery") -> dict:
+    based_on = _valid_issue(based_on_issue)
+    target = _valid_issue(target_issue)
+    requested_owner = f"official_collector:official_draw_saved:{based_on or 'unknown'}:{target or 'unknown'}"
+    status = prediction_lock_status()
+    if not status.get("prediction_running"):
+        return {"status": "not_running", **status}
+    current_target = _owner_target_issue(requested_owner)
+    locked_target = _owner_target_issue(status.get("prediction_lock_owner"))
+    running_seconds = status.get("prediction_running_seconds")
+    if (
+        current_target is not None
+        and locked_target is not None
+        and current_target >= locked_target
+        and (running_seconds is None or running_seconds >= 5)
+    ):
+        _recover_prediction_lock(reason)
+        return {"status": "recovered", "requested_owner": requested_owner, "previous_lock": status}
+    return {"status": "active_lock_retained", "requested_owner": requested_owner, **status}
+
+
 def _acquire_prediction_lock(owner: str) -> tuple[bool, dict]:
     if _PREDICTION_LOCK.acquire(blocking=False):
         token = int(_LOCK_STATE.get("prediction_lock_token") or 0) + 1

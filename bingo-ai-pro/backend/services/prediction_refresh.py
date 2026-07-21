@@ -202,7 +202,7 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             _record_refresh_event(payload, start)
             return payload
 
-        from services.prediction_service import create_for_official_draw
+        from services.prediction_service import create_for_official_draw, recover_prediction_lock_for_target
 
         _record_trigger_event(
             "prediction_service_called",
@@ -218,6 +218,36 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             target_issue=target_issue,
             collector_metadata={"draw_issue": source_issue, "draw_number_count": len(draw_numbers)},
         )
+        if service_result.get("status") == "already_running":
+            recovery = recover_prediction_lock_for_target(
+                source_issue,
+                target_issue,
+                reason="prediction_refresh_already_running_recovery",
+            )
+            existing_after_recovery = _existing_prediction(source_issue, target_issue)
+            if existing_after_recovery:
+                service_result = {
+                    "status": "already_exists",
+                    "based_on_issue": source_issue,
+                    "target_issue": target_issue,
+                    "prediction_id": existing_after_recovery.get("id"),
+                    "recommended_count": len(existing_after_recovery.get("recommend_numbers") or []),
+                    "prediction_status": existing_after_recovery.get("prediction_status"),
+                    "lock_recovery": recovery,
+                }
+            elif recovery.get("status") == "recovered":
+                service_result = create_for_official_draw(
+                    source_issue,
+                    source="official_collector",
+                    trigger="official_draw_saved",
+                    target_issue=target_issue,
+                    collector_metadata={
+                        "draw_issue": source_issue,
+                        "draw_number_count": len(draw_numbers),
+                        "lock_recovery": recovery.get("status"),
+                    },
+                )
+                service_result["lock_recovery"] = recovery
         status = service_result.get("status")
         refresh_ready = status in ("created", "already_exists")
         payload = {
