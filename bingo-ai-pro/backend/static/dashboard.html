@@ -244,6 +244,119 @@
       overflow-wrap: anywhere;
     }
 
+    .next-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 10px;
+    }
+
+    .next-card-header h2 {
+      margin-bottom: 3px;
+    }
+
+    .next-issue {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .confidence-badge {
+      flex: 0 0 auto;
+      padding: 8px 12px;
+      border: 1px solid rgba(47, 209, 124, .34);
+      border-radius: 999px;
+      background: rgba(47, 209, 124, .14);
+      color: var(--ok);
+      font-size: 15px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .quick-status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .status-pill {
+      padding: 5px 9px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 999px;
+      background: rgba(22, 38, 56, .74);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .compact-section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,.08);
+    }
+
+    .compact-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .compact-heading h3 {
+      margin: 0;
+      color: var(--text);
+    }
+
+    .compact-note {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .ball.featured {
+      min-width: 54px;
+      height: 44px;
+      border-color: rgba(89, 199, 255, .32);
+      background: #2a4a65;
+      color: #f7fbff;
+      font-size: 20px;
+      box-shadow: 0 0 0 3px rgba(89, 199, 255, .08);
+    }
+
+    .trend-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .trend-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      background: var(--panel-soft);
+    }
+
+    .trend-item span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .trend-item strong {
+      text-align: right;
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+
     .section {
       margin-top: 14px;
       padding-top: 12px;
@@ -322,6 +435,14 @@
       .metric .value { font-size: 18px; }
       .row { align-items: flex-start; }
       .row span:last-child { max-width: 58%; }
+      .next-card-header { flex-direction: column; align-items: stretch; }
+      .confidence-badge { align-self: flex-start; }
+      .ball.featured {
+        min-width: 46px;
+        height: 40px;
+        font-size: 18px;
+      }
+      .trend-summary { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -557,41 +678,39 @@
     const rows = (items) => `<div class="list">${items.join("")}</div>`;
     const row = (label, value, cls = "") => `<div class="row"><span>${label}</span><span class="${cls}">${value}</span></div>`;
 
-    function renderPredictionMix(title, data, leftKey, rightKey, leftLabel, rightLabel) {
-      const left = Number(data && data[leftKey]);
-      const right = Number(data && data[rightKey]);
-      const label = data && data.label ? labelZh(data.label) : "尚無資料";
-      const confidence = confidencePercentValue(data && (data.confidence_percent ?? data.confidence));
-      const fallback = data && data.fallback_used ? `<div class="notice warn">fallback: ${safe(data.fallback_reason || data.source)}</div>` : "";
+    function renderCompactHighProbability(next) {
+      const numbers = normalizeNumbers(next.high_probability_numbers).slice(0, 5);
       return `
-        <div class="section">
-          <p class="mini-title">${title}</p>
-          <div class="grid">
-            ${metric(leftLabel, Number.isFinite(left) ? fmtNumber(left) : "0")}
-            ${metric(rightLabel, Number.isFinite(right) ? fmtNumber(right) : "0")}
-            ${metric("判斷", label)}
-            ${metric("Confidence", `${fmtNumber(confidence)}%`)}
+        <div class="compact-section">
+          <div class="compact-heading">
+            <h3>AI 高機率 5 號</h3>
+            <span class="compact-note">AI 精選</span>
           </div>
-          ${fallback}
+          ${balls(numbers, "featured")}
         </div>
       `;
     }
 
-    function renderHighProbability(next) {
-      const numbers = normalizeNumbers(next.high_probability_numbers);
-      const detailRows = asList(next.high_probability_details).slice(0, 5).map((item) => {
-        const reasons = asList(item.reasons).slice(0, 2).join(", ");
-        return row(numberLabel(item.number), `${fmtNumber(item.score)}${reasons ? ` - ${safe(reasons)}` : ""}`);
-      });
-      const fallback = next.high_probability_fallback_used
-        ? `<div class="notice warn">fallback: ${safe(next.high_probability_fallback_reason || next.high_probability_source)}</div>`
-        : "";
+    function renderCompactTrendItem(title, data, leftKey, rightKey) {
+      const left = Number(data && data[leftKey]);
+      const right = Number(data && data[rightKey]);
+      const label = data && data.label ? labelZh(data.label) : "資料整理中";
+      const leftText = Number.isFinite(left) ? fmtNumber(left) : "0";
+      const rightText = Number.isFinite(right) ? fmtNumber(right) : "0";
+      return `<div class="trend-item"><span>${title}</span><strong>${label} ${leftText} / ${rightText}</strong></div>`;
+    }
+
+    function renderCompactTrendSummary(next) {
       return `
-        <div class="section">
-          <h3>AI 高機率 5 號</h3>
-          ${balls(numbers)}
-          ${detailRows.length ? rows(detailRows) : ""}
-          ${fallback}
+        <div class="compact-section">
+          <div class="compact-heading">
+            <h3>趨勢摘要</h3>
+            <span class="compact-note">大小 / 單雙</span>
+          </div>
+          <div class="trend-summary">
+            ${renderCompactTrendItem("大小", next.size_prediction, "small_count", "large_count")}
+            ${renderCompactTrendItem("單雙", next.odd_even_prediction, "odd_count", "even_count")}
+          </div>
         </div>
       `;
     }
@@ -786,92 +905,43 @@
 
     function renderNext(next) {
       const status = next.status || "unknown";
-      const verification = window.__previousVerification || {};
-      const verified = verification && verification.verification_status === "verified";
       const numbers = normalizeNumbers(next.candidates);
-      const numberWarning = numbers.length === 20 ? "" : `<div class="notice warn">資料異常：目前正式 snapshot 為 ${fmtNumber(numbers.length)} 碼，未達固定 20 碼。</div>`;
-      const rules = asList((next.rule_library || {}).rules);
-      const hitText = verified
-        ? `${fmtNumber(verification.hit_count)} / ${fmtNumber(verification.hit_denominator || verification.prediction_count || 20)}`
-        : statusText(verification.verification_status || "waiting_draw");
-      const superText = verified
-        ? (verification.super_number_predicted ? (verification.super_number_hit ? "命中" : "未命中") : "當期未保存超級獎預測")
-        : "尚待開獎";
-      const basedOnTimeLabel = next.based_on_time_source === "official_draw_saved_event" ? "資料儲存時間" : "依據開獎時間";
-      const phaseLabel = next.phase ? `Phase ${safe(next.phase)}` : "Phase 28";
+      const confidence = confidencePercentValue(next.confidence_percent ?? next.confidence);
+      const statusLabel = statusText(status);
+      const staleLabel = staleStatusText(next.stale_status, next.lag_issues);
+      const dataLabel = next.production_valid === false ? "資料檢查中" : "正式資料";
+      const compactWarning = numbers.length === 20 ? "" : `<div class="notice warn">目前推薦碼數為 ${fmtNumber(numbers.length)} 碼，系統仍在整理完整 20 碼。</div>`;
+      const superCandidates = normalizeNumbers(next.super_candidates).slice(0, 3);
       document.getElementById("cardNext").innerHTML = `
-        <h2>下一期 AI 推薦<br><span class="muted">第${safe(next.prediction_issue)}期</span></h2>
-        <div class="grid">
-          ${metric("下一期期號", `第${safe(next.prediction_issue)}期`)}
-          ${metric("依據期號", `第${safe(next.based_on_issue)}期`)}
-          ${metric(basedOnTimeLabel, next.based_on_draw_exists === false ? "尚無資料" : formatDateTime(next.based_on_draw_time))}
-          ${metric("Prediction 狀態", statusText(status), statusClass(status))}
-          ${metric("資料來源", sourceText(next.source))}
-          ${metric("Trigger", triggerText(next.trigger))}
-          ${metric("Phase", phaseLabel)}
-          ${metric("Release", safe(next.release_version || "v28.0.0"))}
-          ${metric("Commit", safe(next.git_commit_short || next.git_commit_hash))}
-          ${metric("Production Generation", safe(next.production_generation || "2"))}
-          ${metric("Production Start Issue", safe(next.production_start_issue || "115040780"))}
-          ${metric("Model / Feature", `${safe(next.model_version)} / ${safe(next.feature_version)}`)}
-          ${metric("Stale 狀態", staleStatusText(next.stale_status, next.lag_issues), staleStatusClass(next.stale_status, next.lag_issues))}
-          ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
-          ${metric("AI 信心值", `${fmtNumber(next.confidence_percent)}%`)}
-        </div>
-        <h3>AI推薦20碼</h3>
-        <div class="summary-line">實際 count：${fmtNumber(numbers.length)} / 20</div>
-        ${next.recommendation_warning ? `<div class="notice warn">${safe(next.recommendation_warning)}</div>` : ""}
-        ${numberWarning}
-        ${balls(numbers)}
-        ${renderHighProbability(next)}
-        <h3>超級獎號</h3>${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超級獎號推薦</div>`}
-        <h3>AI 超級獎候選</h3>${normalizeNumbers(next.super_candidates).length ? balls(next.super_candidates, "super") : `<div class="empty">尚無超級獎候選</div>`}
-        ${renderPredictionMix("大小預測", next.size_prediction, "small_count", "large_count", "小", "大")}
-        ${renderPredictionMix("單雙預測", next.odd_even_prediction, "odd_count", "even_count", "單", "雙")}
-        <div class="section">
-          <p class="mini-title">星數預測</p>
-          ${rows([
-            row("三星候選", normalizeNumbers(next.three_star).length ? normalizeNumbers(next.three_star).map(numberLabel).join("、") : "尚待分析"),
-            row("四星候選", normalizeNumbers(next.four_star).length ? normalizeNumbers(next.four_star).map(numberLabel).join("、") : "尚待分析"),
-            row("五星候選", normalizeNumbers(next.five_star).length ? normalizeNumbers(next.five_star).map(numberLabel).join("、") : "尚待分析"),
-            row("六星候選", normalizeNumbers(next.six_star).length ? normalizeNumbers(next.six_star).map(numberLabel).join("、") : "尚待分析")
-          ])}
-        </div>
-        <div class="section">
-          <p class="mini-title">雙生號</p>${balls(next.twins)}
-          <p class="mini-title">連號</p>${textList(sortPairs(next.consecutive).map((pair) => pair.map(numberLabel).join("、")))}
-          <p class="mini-title">補號候選</p>${balls(next.patch_numbers)}
-          <p class="mini-title">尾數</p>${renderTailGroups(next)}
-        </div>
-        <div class="grid">
-          ${metric("大小判斷", labelZh(next.big_small))}
-          ${metric("單雙判斷", labelZh(next.odd_even))}
-        </div>
-        <div class="section">
-          <p class="mini-title">AI 摘要</p>
-          ${textList([labelZh(next.big_small), labelZh(next.odd_even), next.twins.length ? "雙生模式" : "", next.patch_numbers.length ? "補號模式" : "", next.super_number ? "超級獎模式" : ""].filter(Boolean))}
-        </div>
-        <div class="section">
-          <h3>上一期推薦結果</h3>
-          <div class="grid">
-            ${metric("上一期 target", safe(verification.target_issue || verification.verified_issue))}
-            ${metric("命中", hitText)}
-            ${metric("超級獎", superText, verification.super_number_hit ? "status-ok" : "")}
-            ${metric("Verified", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
-            ${metric("Learned", verification.learning_used ? "已完成學習" : "尚未完成", verification.learning_used ? "status-ok" : "status-warning")}
+        <div class="next-card-header">
+          <div>
+            <h2>下一期 AI 推薦</h2>
+            <div class="next-issue">第 ${safe(next.prediction_issue)} 期</div>
           </div>
-          <div class="summary-line">完整內容請見「上一期命中結果」與「歷史推薦紀錄」。</div>
+          <div class="confidence-badge">AI 信心 ${fmtNumber(confidence)}%</div>
         </div>
-        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="modelVotesBody" onclick="toggleSection('modelVotesBody', this)">
-          <span>模型投票</span><span>${Object.keys(next.model_scores || {}).length ? "展開各模型評分" : "尚無資料"}</span>
-        </button>
-        <div id="modelVotesBody" hidden>${renderModelVotes(next.model_scores)}</div>
-        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="nextRuleLibraryBody" onclick="toggleSection('nextRuleLibraryBody', this)">
-          <span>完整 Rule Library 摘要</span><span>${rules.length ? "展開查看" : "尚無資料"}</span>
-        </button>
-        <div id="nextRuleLibraryBody" hidden>
-          <div class="rule-list">${rules.length ? rules.map(renderRuleItem).join("") : `<div class="empty">尚無資料</div>`}</div>
+        <div class="quick-status">
+          <span class="status-pill ${statusClass(status)}">${statusLabel}</span>
+          <span class="status-pill ${staleStatusClass(next.stale_status, next.lag_issues)}">${staleLabel}</span>
+          <span class="status-pill ${next.production_valid === false ? "status-warning" : "status-ok"}">${dataLabel}</span>
         </div>
+        ${renderCompactHighProbability(next)}
+        <div class="compact-section">
+          <div class="compact-heading">
+            <h3>AI 推薦 20 碼</h3>
+            <span class="compact-note">${fmtNumber(numbers.length)} 碼</span>
+          </div>
+          ${compactWarning}
+          ${balls(numbers)}
+        </div>
+        <div class="compact-section">
+          <div class="compact-heading">
+            <h3>AI 超級獎候選</h3>
+            <span class="compact-note">最多 3 號</span>
+          </div>
+          ${superCandidates.length ? balls(superCandidates, "super") : `<div class="empty">超級獎候選整理中</div>`}
+        </div>
+        ${renderCompactTrendSummary(next)}
       `;
     }
 
