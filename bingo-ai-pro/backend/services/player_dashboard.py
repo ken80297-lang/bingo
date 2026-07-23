@@ -20,7 +20,6 @@ from database.prediction_history_store import get_prediction_lifecycle_aggregate
 from database.prediction_history_store import is_production_prediction
 from config.production_scope import production_scope_payload
 from database.release_store import get_current_release
-from database.rule_snapshot_store import get_rule_snapshot
 from services.dashboard_card_schema import (
     confidence_percent,
     confidence_ratio,
@@ -31,7 +30,82 @@ from services.dashboard_card_schema import (
     validation_diagnostics,
 )
 from services.prediction_refresh import prediction_refresh_status
-from services.rule_snapshot import build_rule_snapshot, get_rule_registry
+
+try:
+    from database.rule_snapshot_store import get_rule_snapshot
+except ModuleNotFoundError:  # pragma: no cover - deployed Phase 30 can run without pending rule snapshot files.
+    get_rule_snapshot = None
+
+try:
+    from services.rule_snapshot import build_rule_snapshot, get_rule_registry
+except ModuleNotFoundError:  # pragma: no cover - fallback keeps dashboard read layer deployable.
+    def get_rule_registry() -> list[dict]:
+        return [
+            {"key": key, "label": label, "family": "dashboard", "source_fields": []}
+            for key, label in (
+                ("hot", "熱門"),
+                ("cold", "冷門"),
+                ("missing", "遺漏"),
+                ("repeat", "重複"),
+                ("tail", "尾數"),
+                ("gap", "間距"),
+                ("cluster", "群聚"),
+                ("diagonal", "斜線"),
+                ("super", "超級獎"),
+                ("laowanjia", "老玩家"),
+            )
+        ]
+
+    def build_rule_snapshot(
+        analysis: dict | None,
+        prediction: dict | None = None,
+        *,
+        source_issue: str | None = None,
+        target_issue: str | None = None,
+    ) -> dict:
+        source = analysis or {}
+        forecast = prediction or {}
+        rules = []
+        for item in get_rule_registry():
+            key = item["key"]
+            if key == "hot":
+                candidates = _as_int_list(source.get("hot_numbers"))[:10]
+            elif key == "cold":
+                candidates = _as_int_list(source.get("cold_numbers"))[:10]
+            elif key == "missing":
+                candidates = _as_int_list(source.get("missing_numbers"))[:10]
+            elif key == "repeat":
+                candidates = _as_int_list(source.get("repeated_numbers"))[:10]
+            elif key == "super":
+                candidates = _as_int_list(
+                    ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}).get("candidate_numbers")
+                    or forecast.get("super_candidates")
+                    or forecast.get("super_number_candidates")
+                )[:10]
+            else:
+                candidates = _as_int_list(forecast.get("recommend_numbers") or forecast.get("main_numbers"))[:10]
+            rules.append(
+                {
+                    "key": key,
+                    "label": item["label"],
+                    "status": "ready" if candidates else "insufficient",
+                    "score": source.get(f"{key}_score"),
+                    "confidence": source.get(f"{key}_score"),
+                    "candidate_numbers": candidates,
+                    "reason": "dashboard fallback",
+                }
+            )
+        ready = [item for item in rules if item.get("status") == "ready"]
+        return {
+            "source_issue": source_issue,
+            "target_issue": target_issue,
+            "rules": rules,
+            "aggregate": {
+                "completed_count": len(ready),
+                "total_count": len(rules),
+                "primary_rules": [item["key"] for item in ready[:5]],
+            },
+        }
 
 logger = logging.getLogger(__name__)
 
@@ -795,7 +869,7 @@ def _rule_snapshot_for_dashboard(analysis: dict, prediction: dict) -> dict:
     target_issue = _valid_production_issue(
         prediction.get("prediction_issue") or prediction.get("target_issue")
     )
-    if source_issue:
+    if source_issue and get_rule_snapshot is not None:
         try:
             stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
             snapshot = (stored or {}).get("snapshot_json") if isinstance(stored, dict) else None
