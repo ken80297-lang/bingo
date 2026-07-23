@@ -427,6 +427,12 @@
       return `${fmtNumber(n > 1 ? n : n * 100)}%`;
     };
 
+    const confidencePercentValue = (value, fallback = 0) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(0, Math.min(100, n > 1 ? n : n * 100));
+    };
+
     const statusText = (status) => zhStatus[status] || safe(status);
 
     const statusClass = (status) => {
@@ -446,10 +452,12 @@
       strong: "優良",
       no_hit: "未命中",
       big: "偏大",
+      large: "偏大",
       small: "偏小",
       odd: "偏單",
       even: "偏雙",
       balanced: "均衡",
+      unavailable: "尚無資料",
       Balance: "均衡模型",
       HotCold: "冷熱模型",
       Missing: "缺號模型",
@@ -549,6 +557,45 @@
     const rows = (items) => `<div class="list">${items.join("")}</div>`;
     const row = (label, value, cls = "") => `<div class="row"><span>${label}</span><span class="${cls}">${value}</span></div>`;
 
+    function renderPredictionMix(title, data, leftKey, rightKey, leftLabel, rightLabel) {
+      const left = Number(data && data[leftKey]);
+      const right = Number(data && data[rightKey]);
+      const label = data && data.label ? labelZh(data.label) : "尚無資料";
+      const confidence = confidencePercentValue(data && (data.confidence_percent ?? data.confidence));
+      const fallback = data && data.fallback_used ? `<div class="notice warn">fallback: ${safe(data.fallback_reason || data.source)}</div>` : "";
+      return `
+        <div class="section">
+          <p class="mini-title">${title}</p>
+          <div class="grid">
+            ${metric(leftLabel, Number.isFinite(left) ? fmtNumber(left) : "0")}
+            ${metric(rightLabel, Number.isFinite(right) ? fmtNumber(right) : "0")}
+            ${metric("判斷", label)}
+            ${metric("Confidence", `${fmtNumber(confidence)}%`)}
+          </div>
+          ${fallback}
+        </div>
+      `;
+    }
+
+    function renderHighProbability(next) {
+      const numbers = normalizeNumbers(next.high_probability_numbers);
+      const detailRows = asList(next.high_probability_details).slice(0, 5).map((item) => {
+        const reasons = asList(item.reasons).slice(0, 2).join(", ");
+        return row(numberLabel(item.number), `${fmtNumber(item.score)}${reasons ? ` - ${safe(reasons)}` : ""}`);
+      });
+      const fallback = next.high_probability_fallback_used
+        ? `<div class="notice warn">fallback: ${safe(next.high_probability_fallback_reason || next.high_probability_source)}</div>`
+        : "";
+      return `
+        <div class="section">
+          <h3>AI 高機率 5 號</h3>
+          ${balls(numbers)}
+          ${detailRows.length ? rows(detailRows) : ""}
+          ${fallback}
+        </div>
+      `;
+    }
+
     function saveHealthBrowserCache(payload) {
       try {
         localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload }));
@@ -642,7 +689,16 @@
         target_draw_time: raw.target_draw_time || raw.expected_draw_time,
         generated_at: raw.generated_at,
         confidence: raw.confidence,
+        confidence_percent: confidencePercentValue(raw.confidence_percent ?? raw.confidence),
         candidates: normalizeNumbers(raw.candidates || raw.main_numbers || raw.recommend_numbers || []),
+        high_probability_numbers: normalizeNumbers(raw.high_probability_numbers || []),
+        high_probability_details: asList(raw.high_probability_details),
+        high_probability_source: raw.high_probability_source,
+        high_probability_fallback_used: Boolean(raw.high_probability_fallback_used),
+        high_probability_fallback_reason: raw.high_probability_fallback_reason,
+        size_prediction: raw.size_prediction || {},
+        odd_even_prediction: raw.odd_even_prediction || {},
+        super_candidates: normalizeNumbers(raw.super_candidates || []),
         super_number: raw.super_number || raw.recommended_super_number,
         three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
         four_star: normalizeNumbers(raw.four_star || asList(raw.main_numbers).slice(0, 4)),
@@ -760,14 +816,18 @@
           ${metric("Model / Feature", `${safe(next.model_version)} / ${safe(next.feature_version)}`)}
           ${metric("Stale 狀態", staleStatusText(next.stale_status, next.lag_issues), staleStatusClass(next.stale_status, next.lag_issues))}
           ${metric("Production 驗證", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
-          ${metric("AI 信心值", `${fmtNumber(next.confidence)}%`)}
+          ${metric("AI 信心值", `${fmtNumber(next.confidence_percent)}%`)}
         </div>
         <h3>AI推薦20碼</h3>
         <div class="summary-line">實際 count：${fmtNumber(numbers.length)} / 20</div>
         ${next.recommendation_warning ? `<div class="notice warn">${safe(next.recommendation_warning)}</div>` : ""}
         ${numberWarning}
         ${balls(numbers)}
+        ${renderHighProbability(next)}
         <h3>超級獎號</h3>${next.super_number ? balls([next.super_number], "super") : `<div class="empty">尚無超級獎號推薦</div>`}
+        <h3>AI 超級獎候選</h3>${normalizeNumbers(next.super_candidates).length ? balls(next.super_candidates, "super") : `<div class="empty">尚無超級獎候選</div>`}
+        ${renderPredictionMix("大小預測", next.size_prediction, "small_count", "large_count", "小", "大")}
+        ${renderPredictionMix("單雙預測", next.odd_even_prediction, "odd_count", "even_count", "單", "雙")}
         <div class="section">
           <p class="mini-title">星數預測</p>
           ${rows([

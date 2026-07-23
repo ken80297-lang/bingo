@@ -17,6 +17,15 @@ from database.prediction_history_store import (
 from database.recommendation_center_store import get_latest_recommendation_run
 from config.production_scope import production_scope_payload
 from database.release_store import get_current_release
+from services.dashboard_card_schema import (
+    confidence_percent,
+    confidence_ratio,
+    high_probability_numbers,
+    odd_even_prediction,
+    size_prediction,
+    super_candidates,
+    validation_diagnostics,
+)
 from services.recommendation_center import fast_path_strategy_version_from_prediction
 from services.prediction_refresh import prediction_refresh_status
 
@@ -180,6 +189,40 @@ def _alerts(numbers: list[int], super_number: int | None) -> dict:
     }
 
 
+def _dashboard_card_fields(prediction: dict, numbers: list[int]) -> dict:
+    size_payload = size_prediction(numbers, prediction)
+    odd_even_payload = odd_even_prediction(numbers, prediction)
+    high_probability = high_probability_numbers(prediction, numbers)
+    confidence_value = prediction.get("confidence_percent") or prediction.get("confidence") or 0
+    payload = {
+        "high_probability_numbers": high_probability["numbers"],
+        "high_probability_details": high_probability["details"],
+        "high_probability_source": high_probability["source"],
+        "high_probability_fallback_used": high_probability["fallback_used"],
+        "high_probability_fallback_reason": high_probability.get("fallback_reason"),
+        "size_prediction": size_payload,
+        "odd_even_prediction": odd_even_payload,
+        "confidence": confidence_ratio(confidence_value),
+        "confidence_percent": confidence_percent(confidence_value),
+        "super_candidates": super_candidates(prediction),
+    }
+    payload["diagnostics"] = {
+        "dashboard_card_v1": validation_diagnostics(
+            {
+                **payload,
+                "recommend_numbers": numbers,
+                "current_draw": {},
+            }
+        ),
+        "fallbacks": {
+            "high_probability": high_probability.get("fallback_reason"),
+            "size_prediction": size_payload.get("fallback_reason"),
+            "odd_even_prediction": odd_even_payload.get("fallback_reason"),
+        },
+    }
+    return payload
+
+
 def build_prediction_history_record(recommendation: dict) -> dict | None:
     results = recommendation.get("results") or []
     first = results[0] if results else {}
@@ -304,8 +347,9 @@ def build_next_prediction_dashboard() -> dict:
         "status": "ok",
         "next_recommendation": {
             "prediction_issue": prediction.get("prediction_issue"),
-            "confidence": prediction.get("confidence") or 0,
+            **_dashboard_card_fields(prediction, numbers),
             "candidates": numbers,
+            "recommend_numbers": numbers,
             "super_number": super_number,
             "three_star": prediction.get("three_star") or numbers[:3],
             "four_star": prediction.get("four_star") or numbers[:4],

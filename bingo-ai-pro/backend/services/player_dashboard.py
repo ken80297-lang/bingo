@@ -20,7 +20,18 @@ from database.prediction_history_store import get_prediction_lifecycle_aggregate
 from database.prediction_history_store import is_production_prediction
 from config.production_scope import production_scope_payload
 from database.release_store import get_current_release
+from database.rule_snapshot_store import get_rule_snapshot
+from services.dashboard_card_schema import (
+    confidence_percent,
+    confidence_ratio,
+    high_probability_numbers,
+    odd_even_prediction,
+    size_prediction,
+    super_candidates,
+    validation_diagnostics,
+)
 from services.prediction_refresh import prediction_refresh_status
+from services.rule_snapshot import build_rule_snapshot, get_rule_registry
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +322,8 @@ def _current_draw(draw: dict | None) -> dict | None:
         "draw_time": draw.get("draw_time"),
         "numbers": numbers,
         "super_number": draw.get("super_number"),
+        "verification_status": draw.get("verification_status") or "official_verified",
+        "status_label": draw.get("status_label") or "official_verified",
         "big_small": draw.get("big_small") or _big_small(numbers),
         "odd_even": draw.get("odd_even") or _odd_even(numbers),
         "source": draw.get("source") or "official",
@@ -520,6 +533,45 @@ def _pending_next_prediction(current_draw: dict | None, detected_latest_issue: A
     }
 
 
+def _enrich_dashboard_card_v1(next_prediction: dict, current_draw: dict | None) -> dict:
+    payload = dict(next_prediction or {})
+    numbers = _as_int_list(payload.get("recommend_numbers") or payload.get("main_numbers"))
+    record = {**payload, "recommend_numbers": numbers}
+    size_payload = size_prediction(numbers, record)
+    odd_even_payload = odd_even_prediction(numbers, record)
+    high_probability = high_probability_numbers(record, numbers, payload.get("rule_library"))
+    payload.update(
+        {
+            "main_numbers": numbers,
+            "recommend_numbers": numbers,
+            "high_probability_numbers": high_probability["numbers"],
+            "high_probability_details": high_probability["details"],
+            "high_probability_source": high_probability["source"],
+            "high_probability_fallback_used": high_probability["fallback_used"],
+            "high_probability_fallback_reason": high_probability.get("fallback_reason"),
+            "size_prediction": size_payload,
+            "odd_even_prediction": odd_even_payload,
+            "confidence": confidence_ratio(payload.get("confidence") or payload.get("confidence_percent") or 0),
+            "confidence_percent": confidence_percent(payload.get("confidence_percent") or payload.get("confidence") or 0),
+            "super_candidates": super_candidates(record),
+        }
+    )
+    diagnostics_card = {
+        **payload,
+        "current_draw": current_draw or {},
+    }
+    payload["diagnostics"] = {
+        **(payload.get("diagnostics") or {}),
+        "dashboard_card_v1": validation_diagnostics(diagnostics_card),
+        "fallbacks": {
+            "high_probability": high_probability.get("fallback_reason"),
+            "size_prediction": size_payload.get("fallback_reason"),
+            "odd_even_prediction": odd_even_payload.get("fallback_reason"),
+        },
+    }
+    return payload
+
+
 def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
     exact = _prediction_by_target_issue(target_issue)
     if exact:
@@ -646,36 +698,8 @@ def _history_item(record: dict) -> dict:
 
 
 RULE_LIBRARY_NAMES = [
-    ("hot", "熱門"),
-    ("cold", "冷門"),
-    ("missing", "缺號"),
-    ("repeat", "重號"),
-    ("tail", "尾數"),
-    ("gap", "間距"),
-    ("cluster", "群聚"),
-    ("diagonal", "斜線"),
-    ("super", "超級獎"),
-    ("laowanjia", "老玩家"),
-    ("ladder", "階梯"),
-    ("partial_ladder", "偏階"),
-    ("extended_ladder", "延階"),
-    ("reverse", "反號"),
-    ("neighbor", "隔壁號"),
-    ("guide", "引路牌"),
-    ("integrated", "整合數"),
-    ("sunset", "太陽下山"),
-    ("momentum", "盤勢動能"),
-    ("super_number_trajectory_recovery", "超獎軌跡回補"),
-    ("cluster_aftershock_recovery", "群聚後連號回補"),
-    ("twins", "雙生"),
-    ("consecutive", "連號"),
-    ("patch", "補號"),
-    ("hot_zone", "熱區"),
-    ("cold_zone", "冷區"),
-    ("three_star", "三星"),
-    ("four_star", "四星"),
-    ("five_star", "五星"),
-    ("six_star", "六星"),
+    (item["key"], item["label"])
+    for item in get_rule_registry()
 ]
 
 
@@ -691,116 +715,36 @@ def _flatten_number_groups(groups: Any) -> list[int]:
     return _as_int_list(values)
 
 
-def _rule_item(key: str, label: str, analysis: dict, prediction: dict) -> dict:
-    numbers = prediction.get("main_numbers") or []
-    status = "ready"
-    score = None
-    reason = "此項依據目前 prediction snapshot 與最新分析資料產生。"
+def _rule_snapshot_item_to_dashboard(item: dict) -> dict:
+    status = item.get("status")
     impact = "中"
-    candidates: list[int] = []
-
-    if key == "hot":
-        candidates = _as_int_list(analysis.get("hot_numbers"))[:8]
-        reason = "近期熱門號碼與本期候選交集。"
-    elif key == "cold":
-        candidates = _as_int_list(analysis.get("cold_numbers"))[:8]
-        reason = "近期冷門號碼的回補觀察。"
-    elif key == "missing":
-        candidates = _as_int_list(analysis.get("missing_numbers"))[:8]
-        reason = "遺漏較久號碼的回補觀察。"
-    elif key == "repeat":
-        candidates = _as_int_list(analysis.get("repeated_numbers"))[:8]
-        reason = "重號延續觀察。"
-    elif key == "tail":
-        candidates = numbers
-        reason = "依尾數分布檢查候選是否過度集中。"
-    elif key == "gap":
-        score = analysis.get("gap_score")
-        candidates = _flatten_number_groups(analysis.get("difference_values"))[:8]
-        reason = "欄位來源為 difference_values / gap_score，正式顯示為間距分析。"
-    elif key == "cluster":
-        score = analysis.get("cluster_score")
-        candidates = numbers
-        impact = "高" if str(analysis.get("cluster_level") or "").lower() in ("high", "高") else "中"
-        reason = "依十碼區間群聚程度評估。"
-    elif key == "diagonal":
-        score = analysis.get("diagonal_score")
-        candidates = _flatten_number_groups(analysis.get("diagonal_pattern"))[:8]
-        reason = "分數來自 diagonal_pattern 命中組數加權，代表斜線型態符合度。"
-    elif key == "super":
-        super_data = ((analysis.get("ai_score") or {}).get("super_number_trajectory_recovery") or {})
-        score = super_data.get("confidence")
-        candidates = _as_int_list(super_data.get("candidate_numbers"))[:10]
-        reason = "依超級獎軌跡規則產生候選；此指標仍需持續校正。"
-    elif key == "super_number_trajectory_recovery":
-        super_data = ((analysis.get("ai_score") or {}).get("super_number_trajectory_recovery") or {})
-        score = super_data.get("confidence")
-        candidates = _as_int_list(super_data.get("candidate_numbers"))[:10]
-        reason = "觀察超級獎號近期移動、距離、反轉與可能回補位置。"
-    elif key == "cluster_aftershock_recovery":
-        cluster_data = ((analysis.get("ai_score") or {}).get("cluster_aftershock_recovery") or {})
-        score = cluster_data.get("confidence")
-        candidates = _as_int_list(cluster_data.get("candidate_numbers") or cluster_data.get("patch_candidates"))[:10]
-        reason = "觀察大群聚後的小連號與回補候選。"
-    elif key == "laowanjia":
-        score = analysis.get("laowanjia_score")
-        candidates = numbers[:8]
+    if status in {"insufficient", "experimental", "disabled"}:
+        impact = "資料不足"
+    else:
         try:
-            impact = "高" if float(score or 0) >= 70 else "中"
+            impact = "高" if float(item.get("score") or 0) >= 70 else "中"
         except Exception:
             impact = "中"
-        reason = "目前盤勢與歷史老玩家規則的符合程度。"
-    elif key == "twins":
-        candidates = _twins(numbers)
-        reason = "候選中出現的雙生號。"
-    elif key == "consecutive":
-        candidates = sorted({number for pair in _pairs(numbers, 1) for number in pair})
-        reason = "候選中出現的連號群。"
-    elif key == "patch":
-        candidates = _patch_numbers(numbers)
-        reason = "依相鄰、間隔與十位補位產生的補號候選。"
-    elif key == "hot_zone":
-        zones = analysis.get("hot_zone") or []
-        candidates = []
-        if zones:
-            try:
-                start = int(zones[0])
-                candidates = [number for number in numbers if start <= number <= start + 9]
-            except Exception:
-                candidates = []
-        reason = "近期最明顯的熱區觀察。"
-    elif key == "cold_zone":
-        candidates = _as_int_list(analysis.get("cold_numbers"))[:8]
-        reason = "近期最明顯的冷區觀察。"
-    elif key in {"three_star", "four_star", "five_star", "six_star"}:
-        candidates = _as_int_list(analysis.get(key))[:10]
-        reason = f"{label}候選觀察。"
-    else:
-        status = "insufficient"
-        impact = "資料不足"
-        reason = "尚未建立此項分析結果"
-
-    if status == "ready" and not candidates and score is None:
-        status = "insufficient"
-        impact = "資料不足"
-        reason = "資料不足"
 
     return {
-        "key": key,
-        "name": label,
+        "key": item.get("key"),
+        "name": item.get("label"),
         "status": status,
-        "score": score,
-        "confidence": score,
-        "reason": reason,
+        "score": item.get("score"),
+        "confidence": item.get("confidence"),
+        "reason": item.get("reason"),
         "impact": impact,
-        "candidate_numbers": candidates,
+        "candidate_numbers": item.get("candidate_numbers") or [],
     }
 
 
 def _rule_library(analysis: dict | None, prediction: dict) -> dict:
     source = analysis or {}
-    rules = [_rule_item(key, label, source, prediction) for key, label in RULE_LIBRARY_NAMES]
+    snapshot = _rule_snapshot_for_dashboard(source, prediction)
+    snapshot_rules = snapshot.get("rules") or []
+    rules = [_rule_snapshot_item_to_dashboard(item) for item in snapshot_rules]
     completed = sum(1 for item in rules if item.get("status") == "ready")
+    labels_by_key = {key: label for key, label in RULE_LIBRARY_NAMES}
 
     def score_value(item: dict) -> float:
         try:
@@ -808,6 +752,10 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         except Exception:
             return 0.0
 
+    snapshot_primary = [
+        labels_by_key.get(key, key)
+        for key in ((snapshot.get("aggregate") or {}).get("primary_rules") or [])
+    ]
     primary = [
         item["name"]
         for item in sorted(
@@ -817,10 +765,12 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         )
         if item.get("status") == "ready"
     ][:5]
+    if snapshot_primary:
+        primary = snapshot_primary
     return {
         "title": "AI 推薦依據",
         "completed_count": completed,
-        "total_count": len(RULE_LIBRARY_NAMES),
+        "total_count": len(snapshot_rules) or len(RULE_LIBRARY_NAMES),
         "summary": f"本期主要依據：{'、'.join(primary[:3])}" if primary else "尚未建立完整分析摘要",
         "primary_rules": primary,
         "rules": rules,
@@ -836,6 +786,29 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         "super_trajectory": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
         "cluster_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
     }
+
+
+def _rule_snapshot_for_dashboard(analysis: dict, prediction: dict) -> dict:
+    source_issue = _valid_production_issue(
+        analysis.get("issue") or prediction.get("issue") or prediction.get("based_on_issue")
+    )
+    target_issue = _valid_production_issue(
+        prediction.get("prediction_issue") or prediction.get("target_issue")
+    )
+    if source_issue:
+        try:
+            stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
+            snapshot = (stored or {}).get("snapshot_json") if isinstance(stored, dict) else None
+            if isinstance(snapshot, dict) and snapshot.get("rules"):
+                return snapshot
+        except Exception:
+            logger.exception("dashboard rule snapshot lookup failed")
+    return build_rule_snapshot(
+        analysis,
+        prediction,
+        source_issue=source_issue,
+        target_issue=target_issue,
+    )
 
 
 def _data_counts(
@@ -969,6 +942,7 @@ def build_player_dashboard_summary() -> dict:
         )
     next_prediction["history"] = prediction_stats
     next_prediction["rule_library"] = _rule_library(analysis, next_prediction)
+    next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
     previous_target_issue = next_prediction.get("based_on_issue")
     verified_record, previous_result_mode = _previous_result_for_based_on(previous_target_issue)
     displayed_target_issue = (verified_record or {}).get("prediction_issue")
