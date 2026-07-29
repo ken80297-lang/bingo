@@ -24,6 +24,9 @@ from services.voting_engine import build_voting_result
 
 logger = logging.getLogger(__name__)
 
+TARGET_ISSUE_WARNING_COOLDOWN_SECONDS = 120
+_TARGET_ISSUE_WARNING_STATE: dict[str, dict[str, float | int]] = {}
+
 QUALITY_SCORE = {
     "ok": 1.0,
     "warning": 0.8,
@@ -650,7 +653,20 @@ def _target_issue(issue: str | None) -> str | None:
         ]
         if len(recent) >= 2 and recent[0] == current and recent[0] - recent[1] == 1:
             return str(current + 1)
-        logger.warning("target issue cannot be confirmed from collector metadata: %s", issue)
+        now = time.monotonic()
+        state = _TARGET_ISSUE_WARNING_STATE.setdefault(str(issue), {"last_logged_at": 0.0, "suppressed_count": 0})
+        elapsed = now - float(state.get("last_logged_at") or 0)
+        if elapsed >= TARGET_ISSUE_WARNING_COOLDOWN_SECONDS:
+            suppressed = int(state.get("suppressed_count") or 0)
+            logger.warning(
+                "target issue cannot be confirmed from collector metadata: %s suppressed_count=%s",
+                issue,
+                suppressed,
+            )
+            state["last_logged_at"] = now
+            state["suppressed_count"] = 0
+        else:
+            state["suppressed_count"] = int(state.get("suppressed_count") or 0) + 1
         return None
     except Exception:
         return None

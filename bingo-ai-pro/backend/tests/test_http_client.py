@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -14,9 +15,9 @@ from services.http_client import safe_get_json
 
 @pytest.fixture(autouse=True)
 def reset_ssl_fallback_cooldown():
-    http_client._SSL_FALLBACK_COOLDOWN_UNTIL = None
+    http_client._SSL_FALLBACK_COOLDOWNS.clear()
     yield
-    http_client._SSL_FALLBACK_COOLDOWN_UNTIL = None
+    http_client._SSL_FALLBACK_COOLDOWNS.clear()
 
 
 class DummyResponse:
@@ -106,10 +107,56 @@ def test_safe_get_json_ssl_fallback_failure_opens_cooldown(monkeypatch):
 
     assert first["ok"] is False
     assert second["ok"] is False
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert calls[0]["verify"] is True
     assert calls[1]["verify"] is False
-    assert calls[2]["verify"] is True
+    assert second["attempts"] == 0
+    assert second["ssl_fallback_cooldown"] is True
+
+
+def test_safe_get_json_ssl_cooldown_is_host_level(monkeypatch):
+    calls = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append((url, kwargs))
+        if "example.test" in url:
+            raise requests.exceptions.SSLError("certificate failed")
+        if kwargs.get("verify") is True:
+            raise requests.exceptions.SSLError("other certificate failed")
+        return DummyResponse({"rtCode": 0})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    first = safe_get_json("https://example.test/api?a=1")
+    second = safe_get_json("https://example.test/api?b=2")
+    other = safe_get_json("https://other.test/api")
+
+    assert first["ok"] is False
+    assert second["ok"] is False
+    assert second["ssl_fallback_cooldown"] is True
+    assert second["attempts"] == 0
+    assert other["ok"] is True
+    assert [item[1]["verify"] for item in calls] == [True, False, True, False]
+
+
+def test_safe_get_json_ssl_cooldown_allows_next_probe_without_fallback(monkeypatch):
+    calls = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append(kwargs)
+        raise requests.exceptions.SSLError("certificate failed")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    first = safe_get_json("https://example.test/api")
+    key = http_client._cooldown_key("https://example.test/api")
+    http_client._SSL_FALLBACK_COOLDOWNS[key]["next_probe_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    probe = safe_get_json("https://example.test/api")
+
+    assert first["ok"] is False
+    assert probe["ok"] is False
+    assert probe["ssl_fallback_cooldown"] is True
+    assert [item["verify"] for item in calls] == [True, False, True]
 
 
 @pytest.mark.parametrize(

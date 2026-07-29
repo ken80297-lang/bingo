@@ -78,6 +78,28 @@ def test_system_status_cache_stale_detection():
     assert payload["stale"] is True
 
 
+def test_system_status_cache_deadline_returns_partial_cache(monkeypatch):
+    _reset_cache()
+    collector_runtime._SYSTEM_STATUS_CACHE = {
+        "status": "ok",
+        "scheduler": "running",
+        "latest_issue": "115000009",
+        "cache_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", 0)
+
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+
+    assert payload["latest_issue"] == "115000009"
+    assert payload["timeout"] is True
+    assert payload["partial"] is True
+    assert payload["timeout_steps"]
+    assert payload["refresh_in_progress"] is False
+    assert collector_runtime._SYSTEM_STATUS_REFRESH_LOCK.acquire(blocking=False) is True
+    collector_runtime._SYSTEM_STATUS_REFRESH_LOCK.release()
+
+
 def test_official_lock_stale_recovery_clears_runtime(monkeypatch):
     acquired = collector_runtime._OFFICIAL_LOCK.acquire(blocking=False)
     collector_runtime._STATE.update(

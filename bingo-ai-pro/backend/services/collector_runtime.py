@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -10,7 +11,8 @@ from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_STATUS_CACHE_TTL_SECONDS = 30
+SYSTEM_STATUS_CACHE_TTL_SECONDS = int(os.getenv("SYSTEM_STATUS_CACHE_TTL_SECONDS", "75"))
+SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS = float(os.getenv("SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", "20"))
 OFFICIAL_LOCK_STALE_SECONDS = 180
 
 _OFFICIAL_LOCK = threading.Lock()
@@ -59,6 +61,10 @@ _SYSTEM_STATUS_LAST_REFRESH_ERROR: str | None = None
 _SYSTEM_STATUS_LAST_REFRESH_DURATION_MS: float | None = None
 
 
+class _StatusCacheDeadlineExceeded(Exception):
+    pass
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -103,6 +109,20 @@ def _cache_metadata(payload: dict, *, source: str) -> dict:
     result["last_refresh_error"] = _SYSTEM_STATUS_LAST_REFRESH_ERROR
     result["refresh_in_progress"] = _SYSTEM_STATUS_REFRESH_IN_PROGRESS
     return result
+
+
+def _status_cache_step_log(step: str, start: float, success: bool, timeout: bool = False) -> None:
+    logger.info(
+        "status_cache_step step=%s duration_ms=%s success=%s timeout=%s",
+        step,
+        round((time.perf_counter() - start) * 1000, 2),
+        str(success).lower(),
+        str(timeout).lower(),
+    )
+
+
+def _status_cache_deadline_exceeded(start: float) -> bool:
+    return (time.perf_counter() - start) >= SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS
 
 
 def _collector_health_from_runtime(payload: dict) -> dict:
@@ -420,6 +440,42 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
     start = time.perf_counter()
     _SYSTEM_STATUS_REFRESH_IN_PROGRESS = True
     try:
+        steps: list[dict[str, Any]] = []
+        timeout_steps: list[str] = []
+
+        def run_step(step: str, func, default):
+            step_start = time.perf_counter()
+            if _status_cache_deadline_exceeded(start):
+                timeout_steps.append(step)
+                _status_cache_step_log(step, step_start, success=False, timeout=True)
+                raise _StatusCacheDeadlineExceeded(step)
+            try:
+                value = func()
+                steps.append(
+                    {
+                        "step": step,
+                        "duration_ms": round((time.perf_counter() - step_start) * 1000, 2),
+                        "success": True,
+                        "timeout": False,
+                    }
+                )
+                _status_cache_step_log(step, step_start, success=True)
+                return value
+            except _StatusCacheDeadlineExceeded:
+                raise
+            except Exception as exc:
+                logger.warning("system status cache step failed step=%s error=%s", step, exc)
+                steps.append(
+                    {
+                        "step": step,
+                        "duration_ms": round((time.perf_counter() - step_start) * 1000, 2),
+                        "success": False,
+                        "timeout": False,
+                    }
+                )
+                _status_cache_step_log(step, step_start, success=False)
+                return default
+
         from database.collector_store import get_collector_status
         from database.data_quality_store import get_data_quality_status
         from database.prediction_history_store import get_prediction_history_count
@@ -430,13 +486,9 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
         from services.daily_recovery import get_recovery_status, build_health_report
         from services.prediction_service import prediction_lock_status
 
-        try:
-            stats = get_statistics()
-        except Exception:
-            stats = {}
-
-        catch_up = get_catch_up_status(fetch_source=False)
-        runtime = collector_runtime_status()
+        stats = run_step("db_statistics", get_statistics, {})
+        catch_up = run_step("catch_up_status", lambda: get_catch_up_status(fetch_source=False), {})
+        runtime = run_step("collector_runtime", collector_runtime_status, collector_runtime_status())
         collector_health = _collector_health(catch_up, runtime)
         payload = {
             "status": "ok",
@@ -452,31 +504,63 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
             "last_successful_collect_time": catch_up.get("last_successful_collect_time"),
             "last_collect_duration": catch_up.get("last_collect_duration"),
             "catch_up_available": catch_up.get("catch_up_available"),
-            "prediction_history_count": get_prediction_history_count(),
+            "prediction_history_count": run_step("prediction_history_count", get_prediction_history_count, None),
             "collector_runtime": runtime,
             "scheduler_skipped_count": runtime.get("scheduler_skipped_count"),
             "continuity_status": runtime.get("continuity_status"),
             "missing_count": runtime.get("missing_count"),
             "database": {
-                "sqlite": _sqlite_status(),
-                "cloud": _cloud_status(),
+                "sqlite": run_step("sqlite_status", _sqlite_status, "unknown"),
+                "cloud": run_step("cloud_status", _cloud_status, "unknown"),
             },
-            "collector": get_collector_status(),
-            "data_quality": get_data_quality_status(),
-            "learning": _learning_status(),
-            "production_scope": production_scope_payload(),
-            "release": get_current_release(),
-            "daily_recovery": get_recovery_status(),
-            "prediction_lock": prediction_lock_status(),
-            "ai_daily_health_report": build_health_report(),
+            "collector": run_step("collector_status", get_collector_status, {"status": "unknown"}),
+            "data_quality": run_step("data_quality_status", get_data_quality_status, {"status": "unknown"}),
+            "learning": run_step("learning_status", _learning_status, {"status": "unknown"}),
+            "production_scope": run_step("production_scope", production_scope_payload, {}),
+            "release": run_step("release", get_current_release, {}),
+            "daily_recovery": run_step("daily_recovery", get_recovery_status, {"status": "unknown"}),
+            "prediction_lock": run_step("prediction_lock", prediction_lock_status, {"status": "unknown"}),
+            "ai_daily_health_report": run_step("health_report", build_health_report, {"status": "unknown"}),
             "cache_refreshed_at": _now(),
+            "status_cache_steps": steps,
+            "timeout_steps": timeout_steps,
+            "timeout": False,
         }
+    except _StatusCacheDeadlineExceeded as exc:
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        with _SYSTEM_STATUS_CACHE_LOCK:
+            cached = deepcopy(_SYSTEM_STATUS_CACHE)
+        payload = cached or _minimal_system_status_payload(scheduler_status)
+        payload.update(
+            {
+                "status": payload.get("status", "ok"),
+                "scheduler": scheduler_status,
+                "cache_refreshed_at": _now(),
+                "status_cache_steps": steps,
+                "timeout_steps": timeout_steps or [str(exc)],
+                "timeout": True,
+                "partial": True,
+            }
+        )
         with _SYSTEM_STATUS_CACHE_LOCK:
             _SYSTEM_STATUS_CACHE = deepcopy(payload)
             _SYSTEM_STATUS_LAST_REFRESH_DURATION_MS = duration_ms
-            _SYSTEM_STATUS_LAST_REFRESH_ERROR = None
-        return _cache_metadata(payload, source="refresh")
+            _SYSTEM_STATUS_LAST_REFRESH_ERROR = "deadline_exceeded"
+        logger.warning(
+            "system status cache refresh timed out duration_ms=%s timeout_steps=%s",
+            duration_ms,
+            payload.get("timeout_steps"),
+        )
+        logger.info(
+            "status_cache_refresh_completed duration_ms=%s cache_state=%s stale=%s partial=%s timeout_steps=%s success=false",
+            duration_ms,
+            "stale" if cached else "minimal",
+            str(True).lower(),
+            str(True).lower(),
+            payload.get("timeout_steps"),
+        )
+        _SYSTEM_STATUS_REFRESH_IN_PROGRESS = False
+        return _cache_metadata(payload, source="stale" if cached else "minimal")
     except Exception as exc:
         logger.exception("system status cache refresh failed")
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -485,8 +569,21 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
             _SYSTEM_STATUS_LAST_REFRESH_ERROR = str(exc)
             cached = deepcopy(_SYSTEM_STATUS_CACHE)
         if cached:
+            _SYSTEM_STATUS_REFRESH_IN_PROGRESS = False
             return _cache_metadata(cached, source="stale")
+        _SYSTEM_STATUS_REFRESH_IN_PROGRESS = False
         return _cache_metadata(_minimal_system_status_payload(scheduler_status), source="minimal")
+    else:
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        with _SYSTEM_STATUS_CACHE_LOCK:
+            _SYSTEM_STATUS_CACHE = deepcopy(payload)
+            _SYSTEM_STATUS_LAST_REFRESH_DURATION_MS = duration_ms
+            _SYSTEM_STATUS_LAST_REFRESH_ERROR = None
+        logger.info(
+            "status_cache_refresh_completed duration_ms=%s cache_state=refresh stale=false partial=false timeout_steps=[] success=true",
+            duration_ms,
+        )
+        return _cache_metadata(payload, source="refresh")
     finally:
         _SYSTEM_STATUS_REFRESH_IN_PROGRESS = False
         _SYSTEM_STATUS_REFRESH_LOCK.release()
