@@ -24,3 +24,10 @@ backend/err.txt
 backend/out.txt
 backend/health_cache.json
 backend/health_cache.json.tmp
+
+# Desktop simulator generated artifacts
+*.spec
+desktop/output/
+desktop/logs/
+desktop/temp/
+*.rar

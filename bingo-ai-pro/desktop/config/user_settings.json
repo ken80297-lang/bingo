@@ -1,0 +1,11 @@
+﻿{
+  "auto_load_on_start": true,
+  "auto_mode": false,
+  "default_csv_path": "C:\\Users\\ken80297\\Desktop\\master_draws.csv",
+  "default_output_path": "C:\\Users\\ken80297\\Documents\\GitHub\\bingo\\bingo-ai-pro\\desktop\\output",
+  "open_report_on_finish": false,
+  "recent_limit": 100,
+  "show_advanced_statistics": true,
+  "verify_hash_on_start": true,
+  "warmup": 100
+}
