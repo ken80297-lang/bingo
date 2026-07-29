@@ -8,6 +8,8 @@ from database.official_draw_store import get_official_draw_history
 from services.collector_runtime import update_collector_runtime
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY
 
+LAST_GAP_SCAN_RESULT: dict | None = None
+
 
 def _issue_int(value: Any) -> int | None:
     try:
@@ -25,6 +27,7 @@ def _valid_numbers(values: Any) -> bool:
 
 
 def scan_collector_gaps(limit: int = 200) -> dict:
+    global LAST_GAP_SCAN_RESULT
     checked_at = datetime.now(timezone.utc).isoformat()
     records = get_official_draw_history(max(1, min(int(limit or 200), 200)))
     issues = [_issue_int(item.get("issue")) for item in records]
@@ -47,6 +50,7 @@ def scan_collector_gaps(limit: int = 200) -> dict:
             "latest_issue_priority": LATEST_ISSUE_PRIORITY,
         }
         update_collector_runtime(last_gap_scan_at=checked_at, missing_count=0, continuity_status="unknown")
+        LAST_GAP_SCAN_RESULT = payload
         return payload
 
     start_issue, end_issue = min(issues), max(issues)
@@ -88,4 +92,34 @@ def scan_collector_gaps(limit: int = 200) -> dict:
         missing_count=len(missing),
         continuity_status=continuity_status,
     )
+    LAST_GAP_SCAN_RESULT = payload
     return payload
+
+
+def get_cached_collector_gaps() -> dict:
+    if LAST_GAP_SCAN_RESULT:
+        return {
+            **LAST_GAP_SCAN_RESULT,
+            "read_only": True,
+            "execution_triggered": False,
+            "cache_source": "memory",
+        }
+    return {
+        "status": "unknown",
+        "checked_at": None,
+        "range": {"start_issue": None, "end_issue": None},
+        "database_count": None,
+        "expected_count": None,
+        "missing_count": 0,
+        "missing_issues": [],
+        "pending_verification": [],
+        "duplicate_issues": [],
+        "invalid_issues": [],
+        "continuity_status": "unknown",
+        "historical_catchup_enabled": HISTORICAL_CATCHUP_ENABLED,
+        "historical_gaps_ignored": not HISTORICAL_CATCHUP_ENABLED,
+        "latest_issue_priority": LATEST_ISSUE_PRIORITY,
+        "read_only": True,
+        "execution_triggered": False,
+        "cache_source": "empty",
+    }

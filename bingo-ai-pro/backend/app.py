@@ -257,7 +257,7 @@ def _schedule_production_catch_up_jobs() -> None:
     scheduler.add_job(
         catch_up_missing_issues,
         "interval",
-        minutes=2,
+        minutes=5,
         id="collector_official_catch_up",
         replace_existing=True,
         max_instances=1,
@@ -383,7 +383,7 @@ def startup_event() -> None:
         scheduler.add_job(
             refresh_system_status_cache,
             "interval",
-            seconds=30,
+            seconds=60,
             id="system_status_runtime_cache_refresh",
             replace_existing=True,
             max_instances=1,

@@ -287,18 +287,13 @@ def build_next_prediction_dashboard() -> dict:
     fallback = None
     refresh_attempt = None
     if latest_draw and not prediction:
-        mark = time.perf_counter()
-        try:
-            from services.prediction_refresh import ensure_next_prediction
-
-            refresh_attempt = ensure_next_prediction(latest_draw)
-            context = get_latest_prediction_context()
-            latest_draw = (context or {}).get("draw") or latest_draw
-            prediction = (context or {}).get("prediction")
-            latest_history = prediction
-        except Exception as exc:
-            refresh_attempt = {"status": "failed", "refresh_status": "failed", "refresh_reason": str(exc)}
-        timings["prediction_refresh_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+        refresh_attempt = {
+            "status": "pending",
+            "refresh_status": "prediction_pending",
+            "refresh_reason": "read_only_request",
+            "execution_triggered": False,
+        }
+        timings["prediction_refresh_ms"] = 0.0
     if not prediction and not latest_draw:
         mark = time.perf_counter()
         latest_history = get_latest_prediction_history()
@@ -333,6 +328,8 @@ def build_next_prediction_dashboard() -> dict:
             "history": stats,
             "release": release,
             "production_scope": scope,
+            "read_only": True,
+            "execution_triggered": False,
             "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
         }
 
@@ -400,5 +397,7 @@ def build_next_prediction_dashboard() -> dict:
         "release": release,
         "production_scope": scope,
         "fallback": latest_history is None,
+        "read_only": True,
+        "execution_triggered": False,
         "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
     }

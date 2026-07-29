@@ -501,6 +501,15 @@
       analysisLatest: "/api/analysis/latest"
     };
 
+    const fastApiKeys = ["playerSummary", "system", "latestSync", "wakeStatus"];
+    const slowApiKeys = Object.keys(apis).filter((key) => !fastApiKeys.includes(key));
+    const pollState = {
+      latest: {},
+      fastTimer: null,
+      slowTimer: null,
+      hiddenTimer: null
+    };
+
     const zhStatus = {
       ok: "正常",
       warning: "警告",
@@ -785,6 +794,52 @@
       render(data, errors);
       document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
     }
+
+    async function loadApiGroup(keys, renderAfter = true) {
+      document.getElementById("refreshState").textContent = "Loading";
+      const loaded = await Promise.allSettled(
+        keys.map(async (key) => [key, await loadJson(key, apis[key])])
+      );
+      const errors = [];
+      for (const entry of loaded) {
+        if (entry.status === "fulfilled") {
+          pollState.latest[entry.value[0]] = entry.value[1];
+        } else {
+          errors.push(entry.reason && entry.reason.message ? entry.reason.message : String(entry.reason));
+        }
+      }
+      if (renderAfter) render(pollState.latest, errors);
+      document.getElementById("refreshState").textContent = `Updated ${new Date().toLocaleString()}`;
+    }
+
+    function stopPolling() {
+      [pollState.fastTimer, pollState.slowTimer, pollState.hiddenTimer].forEach((timer) => {
+        if (timer) clearInterval(timer);
+      });
+      pollState.fastTimer = null;
+      pollState.slowTimer = null;
+      pollState.hiddenTimer = null;
+    }
+
+    function startVisiblePolling() {
+      stopPolling();
+      loadApiGroup(Object.keys(apis));
+      pollState.fastTimer = setInterval(() => loadApiGroup(fastApiKeys), 60000);
+      pollState.slowTimer = setInterval(() => loadApiGroup(slowApiKeys), 5 * 60 * 1000);
+    }
+
+    function startHiddenPolling() {
+      stopPolling();
+      pollState.hiddenTimer = setInterval(() => loadApiGroup(["wakeStatus"], false), 5 * 60 * 1000);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        startVisiblePolling();
+      } else {
+        startHiddenPolling();
+      }
+    });
 
     function normalizeNext(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
@@ -1429,8 +1484,11 @@
     }
 
     document.getElementById("refreshButton").addEventListener("click", loadAll);
-    loadAll();
-    setInterval(loadAll, 30000);
+    if (document.visibilityState === "visible") {
+      startVisiblePolling();
+    } else {
+      startHiddenPolling();
+    }
   </script>
 </body>
 </html>

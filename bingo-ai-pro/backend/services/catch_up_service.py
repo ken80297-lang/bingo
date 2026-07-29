@@ -42,6 +42,7 @@ MAX_BATCH_SIZE = int(os.getenv("CATCH_UP_MAX_BATCH_SIZE", "120"))
 MAX_SOURCE_PAGES = int(os.getenv("CATCH_UP_MAX_SOURCE_PAGES", "10"))
 JOB_TIME_BUDGET_SECONDS = 75
 PER_ISSUE_RETRY_LIMIT = 1
+CATCH_UP_COOLDOWN_SECONDS = int(os.getenv("CATCH_UP_COOLDOWN_SECONDS", "120"))
 
 
 def _deadline_exceeded(start: float) -> bool:
@@ -321,9 +322,43 @@ def _empty_result(start: float, database_issue: str | None, source_issue: str | 
     }
 
 
-def catch_up_missing_issues() -> dict:
+def _last_finished_seconds_ago() -> float | None:
+    value = LAST_CATCH_UP_RESULT.get("last_finished_at") or LAST_CATCH_UP_RESULT.get("last_successful_collect_time")
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _cooldown_result(start: float, reason: str) -> dict:
+    elapsed = _elapsed_seconds(start)
+    result = {
+        **LAST_CATCH_UP_RESULT,
+        "status": "cooldown",
+        "catch_count": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "elapsed_seconds": elapsed,
+        "cooldown_seconds": CATCH_UP_COOLDOWN_SECONDS,
+        "exit_reason": reason,
+        "catch_up_available": True,
+    }
+    LAST_CATCH_UP_RESULT.update(result)
+    return result
+
+
+def catch_up_missing_issues(force: bool = False) -> dict:
     start = time.perf_counter()
     logger.info("catch_up_job_started")
+    if not force:
+        seconds_ago = _last_finished_seconds_ago()
+        if seconds_ago is not None and seconds_ago < CATCH_UP_COOLDOWN_SECONDS:
+            return _cooldown_result(start, "cooldown")
     with official_collection_lock("catch_up") as (locked, lock_payload):
         if not locked:
             result = {
@@ -410,10 +445,13 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
 
         if database_number is not None and source_number <= database_number and not missing:
             result = _empty_result(start, database_issue, source_issue)
-            result["exit_reason"] = "completed"
-            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="completed")
-            _record_event("ok", source_issue, start, "official catch-up already synced")
-            result = _defer_downstream(result, get_latest_official_draw(), "catch_up_already_synced")
+            result["exit_reason"] = "no_gap"
+            result["last_finished_at"] = datetime.utcnow().isoformat()
+            result["verification"] = {"status": "skipped", "reason": "no_gap"}
+            result["analysis"] = {"status": "skipped", "reason": "no_gap"}
+            result["prediction"] = {"status": "skipped", "reason": "no_gap"}
+            mark_success("catch_up", result.get("elapsed_seconds", 0) * 1000, exit_reason="no_gap")
+            _record_event("ok", source_issue, start, "official catch-up skipped: no gap")
             return result
 
         saved = save_official_draws(missing[:MAX_BATCH_SIZE])
@@ -453,6 +491,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "analysis": analysis,
             "prediction": prediction,
             "last_successful_collect_time": datetime.utcnow().isoformat() if success_count else LAST_CATCH_UP_RESULT.get("last_successful_collect_time"),
+            "last_finished_at": datetime.utcnow().isoformat(),
             "last_collect_duration": elapsed,
             "catch_up_available": True,
             "deadline_exceeded": deadline_hit,

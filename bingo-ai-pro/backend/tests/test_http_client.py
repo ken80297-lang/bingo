@@ -8,7 +8,15 @@ import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from services import http_client
 from services.http_client import safe_get_json
+
+
+@pytest.fixture(autouse=True)
+def reset_ssl_fallback_cooldown():
+    http_client._SSL_FALLBACK_COOLDOWN_UNTIL = None
+    yield
+    http_client._SSL_FALLBACK_COOLDOWN_UNTIL = None
 
 
 class DummyResponse:
@@ -82,6 +90,26 @@ def test_safe_get_json_ssl_failure_reports_fallback_failure(monkeypatch):
     assert len(calls) == 2
     assert calls[0]["verify"] is True
     assert calls[1]["verify"] is False
+
+
+def test_safe_get_json_ssl_fallback_failure_opens_cooldown(monkeypatch):
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append(kwargs)
+        raise requests.exceptions.SSLError("certificate failed")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    first = safe_get_json("https://example.test/api")
+    second = safe_get_json("https://example.test/api")
+
+    assert first["ok"] is False
+    assert second["ok"] is False
+    assert len(calls) == 3
+    assert calls[0]["verify"] is True
+    assert calls[1]["verify"] is False
+    assert calls[2]["verify"] is True
 
 
 @pytest.mark.parametrize(

@@ -774,7 +774,7 @@ def test_next_prediction_dashboard_uses_exact_fast_path(monkeypatch):
     assert result["timings_ms"]["total_ms"] >= 0
 
 
-def test_next_prediction_dashboard_refreshes_missing_latest_prediction(monkeypatch):
+def test_next_prediction_dashboard_marks_missing_latest_prediction_pending(monkeypatch):
     latest_draw = {"issue": "115040900", "numbers": list(range(1, 21))}
     prediction = {
         "id": 2,
@@ -785,13 +785,10 @@ def test_next_prediction_dashboard_refreshes_missing_latest_prediction(monkeypat
         "super_number": 9,
         "prediction_status": "waiting_draw",
     }
-    contexts = [
-        {"draw": latest_draw, "prediction": None, "target_issue": "115040901"},
-        {"draw": latest_draw, "prediction": prediction, "target_issue": "115040901"},
-    ]
+    context = {"draw": latest_draw, "prediction": None, "target_issue": "115040901"}
     refresh_calls = []
 
-    monkeypatch.setattr(next_prediction_center, "get_latest_prediction_context", lambda: contexts.pop(0))
+    monkeypatch.setattr(next_prediction_center, "get_latest_prediction_context", lambda: context)
     monkeypatch.setattr(
         next_prediction_center,
         "get_prediction_history_statistics",
@@ -813,10 +810,12 @@ def test_next_prediction_dashboard_refreshes_missing_latest_prediction(monkeypat
 
     result = next_prediction_center.build_next_prediction_dashboard()
 
-    assert refresh_calls == ["115040900"]
-    assert result["status"] == "ok"
+    assert refresh_calls == []
+    assert result["status"] == "prediction_pending"
+    assert result["execution_triggered"] is False
     assert result["next_recommendation"]["based_on_issue"] == "115040900"
     assert result["next_recommendation"]["target_issue"] == "115040901"
+    assert result["next_recommendation"]["refresh_reason"] == "read_only_request"
 
 
 def test_prediction_lock_stale_after_timeout(monkeypatch):

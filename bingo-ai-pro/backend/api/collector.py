@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+import os
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from database.collector_store import (
     get_collector_status,
@@ -7,13 +9,19 @@ from database.collector_store import (
     get_latest_draw_history,
     get_latest_kuaishou_snapshot,
 )
-from services.catch_up_service import catch_up_missing_issues
-from services.collector_gap_service import scan_collector_gaps
+from services.catch_up_service import catch_up_missing_issues, get_catch_up_status
+from services.collector_gap_service import get_cached_collector_gaps
 from services.collector_runtime import collector_runtime_status
 from services.latest_sync import get_latest_sync_snapshot
 from config.production_scope import production_scope_payload
 
 router = APIRouter(prefix="/api", tags=["Collectors"])
+
+
+def require_collector_admin(x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")) -> None:
+    expected = os.getenv("COLLECTOR_ADMIN_TOKEN") or os.getenv("ADMIN_TOKEN")
+    if not expected or x_admin_token != expected:
+        raise HTTPException(status_code=403, detail="collector admin token required")
 
 
 @router.get("/collector/status")
@@ -30,12 +38,22 @@ def api_collector_status():
 
 @router.get("/collector/catch-up")
 def api_collector_catch_up():
-    return catch_up_missing_issues()
+    status = get_catch_up_status(fetch_source=False)
+    return {
+        **status,
+        "read_only": True,
+        "execution_triggered": False,
+    }
+
+
+@router.post("/collector/catch-up", dependencies=[Depends(require_collector_admin)])
+def api_collector_catch_up_run(force: bool = False):
+    return catch_up_missing_issues(force=force)
 
 
 @router.get("/collector/gaps")
 def api_collector_gaps():
-    return scan_collector_gaps()
+    return get_cached_collector_gaps()
 
 
 @router.get("/collector/latest-sync")

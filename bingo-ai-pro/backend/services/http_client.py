@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 import urllib3
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = (5, 30)
 SSL_FALLBACK_ENABLED = os.getenv("OFFICIAL_SSL_FALLBACK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+SSL_FALLBACK_FAILURE_COOLDOWN_SECONDS = int(os.getenv("OFFICIAL_SSL_FALLBACK_FAILURE_COOLDOWN_SECONDS", "300"))
+_SSL_FALLBACK_COOLDOWN_UNTIL: datetime | None = None
 
 
 def _error(error_type: str, message: str, start: float, retryable: bool = True) -> dict:
@@ -23,6 +26,23 @@ def _error(error_type: str, message: str, start: float, retryable: bool = True) 
         "retryable": retryable,
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
     }
+
+
+def _ssl_fallback_available() -> bool:
+    return (
+        SSL_FALLBACK_ENABLED
+        and (_SSL_FALLBACK_COOLDOWN_UNTIL is None or datetime.now(timezone.utc) >= _SSL_FALLBACK_COOLDOWN_UNTIL)
+    )
+
+
+def _record_ssl_fallback_failure() -> None:
+    global _SSL_FALLBACK_COOLDOWN_UNTIL
+    _SSL_FALLBACK_COOLDOWN_UNTIL = datetime.now(timezone.utc) + timedelta(seconds=SSL_FALLBACK_FAILURE_COOLDOWN_SECONDS)
+
+
+def _record_ssl_fallback_success() -> None:
+    global _SSL_FALLBACK_COOLDOWN_UNTIL
+    _SSL_FALLBACK_COOLDOWN_UNTIL = None
 
 
 def safe_get_json(
@@ -52,11 +72,11 @@ def safe_get_json(
             "attempts": attempts,
         }
     except SSLError as exc:
-        if SSL_FALLBACK_ENABLED:
+        if _ssl_fallback_available():
             try:
                 logger.warning("official http ssl verification failed; retrying with ssl_fallback")
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                return {
+                result = {
                     "ok": True,
                     "source": "official",
                     "data": request_json(verify=False, timeout_value=timeout),
@@ -65,7 +85,10 @@ def safe_get_json(
                     "attempts": attempts,
                     "ssl_error": str(exc),
                 }
+                _record_ssl_fallback_success()
+                return result
             except Exception as fallback_exc:
+                _record_ssl_fallback_failure()
                 return _error("ssl", f"{exc}; fallback_failed={fallback_exc}", start)
         return _error("ssl", str(exc), start)
     except Timeout as exc:
@@ -82,11 +105,11 @@ def safe_get_json(
                 "timeout_error": str(exc),
             }
         except Exception as retry_exc:
-            if isinstance(retry_exc, SSLError) and SSL_FALLBACK_ENABLED:
+            if isinstance(retry_exc, SSLError) and _ssl_fallback_available():
                 try:
                     retry_timeout = (max(timeout[0], 10), max(timeout[1], 45))
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    return {
+                    result = {
                         "ok": True,
                         "source": "official",
                         "data": request_json(verify=False, timeout_value=retry_timeout),
@@ -97,7 +120,10 @@ def safe_get_json(
                         "timeout_error": str(exc),
                         "ssl_error": str(retry_exc),
                     }
+                    _record_ssl_fallback_success()
+                    return result
                 except Exception as fallback_exc:
+                    _record_ssl_fallback_failure()
                     return _error("timeout", f"{exc}; retry_failed={retry_exc}; fallback_failed={fallback_exc}", start)
             return _error("timeout", f"{exc}; retry_failed={retry_exc}", start)
         return _error("timeout", str(exc), start)

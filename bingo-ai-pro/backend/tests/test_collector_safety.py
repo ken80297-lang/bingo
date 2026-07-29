@@ -166,7 +166,7 @@ def test_catch_up_limits_batch(monkeypatch):
         },
     )
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["status"] == "ok"
     assert result["max_batch_size"] == 120
@@ -207,7 +207,7 @@ def test_catch_up_recovers_missing_source_issues_at_or_below_database_latest(mon
         },
     )
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["status"] == "ok"
     assert result["catch_count"] == 1
@@ -216,7 +216,7 @@ def test_catch_up_recovers_missing_source_issues_at_or_below_database_latest(mon
     assert result["end_issue"] == "103"
 
 
-def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
+def test_catch_up_already_synced_skips_downstream(monkeypatch):
     prediction_calls = []
 
     monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115039887")
@@ -239,12 +239,13 @@ def test_catch_up_already_synced_triggers_next_prediction(monkeypatch):
         },
     )
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["status"] == "ok"
     assert result["catch_count"] == 0
-    assert prediction_calls[0]["issue"] == "115039887"
-    assert result["prediction"]["target_issue"] == "115039888"
+    assert prediction_calls == []
+    assert result["exit_reason"] == "no_gap"
+    assert result["prediction"]["reason"] == "no_gap"
 
 
 def test_catch_up_releases_runtime_lock_before_downstream(monkeypatch):
@@ -268,11 +269,10 @@ def test_catch_up_releases_runtime_lock_before_downstream(monkeypatch):
 
     monkeypatch.setattr(catch_up_service, "_run_live_downstream_for_draw", downstream)
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
-    assert result["prediction"]["target_issue"] == "115039888"
-    assert downstream_runtime[0]["catch_up_running"] is False
-    assert downstream_runtime[0]["official_lock_owner"] is None
+    assert result["prediction"]["reason"] == "no_gap"
+    assert downstream_runtime == []
 
 
 def test_catch_up_deadline_skips_downstream(monkeypatch):
@@ -289,7 +289,7 @@ def test_catch_up_deadline_skips_downstream(monkeypatch):
         lambda limit=10: (_ for _ in ()).throw(AssertionError("verification should be skipped")),
     )
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["exit_reason"] == "deadline_exceeded"
     assert result["deadline_exceeded"] is True
@@ -306,7 +306,7 @@ def test_catch_up_source_error_includes_fetch_diagnostics(monkeypatch):
         lambda: [{"open_date": "2026-07-21", "error_type": "ssl", "ok": False}],
     )
 
-    result = catch_up_service.catch_up_missing_issues()
+    result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["exit_reason"] == "source_error"
     assert result["reason"] == "source_latest_issue_unavailable"
