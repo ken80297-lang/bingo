@@ -65,9 +65,9 @@ def _ssl_verified_request_gate(url: str) -> dict:
         next_probe = state.get("next_probe_at")
         if state.get("probe_in_progress") or (next_probe and now < next_probe):
             state["suppressed_count"] = int(state.get("suppressed_count") or 0) + 1
-            return {"allowed": False, "probe": False, "fallback_allowed": False, **_ssl_cooldown_snapshot(url)}
+            return {"allowed": True, "probe": False, "fallback_only": True, "fallback_allowed": True, **_ssl_cooldown_snapshot(url)}
         state["probe_in_progress"] = True
-        return {"allowed": True, "probe": True, "fallback_allowed": False}
+        return {"allowed": True, "probe": True, "fallback_allowed": True}
 
 
 def _record_ssl_fallback_cooldown(url: str, reason: str) -> None:
@@ -128,6 +128,25 @@ def safe_get_json(
         response = requests.get(url, params=params, headers=headers, timeout=timeout_value, verify=verify)
         response.raise_for_status()
         return response.json()
+
+    if gate.get("fallback_only"):
+        try:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            return {
+                "ok": True,
+                "source": "official",
+                "data": request_json(verify=False, timeout_value=timeout),
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+                "ssl_fallback": True,
+                "ssl_fallback_cooldown": True,
+                "attempts": attempts,
+            }
+        except Exception as fallback_exc:
+            _record_ssl_fallback_cooldown(url, "cooldown_fallback_failed")
+            result = _error("ssl", f"cooldown_fallback_failed={fallback_exc}", start)
+            result["attempts"] = attempts
+            result["ssl_fallback_cooldown"] = True
+            return result
 
     try:
         result = {

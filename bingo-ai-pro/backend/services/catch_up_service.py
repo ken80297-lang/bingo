@@ -38,7 +38,7 @@ LAST_CATCH_UP_RESULT: dict[str, Any] = {
     "last_collect_duration": None,
     "catch_up_available": True,
 }
-MAX_BATCH_SIZE = int(os.getenv("CATCH_UP_MAX_BATCH_SIZE", "120"))
+MAX_BATCH_SIZE = int(os.getenv("CATCH_UP_MAX_BATCH_SIZE", "3"))
 MAX_SOURCE_PAGES = int(os.getenv("CATCH_UP_MAX_SOURCE_PAGES", "10"))
 JOB_TIME_BUDGET_SECONDS = 75
 PER_ISSUE_RETRY_LIMIT = 1
@@ -223,6 +223,53 @@ def _known_database_issues(limit: int = 200) -> set[int]:
     except Exception:
         logger.exception("failed to load known official issue set for catch-up")
         return set()
+
+
+def _sequential_missing_draws(
+    source_draws: list[dict],
+    *,
+    database_number: int | None,
+    source_number: int | None,
+    known_database_issues: set[int],
+    max_batch_size: int,
+) -> tuple[list[dict], list[Any], str | None]:
+    if source_number is None:
+        return [], [], "source_latest_issue_unavailable"
+    by_issue = {
+        issue_number: draw
+        for draw in source_draws
+        for issue_number in [_issue_int(draw.get("issue"))]
+        if issue_number is not None
+    }
+    if database_number is None:
+        start_number = min(by_issue) if by_issue else None
+    else:
+        historical_start = min(known_database_issues) if known_database_issues else database_number
+        start_number = None
+        for issue_number in range(historical_start, database_number + 1):
+            if issue_number not in known_database_issues:
+                start_number = issue_number
+                break
+        if start_number is None:
+            start_number = database_number + 1
+    if start_number is None or start_number > source_number:
+        return [], [], "no_gap"
+
+    missing: list[dict] = []
+    pending_verification: list[Any] = []
+    for issue_number in range(start_number, source_number + 1):
+        if len(missing) >= max_batch_size:
+            return missing, pending_verification, "batch_limit"
+        if issue_number in known_database_issues:
+            continue
+        draw = by_issue.get(issue_number)
+        if draw is None:
+            return missing, pending_verification, "target_issue_not_in_source_page"
+        if not _valid_draw(draw):
+            pending_verification.append(draw.get("issue") or str(issue_number))
+            return missing, pending_verification, "invalid_or_incomplete_official_draw"
+        missing.append(draw)
+    return missing, pending_verification, "completed"
 
 
 def _run_live_downstream_for_draw(draw: dict | None, start: float, caller: str) -> dict:
@@ -423,25 +470,15 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             _record_event("warning", database_issue, start, "official catch-up skipped: source unavailable")
             return result
 
-        missing = []
-        pending_verification = []
-        for draw in source_draws:
-            if _deadline_exceeded(start):
-                break
-            issue_number = _issue_int(draw.get("issue"))
-            if issue_number is None:
-                continue
-            issue_missing_from_database = issue_number not in known_database_issues
-            issue_newer_than_database = database_number is None or database_number < issue_number <= source_number
-            if issue_newer_than_database or issue_missing_from_database:
-                if _valid_draw(draw):
-                    missing.append(draw)
-                else:
-                    pending_issue = draw.get("issue")
-                    pending_verification.append(pending_issue)
-                    _mark_pending_verification(pending_issue, "invalid_or_incomplete_official_draw")
-            if len(missing) >= MAX_BATCH_SIZE:
-                break
+        missing, pending_verification, sequence_exit_reason = _sequential_missing_draws(
+            source_draws,
+            database_number=database_number,
+            source_number=source_number,
+            known_database_issues=known_database_issues,
+            max_batch_size=MAX_BATCH_SIZE,
+        )
+        for pending_issue in pending_verification:
+            _mark_pending_verification(pending_issue, "invalid_or_incomplete_official_draw")
 
         if database_number is not None and source_number <= database_number and not missing:
             result = _empty_result(start, database_issue, source_issue)
@@ -468,7 +505,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             prediction = {"status": "queued", "reason": "downstream_after_lock_release"}
 
         elapsed = _elapsed_seconds(start)
-        exit_reason = "deadline_exceeded" if deadline_hit else "completed"
+        exit_reason = "deadline_exceeded" if deadline_hit else (sequence_exit_reason or "completed")
         result = {
             "status": "ok" if saved.get("status") == "ok" else "warning",
             "database_latest_issue": database_issue,
@@ -485,6 +522,7 @@ def _catch_up_missing_issues_locked(start: float) -> dict:
             "max_source_pages": MAX_SOURCE_PAGES,
             "job_time_budget_seconds": JOB_TIME_BUDGET_SECONDS,
             "per_issue_retry_limit": PER_ISSUE_RETRY_LIMIT,
+            "sequence_exit_reason": sequence_exit_reason,
             "elapsed_seconds": elapsed,
             "saved": saved,
             "verification": verification,

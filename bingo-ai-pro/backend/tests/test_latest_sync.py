@@ -86,9 +86,72 @@ def test_latest_sync_existing_draw_does_not_save_duplicate(monkeypatch):
     assert saved_calls == []
 
 
+def test_latest_sync_uses_first_missing_issue_when_database_lags_source(monkeypatch):
+    saved_calls = []
+    database_draw = _draw("115042503")
+    source_draws = [_draw(str(issue)) for issue in range(115042504, 115042516)]
+    saved_by_issue = {"115042503": database_draw}
+    monkeypatch.setattr(latest_sync, "_source_draws_today", lambda page_size=100: source_draws)
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: database_draw)
+    monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: saved_by_issue.get(str(issue)))
+
+    def save(draws):
+        saved_calls.append(draws)
+        for draw in draws:
+            saved_by_issue[str(draw["issue"])] = draw
+        return {"status": "ok", "saved": len(draws)}
+
+    monkeypatch.setattr(latest_sync, "save_official_draws", save)
+    _patch_downstream(monkeypatch)
+
+    result = latest_sync.process_latest_official_draw()
+
+    assert saved_calls == [[source_draws[0]]]
+    assert result["official_detected_issue"] == "115042504"
+    assert result["database_latest_issue"] == "115042504"
+    assert result["target_issue"] == "115042505"
+
+
+def test_latest_sync_waits_when_next_target_is_newer_than_source(monkeypatch):
+    database_draw = _draw("115042515")
+    monkeypatch.setattr(latest_sync, "_source_draws_today", lambda page_size=100: [_draw("115042515")])
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: database_draw)
+
+    result = latest_sync.process_latest_official_draw()
+
+    assert result["database_saved"] is False
+    assert result["failure_reason"] == "target_waiting_for_source"
+    assert result["official_detected_issue"] == "115042515"
+
+
+def test_latest_sync_does_not_jump_directly_to_source_latest(monkeypatch):
+    database_draw = _draw("115042503")
+    source_draws = [_draw("115042504"), _draw("115042515")]
+    saved_calls = []
+    saved_by_issue = {}
+    monkeypatch.setattr(latest_sync, "_source_draws_today", lambda page_size=100: source_draws)
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: database_draw)
+    monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: saved_by_issue.get(str(issue)))
+
+    def save(draws):
+        saved_calls.append(draws)
+        for draw in draws:
+            saved_by_issue[str(draw["issue"])] = draw
+        return {"status": "ok", "saved": len(draws)}
+
+    monkeypatch.setattr(latest_sync, "save_official_draws", save)
+    _patch_downstream(monkeypatch)
+
+    result = latest_sync.process_latest_official_draw()
+
+    assert saved_calls == [[source_draws[0]]]
+    assert result["database_latest_issue"] == "115042504"
+
+
 def test_latest_sync_rejects_invalid_numbers_before_save(monkeypatch):
     saved_calls = []
-    monkeypatch.setattr(latest_sync, "_latest_draw_from_source", lambda: _draw(numbers=list(range(0, 20))))
+    monkeypatch.setattr(latest_sync, "_source_draws_today", lambda page_size=100: [_draw(numbers=list(range(0, 20)))])
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: None)
     monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: None)
     monkeypatch.setattr(latest_sync, "save_official_draws", lambda draws: saved_calls.append(draws) or {"status": "ok", "saved": 1})

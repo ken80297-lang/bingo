@@ -133,12 +133,41 @@ def is_complete_official_draw(draw: dict | None) -> bool:
     return len(_valid_numbers(draw.get("numbers"))) == 20
 
 
-def _latest_draw_from_source() -> dict | None:
-    draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=10)
+def _source_draws_today(page_size: int = 100) -> list[dict]:
+    draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=page_size)
     valid = [draw for draw in draws if is_complete_official_draw(draw)]
+    return sorted(valid, key=lambda item: _issue_int(item.get("issue")) or 0)
+
+
+def _latest_draw_from_source() -> dict | None:
+    valid = _source_draws_today(page_size=10)
     if not valid:
         return None
     return max(valid, key=lambda item: _issue_int(item.get("issue")) or 0)
+
+
+def _select_collector_target_draw(database_issue: Any, source_draws: list[dict]) -> tuple[dict | None, str | None, str | None]:
+    if not source_draws:
+        return None, None, "source_empty"
+
+    source_issue = _max_issue(*(draw.get("issue") for draw in source_draws))
+    database_number = _issue_int(database_issue)
+    source_number = _issue_int(source_issue)
+    if source_number is None:
+        return None, source_issue, "source_latest_issue_unavailable"
+
+    if database_number is None:
+        return max(source_draws, key=lambda item: _issue_int(item.get("issue")) or 0), source_issue, None
+
+    target_number = database_number + 1
+    if target_number > source_number:
+        return None, source_issue, "target_waiting_for_source"
+
+    by_issue = {str(draw.get("issue")): draw for draw in source_draws}
+    target_draw = by_issue.get(str(target_number))
+    if target_draw:
+        return target_draw, source_issue, None
+    return None, source_issue, "target_issue_not_in_source_page"
 
 
 def _analysis_exists(issue: str) -> bool:
@@ -680,9 +709,35 @@ def process_latest_official_draw() -> dict[str, Any]:
     with _STATE_LOCK:
         attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
 
-    source_draw = _latest_draw_from_source()
+    existing_latest = get_latest_official_draw()
+    database_issue = (existing_latest or {}).get("issue")
+    source_draws = _source_draws_today(page_size=100)
+    source_draw, detected_source_issue, target_select_reason = _select_collector_target_draw(database_issue, source_draws)
     if not source_draw:
-        return _failure(None, "detect", "official_latest_issue_unavailable", detected_at, attempt_count)
+        snapshot = _failure(database_issue, "detect", target_select_reason or "official_latest_issue_unavailable", detected_at, attempt_count)
+        if detected_source_issue:
+            snapshot = _update_state(
+                official_detected_issue=detected_source_issue,
+                source_issue=database_issue,
+                database_latest_issue=database_issue,
+                dashboard_latest_issue=database_issue,
+                target_issue=_next_issue(database_issue),
+                failure_stage="detect",
+                failure_reason=target_select_reason or "official_latest_issue_unavailable",
+                detected_at=detected_at,
+                last_attempt_at=_now(),
+                attempt_count=attempt_count,
+                database_saved=False,
+                stages=_snapshot_stages(
+                    database_saved=False,
+                    analysis_created=False,
+                    prediction_created=False,
+                    dashboard_ready=False,
+                    failure_stage="detect",
+                    failure_reason=target_select_reason or "official_latest_issue_unavailable",
+                ),
+            )
+        return snapshot
 
     source_issue = str(source_draw.get("issue"))
     prediction_target_issue = _next_issue(source_issue)

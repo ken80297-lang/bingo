@@ -169,11 +169,11 @@ def test_catch_up_limits_batch(monkeypatch):
     result = catch_up_service.catch_up_missing_issues(force=True)
 
     assert result["status"] == "ok"
-    assert result["max_batch_size"] == 120
-    assert result["catch_count"] == 120
-    assert result["success_count"] == 120
-    assert len(saved_batches[0]) == 120
-    assert prediction_calls[0]["issue"] == "220"
+    assert result["max_batch_size"] == catch_up_service.MAX_BATCH_SIZE
+    assert result["catch_count"] == catch_up_service.MAX_BATCH_SIZE
+    assert result["success_count"] == catch_up_service.MAX_BATCH_SIZE
+    assert len(saved_batches[0]) == catch_up_service.MAX_BATCH_SIZE
+    assert prediction_calls[0]["issue"] == str(100 + catch_up_service.MAX_BATCH_SIZE)
     assert result["prediction"]["status"] == "created"
 
 

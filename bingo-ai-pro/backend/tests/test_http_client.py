@@ -107,11 +107,12 @@ def test_safe_get_json_ssl_fallback_failure_opens_cooldown(monkeypatch):
 
     assert first["ok"] is False
     assert second["ok"] is False
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert calls[0]["verify"] is True
     assert calls[1]["verify"] is False
-    assert second["attempts"] == 0
-    assert second["ssl_fallback_cooldown"] is True
+    assert calls[2]["verify"] is False
+    assert second["attempts"] == 1
+    assert second["error_type"] == "ssl"
 
 
 def test_safe_get_json_ssl_cooldown_is_host_level(monkeypatch):
@@ -133,13 +134,12 @@ def test_safe_get_json_ssl_cooldown_is_host_level(monkeypatch):
 
     assert first["ok"] is False
     assert second["ok"] is False
-    assert second["ssl_fallback_cooldown"] is True
-    assert second["attempts"] == 0
+    assert second["attempts"] == 1
     assert other["ok"] is True
-    assert [item[1]["verify"] for item in calls] == [True, False, True, False]
+    assert [item[1]["verify"] for item in calls] == [True, False, False, True, False]
 
 
-def test_safe_get_json_ssl_cooldown_allows_next_probe_without_fallback(monkeypatch):
+def test_safe_get_json_ssl_cooldown_allows_next_probe_with_fallback(monkeypatch):
     calls = []
 
     def fake_get(url, *args, **kwargs):
@@ -155,8 +155,30 @@ def test_safe_get_json_ssl_cooldown_allows_next_probe_without_fallback(monkeypat
 
     assert first["ok"] is False
     assert probe["ok"] is False
-    assert probe["ssl_fallback_cooldown"] is True
-    assert [item["verify"] for item in calls] == [True, False, True]
+    assert probe["error_type"] == "ssl"
+    assert [item["verify"] for item in calls] == [True, False, True, False]
+
+
+def test_safe_get_json_ssl_cooldown_fallback_success_reaches_parser(monkeypatch):
+    calls = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("verify") is True:
+            raise requests.exceptions.SSLError("certificate failed")
+        return DummyResponse({"rtCode": 0, "content": {"bingoQueryResult": []}})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    first = safe_get_json("https://example.test/api")
+    second = safe_get_json("https://example.test/other-path")
+
+    assert first["ok"] is True
+    assert first["ssl_fallback"] is True
+    assert second["ok"] is True
+    assert second["ssl_fallback"] is True
+    assert second["data"]["rtCode"] == 0
+    assert [item["verify"] for item in calls] == [True, False, False]
 
 
 @pytest.mark.parametrize(
