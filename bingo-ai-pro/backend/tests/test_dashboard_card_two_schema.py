@@ -39,7 +39,7 @@ def test_card_two_schema_builds_finalized_report(monkeypatch):
         "get_official_draw_by_issue",
         lambda issue: {"issue": issue, "numbers": record["winning_numbers"], "super_number": 8},
     )
-    monkeypatch.setattr(player_dashboard, "get_analysis_history_by_issue", lambda issue: {"issue": issue})
+    monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue", lambda issue: {"issue": issue})
     monkeypatch.setattr(
         player_dashboard,
         "_rule_snapshot_for_dashboard",
@@ -95,7 +95,7 @@ def test_card_two_super_number_data_insufficient(monkeypatch):
         "get_official_draw_by_issue",
         lambda issue: {"issue": issue, "numbers": record["winning_numbers"], "super_number": None},
     )
-    monkeypatch.setattr(player_dashboard, "get_analysis_history_by_issue", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue", lambda issue: None)
     monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
 
     payload = player_dashboard._card_two_from_record(record, {"issue": "115040902"})
@@ -111,7 +111,7 @@ def test_card_two_rule_snapshot_failure_keeps_report_available(monkeypatch):
         "get_official_draw_by_issue",
         lambda issue: {"issue": issue, "numbers": record["winning_numbers"], "super_number": 8},
     )
-    monkeypatch.setattr(player_dashboard, "get_analysis_history_by_issue", lambda issue: {"issue": issue})
+    monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue", lambda issue: {"issue": issue})
 
     def broken_snapshot(analysis, prediction):
         raise RuntimeError("boom")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database.collector_store import get_latest_kuaishou_snapshot
-from database.analysis_store import get_analysis_history_by_issue, get_latest_analysis_history
+from database.analysis_store import get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
 from database.operations_store import get_latest_operation_event
 from database.prediction_history_store import get_prediction_history_records
@@ -1103,6 +1103,25 @@ def _card_two_rules(analysis: dict | None, prediction: dict, official_numbers: l
     return rules
 
 
+def _card_two_analysis_by_issue(issue: Any) -> dict | None:
+    if not issue:
+        return None
+    try:
+        from database import analysis_store as analysis_store_module
+    except ImportError as exc:
+        logger.warning("dashboard card two analysis fallback unavailable: %s", exc)
+        return None
+    lookup = getattr(analysis_store_module, "get_analysis_history_by_issue", None)
+    if not callable(lookup):
+        logger.warning("dashboard card two analysis fallback helper missing")
+        return None
+    try:
+        return lookup(str(issue))
+    except Exception:
+        logger.exception("dashboard card two analysis lookup failed")
+        return None
+
+
 def _is_card_two_finalized_candidate(record: dict, current_issue: Any = None) -> bool:
     if not is_production_prediction(record):
         return False
@@ -1175,11 +1194,7 @@ def _card_two_from_record(record: dict | None, current_draw: dict | None = None)
     else:
         super_hit = official_super in set(prediction_numbers)
         super_text = "命中" if super_hit else "未命中"
-    try:
-        analysis = get_analysis_history_by_issue(record.get("issue")) if record.get("issue") else None
-    except Exception:
-        logger.exception("dashboard card two analysis lookup failed")
-        analysis = None
+    analysis = _card_two_analysis_by_issue(record.get("issue"))
     rules = _card_two_rules(analysis, record, official_numbers)
     return {
         "title": CARD_TWO_TITLE,
