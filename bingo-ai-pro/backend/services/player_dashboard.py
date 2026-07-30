@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database.collector_store import get_latest_kuaishou_snapshot
-from database.analysis_store import get_latest_analysis_history
+from database.analysis_store import get_analysis_history_by_issue, get_latest_analysis_history
 from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
 from database.operations_store import get_latest_operation_event
 from database.prediction_history_store import get_prediction_history_records
@@ -112,6 +112,42 @@ logger = logging.getLogger(__name__)
 PLAYER_SUMMARY_TTL_SECONDS = 30
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_HISTORY_LIMIT = 10
+CARD_TWO_TITLE = "📖 AI 驗證與分析報告"
+CARD_TWO_RULE_ORDER = [
+    ("hot", "熱門"),
+    ("cold", "冷門"),
+    ("missing", "缺號"),
+    ("repeat", "重號"),
+    ("tail", "尾數"),
+    ("gap", "間距"),
+    ("cluster", "群聚"),
+    ("diagonal", "斜線"),
+    ("super", "超級獎"),
+    ("laowanjia", "老玩家"),
+    ("ladder", "階梯"),
+    ("partial_ladder", "偏階"),
+    ("extended_ladder", "延階"),
+    ("reverse", "反號"),
+    ("neighbor", "隔壁號"),
+    ("guide", "引路牌"),
+    ("integrated", "整合數"),
+    ("sunset", "太陽下山"),
+    ("momentum", "盤勢動能"),
+    ("super_number_trajectory_recovery", "超獎軌跡回補"),
+    ("cluster_aftershock_recovery", "群聚後連號回補"),
+]
+CARD_TWO_FINALIZED_DISALLOWED = {
+    "provisional",
+    "processing",
+    "validating",
+    "learning",
+    "pending",
+    "waiting_draw",
+    "failed",
+    "incomplete",
+    "test",
+    "legacy",
+}
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
@@ -940,6 +976,238 @@ def _rule_snapshot_for_dashboard(analysis: dict, prediction: dict) -> dict:
     )
 
 
+def _card_two_empty() -> dict:
+    return {
+        "title": CARD_TWO_TITLE,
+        "available": False,
+        "report_status": "unavailable",
+        "status_text": "尚無已完成的最終分析報告",
+        "issue": None,
+        "prediction_numbers": [],
+        "official_numbers": [],
+        "matched_numbers": [],
+        "hit_count": None,
+        "prediction_count": None,
+        "super_number": None,
+        "super_number_hit": None,
+        "super_number_status_text": "資料不足",
+        "finalized_at": None,
+        "rules": [],
+        "fallback_text": "AI 正在等待足夠的正式開獎與驗證資料。",
+    }
+
+
+def _card_two_status_text(status: Any) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"success", "ready", "completed", "ok", "hit"}:
+        return "成功"
+    if normalized in {"partial", "partial_hit"}:
+        return "部分命中"
+    if normalized in {"insufficient", "missing", "unavailable"}:
+        return "資料不足"
+    if normalized in {"experimental", "disabled", "not_run", "skipped"}:
+        return "未執行"
+    if normalized in {"miss", "no_hit", "failed"}:
+        return "未命中"
+    return "成功" if normalized == "verified" else "資料不足"
+
+
+def _card_two_score_text(value: Any) -> str:
+    try:
+        score = float(value)
+    except Exception:
+        return "已完成評估"
+    if 0 <= score <= 1:
+        return f"{score * 100:.1f}%".replace(".0%", "%")
+    if 0 <= score <= 10:
+        return f"{score:.1f} / 10".replace(".0 / 10", " / 10")
+    if 10 < score <= 100:
+        return f"{score:.1f}%".replace(".0%", "%")
+    return "已完成評估"
+
+
+def _card_two_summary(rule_name: str, matched: list[int], status_text: str) -> str:
+    if matched:
+        return f"{rule_name}規則命中 {len(matched)} 個號碼：{'、'.join(f'{n:02d}' for n in matched)}。"
+    if status_text == "未命中":
+        return f"{rule_name}規則本期未命中，保留為後續觀察。"
+    return f"{rule_name}規則已完成正式評估。"
+
+
+def _card_two_rule_item(item: dict, official_numbers: list[int]) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    key = item.get("rule_key") or item.get("key")
+    label_by_key = dict(CARD_TWO_RULE_ORDER)
+    label = item.get("rule_name_zh") or item.get("label") or label_by_key.get(key)
+    if not key or key not in label_by_key:
+        return None
+    candidates = _as_int_list(
+        item.get("candidates")
+        or item.get("candidate_numbers")
+        or item.get("numbers")
+        or []
+    )
+    matched = _as_int_list(item.get("matched_numbers"))
+    if not matched and candidates and official_numbers:
+        official_set = set(official_numbers)
+        matched = [number for number in candidates if number in official_set]
+    matched = [number for number in matched if number in set(candidates) and number in set(official_numbers)]
+    if not candidates and not matched and item.get("score") is None and item.get("confidence") is None:
+        return None
+    raw_status = item.get("status")
+    if raw_status in (None, "", "ready"):
+        status_text = "成功" if matched else "未命中"
+    else:
+        status_text = _card_two_status_text(raw_status)
+    score_value = item.get("score")
+    if score_value is None:
+        score_value = item.get("confidence")
+    summary = str(item.get("summary") or item.get("reason") or "").strip()
+    if not summary or summary == "dashboard fallback":
+        summary = _card_two_summary(str(label), matched, status_text)
+    return {
+        "rule_key": key,
+        "rule_name_zh": label,
+        "candidates": candidates,
+        "actual_numbers": matched,
+        "matched_numbers": matched,
+        "status": raw_status or ("success" if matched else "no_hit"),
+        "status_text": status_text,
+        "score": score_value,
+        "score_text": _card_two_score_text(score_value),
+        "summary": summary,
+        "evidence_summary": "",
+    }
+
+
+def _card_two_rules(analysis: dict | None, prediction: dict, official_numbers: list[int]) -> list[dict]:
+    try:
+        snapshot = _rule_snapshot_for_dashboard(analysis or {}, prediction)
+    except Exception:
+        logger.exception("dashboard card two rule snapshot failed")
+        return []
+    by_key = {
+        (item.get("rule_key") or item.get("key")): item
+        for item in (snapshot.get("rules") or [])
+        if isinstance(item, dict)
+    }
+    rules: list[dict] = []
+    for key, label in CARD_TWO_RULE_ORDER:
+        item = by_key.get(key)
+        if not item:
+            continue
+        converted = _card_two_rule_item({**item, "rule_name_zh": item.get("label") or label}, official_numbers)
+        if converted:
+            rules.append(converted)
+    return rules
+
+
+def _is_card_two_finalized_candidate(record: dict, current_issue: Any = None) -> bool:
+    if not is_production_prediction(record):
+        return False
+    issue = _valid_production_issue(record.get("prediction_issue") or record.get("target_issue"))
+    if not issue:
+        return False
+    status = str(record.get("prediction_status") or "").strip().lower()
+    if status in CARD_TWO_FINALIZED_DISALLOWED:
+        return False
+    if status != "verified":
+        return False
+    if not record.get("learning_used"):
+        return False
+    prediction_numbers = _as_int_list(record.get("recommend_numbers"))
+    official_numbers = _as_int_list(record.get("winning_numbers"))
+    if len(prediction_numbers) != 20 or len(official_numbers) != 20:
+        return False
+    if current_issue and _as_int(current_issue) is not None:
+        issue_int = _as_int(issue)
+        current_int = _as_int(current_issue)
+        if issue_int is None or current_int is None or current_int <= issue_int:
+            return False
+    return True
+
+
+def get_latest_finalized_analysis_report(
+    history_records: list[dict] | None = None,
+    current_draw: dict | None = None,
+) -> dict | None:
+    records = history_records if history_records is not None else get_prediction_history_records(100)
+    current_issue = (current_draw or {}).get("issue")
+    candidates = [
+        record
+        for record in (records or [])
+        if _is_card_two_finalized_candidate(record, current_issue)
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            _as_int(item.get("prediction_issue")) or 0,
+            str(item.get("verified_at") or item.get("updated_at") or item.get("created_at") or ""),
+            int(item.get("id") or 0),
+        ),
+    )
+
+
+def _card_two_from_record(record: dict | None, current_draw: dict | None = None) -> dict:
+    if not record:
+        return _card_two_empty()
+    issue = _valid_production_issue(record.get("prediction_issue") or record.get("target_issue"))
+    try:
+        official_draw = get_official_draw_by_issue(issue) if issue else None
+    except Exception:
+        logger.exception("dashboard card two official draw lookup failed")
+        official_draw = None
+    prediction_numbers = _as_int_list(record.get("recommend_numbers"))
+    official_numbers = _as_int_list(record.get("winning_numbers") or (official_draw or {}).get("numbers"))
+    if not issue or len(prediction_numbers) != 20 or len(official_numbers) != 20:
+        return _card_two_empty()
+    official_set = set(official_numbers)
+    matched_numbers = [number for number in prediction_numbers if number in official_set]
+    official_super = _as_int((official_draw or {}).get("super_number"))
+    if official_super is None:
+        official_super = _as_int(record.get("actual_super") or record.get("official_super_number"))
+    if official_super is None or not (1 <= official_super <= 80):
+        super_hit: bool | None = None
+        super_text = "資料不足"
+    else:
+        super_hit = official_super in set(prediction_numbers)
+        super_text = "命中" if super_hit else "未命中"
+    try:
+        analysis = get_analysis_history_by_issue(record.get("issue")) if record.get("issue") else None
+    except Exception:
+        logger.exception("dashboard card two analysis lookup failed")
+        analysis = None
+    rules = _card_two_rules(analysis, record, official_numbers)
+    return {
+        "title": CARD_TWO_TITLE,
+        "available": True,
+        "report_status": "finalized",
+        "status_text": "最終分析",
+        "issue": issue,
+        "prediction_numbers": prediction_numbers,
+        "official_numbers": official_numbers,
+        "matched_numbers": matched_numbers,
+        "hit_count": len(matched_numbers),
+        "prediction_count": len(prediction_numbers),
+        "super_number": official_super,
+        "super_number_hit": super_hit,
+        "super_number_status_text": super_text,
+        "finalized_at": record.get("learned_at") or record.get("verified_at") or record.get("updated_at"),
+        "rules": rules,
+        "fallback_text": None,
+        "data_source": {
+            "store": "prediction_history",
+            "prediction_snapshot": "recommend_numbers",
+            "validation_record": "prediction_history",
+            "rule_library_snapshot": "rule_snapshot_store_or_analysis_history",
+            "selector": "get_latest_finalized_analysis_report",
+        },
+    }
+
+
 def _data_counts(
     history_records: list[dict],
     stats: dict | None = None,
@@ -1036,12 +1304,14 @@ def build_player_dashboard_summary() -> dict:
     futures = {
         "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
         "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT)),
+        "card_two_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(100)),
         "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
         "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
         "kuaishou": _PLAYER_EXECUTOR.submit(get_latest_kuaishou_snapshot),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
     history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
+    card_two_history = _future_result("card_two_history", futures["card_two_history"], warnings, history_records) or []
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
     kuaishou = _future_result("kuaishou", futures["kuaishou"], warnings, {}) or {}
@@ -1080,6 +1350,8 @@ def build_player_dashboard_summary() -> dict:
     previous_verification["previous_result_mode"] = previous_result_mode
     previous_verification["requested_target_issue"] = previous_target_issue
     previous_verification["displayed_target_issue"] = displayed_target_issue
+    finalized_report = get_latest_finalized_analysis_report(card_two_history, current)
+    card_two = _card_two_from_record(finalized_report, current)
 
     database_issue = (current or {}).get("issue")
     official_issue = detected_latest_issue or (current or {}).get("issue")
@@ -1108,6 +1380,7 @@ def build_player_dashboard_summary() -> dict:
             "collection_duration_seconds": None,
         },
         "next_prediction": next_prediction,
+        "card_two": card_two,
         "previous_verification": previous_verification,
         "prediction_history": production_history,
         "data_counts": _data_counts(history_records, prediction_stats, aggregates),

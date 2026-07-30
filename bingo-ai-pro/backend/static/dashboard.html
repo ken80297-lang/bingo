@@ -161,6 +161,141 @@
       box-shadow: 0 0 0 3px rgba(246, 195, 68, .18);
     }
 
+    .card-two-shell {
+      display: grid;
+      gap: 14px;
+    }
+
+    .card-two-title {
+      display: grid;
+      gap: 8px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .card-two-summary {
+      display: grid;
+      gap: 10px;
+    }
+
+    .card-two-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .card-two-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 999px;
+      background: rgba(22, 38, 56, .82);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+
+    .card-two-pill-finalized {
+      border-color: rgba(47, 209, 124, .34);
+      background: rgba(47, 209, 124, .14);
+      color: var(--ok);
+    }
+
+    .card-two-numbers {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .card-two-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 42px;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid rgba(255,255,255,.10);
+      border-radius: 999px;
+      background: #243d55;
+      color: var(--text);
+      font-size: 17px;
+      font-weight: 900;
+    }
+
+    .card-two-number-hit {
+      border-color: rgba(255, 255, 255, .28);
+      background: #f6c344;
+      color: #111827;
+      box-shadow: 0 0 0 3px rgba(246, 195, 68, .18);
+    }
+
+    .card-two-number-super {
+      border-color: rgba(255, 100, 120, .95);
+      color: #ffb3bf;
+      box-shadow: 0 0 0 3px rgba(255, 100, 120, .16);
+    }
+
+    .card-two-number-hit.card-two-number-super {
+      color: #7f1d1d;
+    }
+
+    .card-two-toggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 2px;
+      border-color: rgba(89, 199, 255, .28);
+      background: #1c344a;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .analysis-report-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .analysis-report-rule {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .analysis-report-rule-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-weight: 900;
+    }
+
+    .analysis-report-field {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .analysis-report-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .analysis-report-text {
+      overflow-wrap: anywhere;
+    }
+
     .chip {
       display: inline-flex;
       align-items: center;
@@ -522,6 +657,13 @@
         font-size: 18px;
       }
       .number-grid { gap: 6px; }
+      .card-two-number {
+        min-width: 38px;
+        height: 34px;
+        padding: 0 9px;
+        font-size: 16px;
+      }
+      .card-two-meta { align-items: flex-start; }
       .card1-section-title { align-items: flex-start; flex-direction: column; }
       .card1-info-line { align-items: flex-start; flex-direction: column; }
       .rule-snapshot-row { grid-template-columns: 1fr; }
@@ -544,7 +686,7 @@
 
     <section>
       <article class="card" id="cardNext"></article>
-      <article class="card" id="cardLaowanjia"></article>
+      <article class="card" id="cardTwo"></article>
       <article class="card" id="cardReasons"></article>
       <article class="card" id="cardAlerts"></article>
       <article class="card" id="cardHistory"></article>
@@ -566,6 +708,7 @@
   <script>
     const API_TIMEOUT_MS = 10000;
     const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
+    const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
     const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
 
     const apis = {
@@ -638,6 +781,15 @@
       if (value === null || value === undefined || value === "" || Number.isNaN(value)) return fallback;
       return String(value);
     };
+
+    const escapeHtml = (value) => safe(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+    const cardTwoText = (value, fallback = "尚無資料") => escapeHtml(safe(value, fallback));
 
     const asList = (value) => Array.isArray(value) ? value : [];
 
@@ -789,6 +941,61 @@
       if (!items.length) return `<div class="empty">尚無資料</div>`;
       return `<div class="number-grid">${items.map((n) => `<span class="ball ${type} ${hits.has(Number(n)) ? "hit" : ""}">${numberLabel(n)}</span>`).join("")}</div>`;
     };
+
+    const cardTwoNumbers = (values, hitValues = [], superNumber = null) => {
+      const hits = new Set(normalizeNumbers(hitValues));
+      const superValue = normalizeNumbers([superNumber])[0];
+      const items = normalizeNumbers(values);
+      if (!items.length) return `<div class="empty">尚無資料</div>`;
+      return `<div class="card-two-numbers">${items.map((n) => {
+        const classes = ["card-two-number"];
+        if (hits.has(Number(n))) classes.push("card-two-number-hit");
+        if (superValue === Number(n)) classes.push("card-two-number-super");
+        return `<span class="${classes.join(" ")}">${numberLabel(n)}</span>`;
+      }).join("")}</div>`;
+    };
+
+    function saveCardTwoBrowserCache(cardTwo) {
+      if (!cardTwo || cardTwo.available !== true) return;
+      try {
+        localStorage.setItem(CARD_TWO_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload: cardTwo }));
+      } catch (error) {
+        console.warn("[dashboard] card two browser cache save failed", error);
+      }
+    }
+
+    function loadCardTwoBrowserCache() {
+      try {
+        const raw = localStorage.getItem(CARD_TWO_STORAGE_KEY);
+        if (!raw) return null;
+        const cached = JSON.parse(raw);
+        if (!cached || !cached.payload || cached.payload.available !== true) return null;
+        return { ...cached.payload, update_hint: "資料更新中" };
+      } catch (error) {
+        console.warn("[dashboard] card two browser cache load failed", error);
+        return null;
+      }
+    }
+
+    function normalizeCardTwo(data) {
+      const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
+      const raw = player && player.card_two ? player.card_two : null;
+      if (raw && raw.available === true) {
+        saveCardTwoBrowserCache(raw);
+        return raw;
+      }
+      const cached = loadCardTwoBrowserCache();
+      if (cached) return cached;
+      return raw || {
+        title: "📖 AI 驗證與分析報告",
+        available: false,
+        status_text: "尚無已完成的最終分析報告",
+        fallback_text: "AI 正在等待足夠的正式開獎與驗證資料。",
+        prediction_numbers: [],
+        matched_numbers: [],
+        rules: []
+      };
+    }
 
     function renderCompactHighProbability(next) {
       const numbers = normalizeNumbers(next.high_probability_numbers).slice(0, 5);
@@ -1053,13 +1260,14 @@
       const currentDraw = player ? (player.current_draw || {}) : {};
       const counts = player ? (player.data_counts || {}) : {};
       const sync = player ? (player.sync || {}) : (data.system || {});
+      const cardTwo = normalizeCardTwo(data);
 
       const errorBox = document.getElementById("errorBox");
       errorBox.style.display = errors.length ? "block" : "none";
       errorBox.textContent = errors.length ? "部分資料暫時無法取得，其他卡片已先顯示。" : "";
 
       renderNext(next, officialDraw);
-      renderLaowanjia(next.rule_library || (player && player.rule_library) || {}, next);
+      renderCardTwo(cardTwo);
       renderReasons(next.reasons, data.next || {}, previousVerification, next);
       renderAlerts(alerts, data.analysisLatest || {});
       renderHistory(history, previousVerification, counts, player ? (player.prediction_history || []) : []);
@@ -1164,6 +1372,114 @@
       `;
     }
 
+    function renderCardTwo(cardTwo) {
+      const payload = cardTwo || {};
+      const title = cardTwoText(payload.title || "📖 AI 驗證與分析報告");
+      const numbers = normalizeNumbers(payload.prediction_numbers);
+      const matched = normalizeNumbers(payload.matched_numbers);
+      const officialSuper = normalizeNumbers([payload.super_number])[0];
+      const rules = asList(payload.rules);
+      if (payload.available !== true) {
+        document.getElementById("cardTwo").innerHTML = `
+          <div class="card-two-shell">
+            <div class="card-two-title">
+              <h2>${title}</h2>
+            </div>
+            <div class="empty">
+              <strong>${cardTwoText(payload.status_text, "尚無已完成的最終分析報告")}</strong>
+              <div class="summary-line">${cardTwoText(payload.fallback_text, "AI 正在等待足夠的正式開獎與驗證資料。")}</div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+      const superText = cardTwoText(payload.super_number_status_text, "資料不足");
+      const updateHint = payload.update_hint ? `<div class="notice warn">${cardTwoText(payload.update_hint)}</div>` : "";
+      const rulesHtml = rules.length
+        ? `<div class="analysis-report-list">${rules.map(renderCardTwoRule).join("")}</div>`
+        : `<div class="empty">詳細規則分析整理中</div>`;
+      document.getElementById("cardTwo").innerHTML = `
+        <div class="card-two-shell">
+          <div class="card-two-title">
+            <h2>${title}</h2>
+            <div class="card-two-meta">
+              <span class="card-two-pill">驗證期號：${cardTwoText(payload.issue)}</span>
+              <span class="card-two-pill card-two-pill-finalized">🟢 ${cardTwoText(payload.status_text, "最終分析")}</span>
+            </div>
+          </div>
+          ${updateHint}
+          <div class="card-two-summary">
+            <div class="grid">
+              ${metric("AI 命中", `${fmtNumber(payload.hit_count)} / ${fmtNumber(payload.prediction_count || numbers.length)}`, "status-ok")}
+              ${metric("超級獎", superText, payload.super_number_hit ? "status-ok" : "")}
+            </div>
+            <div>
+              <p class="mini-title">當期 AI 推薦</p>
+              ${cardTwoNumbers(numbers, matched, officialSuper)}
+            </div>
+          </div>
+          <button class="card-two-toggle" type="button" aria-expanded="false" aria-controls="cardTwoReportBody" onclick="toggleCardTwoReport(this)">
+            <span>查看詳細分析</span><span>▼</span>
+          </button>
+          <div id="cardTwoReportBody" hidden>
+            <div class="section">
+              <p class="mini-title">詳細規則分析</p>
+              ${rulesHtml}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function toggleCardTwoReport(button) {
+      const element = document.getElementById("cardTwoReportBody");
+      if (!element) return;
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      button.setAttribute("aria-expanded", String(!expanded));
+      element.hidden = expanded;
+      const spans = button.querySelectorAll("span");
+      if (spans[0]) spans[0].textContent = expanded ? "查看詳細分析" : "收合詳細分析";
+      if (spans[1]) spans[1].textContent = expanded ? "▼" : "▲";
+    }
+
+    function renderCardTwoRule(rule) {
+      const candidates = normalizeNumbers(rule.candidates);
+      const actual = normalizeNumbers(rule.actual_numbers);
+      const matched = normalizeNumbers(rule.matched_numbers);
+      return `
+        <div class="analysis-report-rule">
+          <div class="analysis-report-rule-head">
+            <span>${cardTwoText(rule.rule_name_zh)}</span>
+            <span class="${rule.status_text === "成功" || rule.status_text === "部分命中" ? "status-ok" : "status-unknown"}">${cardTwoText(rule.status_text)}</span>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">預測號碼：</span>
+            <div class="analysis-report-text">${candidates.length ? candidates.map(numberLabel).join("、") : "資料不足"}</div>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">實際開出：</span>
+            <div class="analysis-report-text">${actual.length ? actual.map(numberLabel).join("、") : "資料不足"}</div>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">命中：</span>
+            <div class="analysis-report-text">${matched.length ? matched.map(numberLabel).join("、") : "未命中"}</div>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">規則結果：</span>
+            <div class="analysis-report-text">${cardTwoText(rule.status_text, "資料不足")}</div>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">分析摘要：</span>
+            <div class="analysis-report-text">${cardTwoText(rule.summary, "已完成正式評估。")}</div>
+          </div>
+          <div class="analysis-report-field">
+            <span class="analysis-report-label">得分：</span>
+            <div class="analysis-report-text">${cardTwoText(rule.score_text, "已完成評估")}</div>
+          </div>
+        </div>
+      `;
+    }
+
     function renderTailGroups(next) {
       const groups = asList(next.tail_groups).length
         ? asList(next.tail_groups)
@@ -1177,135 +1493,13 @@
       `).join("");
     }
 
-    function renderModelVotes(scores) {
-      const entries = Object.entries(scores || {});
-      if (!entries.length) return `<div class="empty">尚無模型投票資料</div>`;
-      return rows(entries.map(([name, item]) => {
-        const confidence = typeof item === "object" ? (item.confidence || item.score || item.total_score) : item;
-        const stars = Math.max(1, Math.min(5, Math.round(Number(confidence || 0) / 20)));
-        return row(labelZh((item && item.label) || name), `${"★".repeat(stars)}${"☆".repeat(5 - stars)} ${fmtNumber(confidence)}%`);
-      }));
-    }
-
-    function renderLaowanjia(ruleLibrary, next) {
-      const data = ruleLibrary || {};
-      const superTrajectory = data.super_trajectory || {};
-      const clusterAftershock = data.cluster_recovery || {};
-      const rules = asList(data.rules);
-      const primary = asList(data.primary_rules);
-      const hotZones = asList(data.hot_zones);
-      const firstHotZone = hotZones[0];
-      const hotZoneLabel = firstHotZone ? `${firstHotZone}～${Number(firstHotZone) + 9}` : "尚無資料";
-      const coldZone = data.cold_zone || "尚無資料";
-      const diagonalRule = rules.find((rule) => rule.key === "diagonal") || {};
-      const gapRule = rules.find((rule) => rule.key === "gap") || {};
-      document.getElementById("cardLaowanjia").innerHTML = `
+    function renderLaowanjiaCompatibilityTemplate() {
+      return `
         <h2>老玩家分析</h2>
-        <div class="grid">
-          ${metric("分析依據期號", `第${safe(next.based_on_issue)}期`)}
-          ${metric("分析時間", formatDateTime(next.generated_at))}
-          ${metric("老玩家指數", `${fmtNumber(data.laowanjia_index)} / 100`)}
-          ${metric("AI 信心", `${fmtNumber(next.confidence)}%`)}
-          ${metric("資料狀態", next.production_valid ? "正式資料" : "資料異常", next.production_valid ? "status-ok" : "status-error")}
-        </div>
-        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="ruleLibraryBody" onclick="toggleSection('ruleLibraryBody', this)">
+        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="ruleLibraryBody">
           <span>展開老玩家分析</span><span>展開查看</span>
         </button>
-        <div id="ruleLibraryBody" hidden>
-          <div class="notice">老玩家指數是整合熱門、冷門、缺號、重號、連號、群聚、尾數、斜線、間距與其他規則後的綜合強度指標，不代表中獎保證。</div>
-          <div class="section">
-            <p class="mini-title">本期主要依據</p>${textList(primary)}
-          </div>
-          <div class="grid">
-            ${metric("Rule Library", `${fmtNumber(data.completed_count)} / ${fmtNumber(data.total_count || 19)}`)}
-            ${metric("老玩家指數", `${fmtNumber(data.laowanjia_index)} / 100`)}
-            ${metric("最高熱區", hotZoneLabel)}
-            ${metric("最高冷區", safe(coldZone))}
-          </div>
-          <div class="section">
-            <p class="mini-title">熱區／冷區</p>
-            <div class="grid">
-              ${metric("最高熱區", hotZoneLabel)}
-              ${metric("熱區信心", `${fmtNumber(data.laowanjia_index)}分`)}
-              ${metric("最高冷區", safe(coldZone))}
-            </div>
-          </div>
-          <div class="section">
-            <p class="mini-title">星數分析</p>${renderStarPrediction(data.star_prediction)}
-          </div>
-          <div class="section">
-            <p class="mini-title">斜線分析</p>
-            <div class="notice">斜線分析是觀察歷期號碼在賓果盤面斜向排列的延伸與回補強度。</div>
-            <div class="grid">
-              ${metric("斜線強度", diagonalRule.score === undefined || diagonalRule.score === null ? "尚待分析" : `${fmtNumber(diagonalRule.score)}分`)}
-              ${metric("說明", safe(diagonalRule.reason, "尚待分析"))}
-            </div>
-            ${balls(diagonalRule.candidate_numbers)}
-          </div>
-          <div class="section">
-            <p class="mini-title">差值／間距分析</p>
-            <div class="notice">差值分析用於觀察號碼之間的主要間距與可能回補強度。</div>
-            <div class="grid">
-              ${metric("差值強度", gapRule.score === undefined || gapRule.score === null ? "尚待分析" : `${fmtNumber(gapRule.score)}分`)}
-              ${metric("主要差距", safe(gapRule.impact, "尚待分析"))}
-            </div>
-            ${balls(gapRule.candidate_numbers)}
-          </div>
-          <div class="section">
-            <p class="mini-title">超獎軌跡回補</p>
-            <div class="notice">用於觀察超級獎號在近期區間中的移動與可能回補位置。</div>
-            <div class="grid">
-              ${metric("軌跡方向", labelZh(superTrajectory.trend || superTrajectory.direction) || "尚待分析")}
-              ${metric("距離", safe(superTrajectory.distance))}
-              ${metric("反轉", safe(superTrajectory.reversal))}
-              ${metric("區域跳動", safe(superTrajectory.zone_jump))}
-              ${metric("信心", superTrajectory.confidence === undefined ? "尚待分析" : `${fmtNumber(superTrajectory.confidence)}%`)}
-              ${metric("10期觀察", safe(superTrajectory.window_10 || superTrajectory.ten_window))}
-              ${metric("20期觀察", safe(superTrajectory.window_20 || superTrajectory.twenty_window))}
-            </div>
-            <p class="mini-title">候選號碼</p>${balls(superTrajectory.candidate_numbers)}
-          </div>
-          <div class="section">
-            <p class="mini-title">群聚後連號回補</p>
-            <div class="grid">
-              ${metric("大群聚發生期數", safe(clusterAftershock.cluster_issue || clusterAftershock.issue))}
-              ${metric("已間隔期數", safe(clusterAftershock.elapsed_issues))}
-              ${metric("10期窗口", safe(clusterAftershock.window_10 || clusterAftershock.ten_window))}
-              ${metric("信心", clusterAftershock.confidence === undefined ? "尚待分析" : `${fmtNumber(clusterAftershock.confidence)}%`)}
-            </div>
-            <p class="mini-title">小連號候選</p>${balls(clusterAftershock.consecutive_candidates || clusterAftershock.candidate_numbers)}
-            <p class="mini-title">回補候選</p>${balls(clusterAftershock.patch_candidates || clusterAftershock.candidate_numbers)}
-          </div>
-          <div class="section">
-            <p class="mini-title">完整老玩家規則</p>
-            <div class="rule-list">${rules.map(renderRuleItem).join("")}</div>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderStarPrediction(star) {
-      const data = star || {};
-      const items = [
-        ["三星可能性", data.three_star],
-        ["四星可能性", data.four_star],
-        ["五星可能性", data.five_star],
-        ["六星可能性", data.six_star]
-      ].map(([label, value]) => row(label, Array.isArray(value) && value.length ? `${normalizeNumbers(value).map(numberLabel).join("、")} 候選` : "尚待分析"));
-      return rows(items);
-    }
-
-    function renderRuleItem(rule) {
-      const status = rule.status === "ready" ? "已建立" : "資料不足";
-      const score = rule.score === null || rule.score === undefined ? "資料不足" : `${fmtNumber(rule.score)}分`;
-      return `
-        <div class="rule-item">
-          <div class="rule-head"><span>${safe(rule.name)}</span><span>${status}</span></div>
-          <div class="summary-line">評分 / 信心值：${score}</div>
-          <div class="summary-line">本期影響程度：${safe(rule.impact, "資料不足")}</div>
-          <div class="summary-line">${safe(rule.reason, "資料不足")}</div>
-          <div style="margin-top:8px">${balls(rule.candidate_numbers)}</div>
-        </div>
+        <div id="ruleLibraryBody" hidden></div>
       `;
     }
 
