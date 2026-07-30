@@ -75,10 +75,29 @@ def test_player_dashboard_enriches_card_v1_fields():
     assert enriched["confidence"] == 0.88
     assert enriched["confidence_percent"] == 88
     assert len(enriched["high_probability_numbers"]) == 5
+    assert enriched["numbers"] == list(range(1, 21))
+    assert enriched["top_five"] == enriched["high_probability_numbers"]
+    assert enriched["super_candidate"] == 7
     assert set(enriched["high_probability_numbers"]).issubset(set(enriched["recommend_numbers"]))
     assert enriched["size_prediction"]["small_count"] + enriched["size_prediction"]["large_count"] == 20
     assert enriched["odd_even_prediction"]["odd_count"] + enriched["odd_even_prediction"]["even_count"] == 20
     assert enriched["diagnostics"]["dashboard_card_v1"]["valid"] is True
+
+
+def test_player_dashboard_does_not_promote_super_candidate_outside_prediction_numbers():
+    enriched = player_dashboard._enrich_dashboard_card_v1(
+        {
+            "prediction_issue": "115040902",
+            "based_on_issue": "115040901",
+            "recommend_numbers": list(range(1, 21)),
+            "confidence": 88,
+            "super_number": 80,
+        },
+        {"issue": "115040901", "numbers": list(range(21, 41))},
+    )
+
+    assert enriched["super_candidates"] == []
+    assert enriched["super_candidate"] is None
 
 
 def test_next_prediction_card_fields_accept_confidence_percent():

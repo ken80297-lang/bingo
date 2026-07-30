@@ -8,6 +8,64 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from services import player_dashboard
 
 
+def test_latest_official_draw_card_marks_verified_only_for_complete_official_record():
+    payload = player_dashboard._latest_official_draw_card(
+        {
+            "issue": "115040801",
+            "draw_time": "2026-07-17T15:35:08+08:00",
+            "numbers": list(range(1, 21)),
+            "super_number": 7,
+            "verification_status": "verified",
+            "source": "official",
+            "source_scope": "production",
+        }
+    )
+
+    assert payload["verification_status"] == "verified"
+
+
+def test_latest_official_draw_card_does_not_upgrade_unsafe_records_to_verified():
+    cases = [
+        {"verification_status": "pending"},
+        {"verification_status": "verified", "source": "backup_source"},
+        {"verification_status": None},
+        {"verification_status": "verified", "numbers": list(range(1, 20))},
+        {"verification_status": "verified", "numbers": list(range(1, 20)) + [19]},
+        {"verification_status": "verified", "super_number": 80},
+        {"verification_status": "verified", "source_scope": "legacy"},
+        {"issue": "TEST115040801", "verification_status": "verified"},
+    ]
+
+    base = {
+        "issue": "115040801",
+        "draw_time": "2026-07-17T15:35:08+08:00",
+        "numbers": list(range(1, 21)),
+        "super_number": 27,
+        "verification_status": "verified",
+        "source": "official",
+        "source_scope": "production",
+    }
+    for override in cases:
+        record = {**base, **override}
+        payload = player_dashboard._latest_official_draw_card(record)
+        assert payload["verification_status"] != "verified"
+
+
+def test_current_draw_does_not_render_timestamp_as_verification_status():
+    payload = player_dashboard._current_draw(
+        {
+            "issue": "115040801",
+            "draw_time": None,
+            "numbers": list(range(1, 21)),
+            "super_number": 7,
+            "verification_status": "2026-07-30T02:36:37.036489+00:00",
+        }
+    )
+
+    assert payload["verification_status"] == "unknown"
+    assert payload["status_label"] == "unknown"
+
+
 def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
     player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
     player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
@@ -16,7 +74,10 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
         "issue": "115040801",
         "draw_time": "2026-07-17T15:35:08+08:00",
         "numbers": list(range(21, 41)),
-        "super_number": 7,
+        "super_number": 27,
+        "verification_status": "verified",
+        "source": "official",
+        "source_scope": "production",
         "created_at": "2026-07-17T15:35:15+08:00",
     }
     next_prediction = {
@@ -65,13 +126,23 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
 
     payload = player_dashboard.build_player_dashboard_summary()
     next_payload = payload["next_prediction"]
+    latest_official = payload["latest_official_draw"]
     previous = payload["previous_verification"]
 
+    assert latest_official["issue"] == "115040801"
+    assert latest_official["draw_time"] == "2026-07-17T15:35:08+08:00"
+    assert latest_official["numbers"] == list(range(21, 41))
+    assert latest_official["super_number"] == 27
+    assert latest_official["verification_status"] == "verified"
+    assert latest_official["source_scope"] == "production"
     assert next_payload["based_on_draw_time"] == "2026/07/17 15:35:08"
     assert next_payload["status"] == "waiting_draw"
     assert next_payload["stale_status"] == "normal"
     assert next_payload["lag_issues"] == 0
     assert len(next_payload["recommend_numbers"]) == 20
+    assert next_payload["numbers"] == list(range(41, 61))
+    assert len(next_payload["top_five"]) == 5
+    assert next_payload["super_candidate"] is None
 
     assert previous["target_issue"] == "115040801"
     assert len(previous["predicted_numbers"]) == 20

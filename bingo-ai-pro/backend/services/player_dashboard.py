@@ -386,23 +386,74 @@ def _hit_label(hit_count: int) -> str:
     return "no_hit"
 
 
+def _safe_draw_verification_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"verified", "official_verified", "pending", "pending_verification", "unknown"}:
+        return status
+    return "unknown"
+
+
 def _current_draw(draw: dict | None) -> dict | None:
     if not draw:
         return None
     numbers = _as_int_list(draw.get("numbers"))
+    verification_status = _safe_draw_verification_status(
+        draw.get("verification_status") or draw.get("status")
+    )
     return {
         "issue": draw.get("issue"),
         "draw_date": draw.get("draw_date"),
         "draw_time": draw.get("draw_time"),
         "numbers": numbers,
         "super_number": draw.get("super_number"),
-        "verification_status": draw.get("verification_status") or "official_verified",
-        "status_label": draw.get("status_label") or "official_verified",
+        "verification_status": verification_status,
+        "status_label": verification_status,
         "big_small": draw.get("big_small") or _big_small(numbers),
         "odd_even": draw.get("odd_even") or _odd_even(numbers),
         "source": draw.get("source") or "official",
+        "source_scope": draw.get("source_scope") or draw.get("scope") or "production",
         "collected_at": draw.get("updated_at") or draw.get("created_at"),
     }
+
+
+def _latest_official_draw_card(draw: dict | None) -> dict | None:
+    if not draw:
+        return None
+    payload = dict(draw)
+    raw_numbers = payload.get("numbers") if isinstance(payload.get("numbers"), list) else []
+    numbers = _as_int_list(raw_numbers)
+    status_text = str(payload.get("verification_status") or payload.get("status") or "").lower()
+    source_text = str(payload.get("source") or "").lower()
+    scope_text = str(payload.get("source_scope") or payload.get("scope") or "").lower()
+    issue = _valid_production_issue(payload.get("issue"))
+    super_number = _as_int(payload.get("super_number"))
+    verified = (
+        issue is not None
+        and status_text in {"verified", "official_verified"}
+        and not any(token in source_text for token in ("backup", "fallback", "pending", "legacy", "test"))
+        and scope_text == "production"
+        and len(raw_numbers) == 20
+        and len(numbers) == 20
+        and super_number in numbers
+        and "pending" not in status_text
+    )
+    if verified:
+        safe_status = "verified"
+    elif status_text in {"verified", "official_verified"}:
+        safe_status = "unknown"
+    else:
+        safe_status = _safe_draw_verification_status(
+            payload.get("verification_status") or payload.get("status")
+        )
+    payload.update(
+        {
+            "issue": issue or payload.get("issue"),
+            "numbers": numbers,
+            "verification_status": safe_status,
+            "source_scope": payload.get("source_scope") or payload.get("scope") or "unknown",
+        }
+    )
+    return payload
 
 
 def _pairs(numbers: list[int], diff: int) -> list[list[int]]:
@@ -614,11 +665,14 @@ def _enrich_dashboard_card_v1(next_prediction: dict, current_draw: dict | None) 
     size_payload = size_prediction(numbers, record)
     odd_even_payload = odd_even_prediction(numbers, record)
     high_probability = high_probability_numbers(record, numbers, payload.get("rule_library"))
+    super_candidate_list = [number for number in super_candidates(record) if number in numbers]
     payload.update(
         {
             "main_numbers": numbers,
             "recommend_numbers": numbers,
+            "numbers": numbers,
             "high_probability_numbers": high_probability["numbers"],
+            "top_five": high_probability["numbers"],
             "high_probability_details": high_probability["details"],
             "high_probability_source": high_probability["source"],
             "high_probability_fallback_used": high_probability["fallback_used"],
@@ -627,7 +681,8 @@ def _enrich_dashboard_card_v1(next_prediction: dict, current_draw: dict | None) 
             "odd_even_prediction": odd_even_payload,
             "confidence": confidence_ratio(payload.get("confidence") or payload.get("confidence_percent") or 0),
             "confidence_percent": confidence_percent(payload.get("confidence_percent") or payload.get("confidence") or 0),
-            "super_candidates": super_candidates(record),
+            "super_candidates": super_candidate_list,
+            "super_candidate": super_candidate_list[0] if super_candidate_list else None,
         }
     )
     diagnostics_card = {
@@ -1041,6 +1096,7 @@ def build_player_dashboard_summary() -> dict:
         "active_release": active_release,
         "release": active_release,
         "current_draw": current,
+        "latest_official_draw": _latest_official_draw_card(official),
         "sync": {
             "database_latest_issue": database_issue,
             "official_latest_issue": detected_latest_issue or official_issue,
