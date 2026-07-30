@@ -66,6 +66,22 @@ def test_current_draw_does_not_render_timestamp_as_verification_status():
     assert payload["status_label"] == "unknown"
 
 
+def test_current_draw_preserves_verified_status_and_null_draw_time():
+    payload = player_dashboard._current_draw(
+        {
+            "issue": "115040802",
+            "draw_time": None,
+            "numbers": list(range(1, 21)),
+            "super_number": 7,
+            "verification_status": "verified",
+        }
+    )
+
+    assert payload["verification_status"] == "verified"
+    assert payload["status_label"] == "verified"
+    assert payload["draw_time"] is None
+
+
 def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
     player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
     player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0

@@ -101,6 +101,73 @@ def test_official_draw_upsert_keeps_existing_draw_time_when_incoming_null(tmp_pa
     assert saved["draw_time"] == "2026-07-17T07:35:08+00:00"
 
 
+def test_official_draw_row_mapping_preserves_quality_columns():
+    row = (
+        9,
+        "115040099",
+        "2026-07-17",
+        None,
+        list(range(1, 21)),
+        list(range(20, 0, -1)),
+        7,
+        True,
+        "taiwan_lottery",
+        "verified",
+        "2026-07-17T07:35:09+00:00",
+        True,
+        {"dDate": "0001-01-01T00:00:00"},
+        "2026-07-17T07:35:10+00:00",
+        "2026-07-17T07:35:11+00:00",
+    )
+
+    mapped = official_draw_store._row_to_official(row)
+
+    assert mapped["verification_status"] == "verified"
+    assert mapped["verified"] is True
+    assert mapped["draw_time"] is None
+    assert mapped["fetched_at"] == "2026-07-17T07:35:09+00:00"
+    assert mapped["raw_json"] == {"dDate": "0001-01-01T00:00:00"}
+    assert mapped["created_at"] == "2026-07-17T07:35:10+00:00"
+    assert mapped["updated_at"] == "2026-07-17T07:35:11+00:00"
+
+
+def test_verified_draw_verification_updates_official_status_without_faking_draw_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(official_draw_store, "SQLITE_PATH", tmp_path / "bingo.db")
+    monkeypatch.setattr(official_draw_store, "_cloud_enabled", lambda: False)
+    official_draw_store.init_official_draw_tables()
+
+    draw = {
+        **_draw(115040100),
+        "draw_date": "2026-07-17",
+        "draw_time": None,
+        "verification_status": "validated",
+        "raw_json": {"dDate": "0001-01-01T00:00:00"},
+    }
+
+    assert official_draw_store.save_official_draws([draw])["saved"] == 1
+    result = official_draw_store.save_draw_verification(
+        {
+            "issue": "115040100",
+            "kuaishou_numbers": list(range(1, 21)),
+            "official_numbers": list(range(1, 21)),
+            "kuaishou_super": 1,
+            "official_super": 1,
+            "numbers_match": True,
+            "super_match": True,
+            "verified": True,
+            "status": "verified",
+            "verified_at": "2026-07-17T07:35:12+00:00",
+        }
+    )
+
+    saved = official_draw_store.get_official_draw_by_issue("115040100")
+
+    assert result["status"] == "ok"
+    assert saved["verified"] is True
+    assert saved["verification_status"] == "verified"
+    assert saved["draw_time"] is None
+
+
 def test_latest_official_draw_uses_numeric_production_order(monkeypatch):
     captured = {}
 
@@ -118,6 +185,8 @@ def test_latest_official_draw_uses_numeric_production_order(monkeypatch):
                 1,
                 True,
                 "taiwan_lottery",
+                "validated",
+                "2026-07-16T00:00:00",
                 False,
                 {},
                 "2026-07-16T00:00:00",

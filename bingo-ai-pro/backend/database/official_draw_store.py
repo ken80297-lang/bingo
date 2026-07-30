@@ -12,6 +12,23 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+OFFICIAL_DRAW_COLUMNS = (
+    "id",
+    "issue",
+    "draw_date",
+    "draw_time",
+    "numbers",
+    "open_order_numbers",
+    "super_number",
+    "win_no_only",
+    "source",
+    "verification_status",
+    "fetched_at",
+    "verified",
+    "raw_json",
+    "created_at",
+    "updated_at",
+)
 
 
 def _now() -> str:
@@ -343,26 +360,23 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
 
 
 def _row_to_official(row: Any) -> dict:
-    has_quality_columns = len(row) >= 15
-    verification_status = row[10] if has_quality_columns else None
-    fetched_at = row[11] if has_quality_columns else None
-    offset = 2 if has_quality_columns else 0
+    data = dict(zip(OFFICIAL_DRAW_COLUMNS, row))
     return {
-        "id": row[0],
-        "issue": row[1],
-        "draw_date": str(row[2]) if row[2] is not None else None,
-        "draw_time": row[3],
-        "numbers": _json_loads(row[4]) or [],
-        "open_order_numbers": _json_loads(row[5]) or [],
-        "super_number": row[6],
-        "win_no_only": bool(row[7]),
-        "source": row[8],
-        "verified": bool(row[9 + offset]),
-        "verification_status": verification_status or "validated",
-        "fetched_at": str(fetched_at) if fetched_at is not None else None,
-        "raw_json": _json_loads(row[10 + offset]) or {},
-        "created_at": str(row[11 + offset]) if row[11 + offset] is not None else None,
-        "updated_at": str(row[12 + offset]) if row[12 + offset] is not None else None,
+        "id": data.get("id"),
+        "issue": data.get("issue"),
+        "draw_date": str(data["draw_date"]) if data.get("draw_date") is not None else None,
+        "draw_time": data.get("draw_time"),
+        "numbers": _json_loads(data.get("numbers")) or [],
+        "open_order_numbers": _json_loads(data.get("open_order_numbers")) or [],
+        "super_number": data.get("super_number"),
+        "win_no_only": bool(data.get("win_no_only")),
+        "source": data.get("source"),
+        "verified": bool(data.get("verified")),
+        "verification_status": data.get("verification_status") or "validated",
+        "fetched_at": str(data["fetched_at"]) if data.get("fetched_at") is not None else None,
+        "raw_json": _json_loads(data.get("raw_json")) or {},
+        "created_at": str(data["created_at"]) if data.get("created_at") is not None else None,
+        "updated_at": str(data["updated_at"]) if data.get("updated_at") is not None else None,
     }
 
 
@@ -586,7 +600,13 @@ def save_draw_verification(item: dict) -> dict:
                     verification_id = int(cur.fetchone()[0])
                     if item.get("verified"):
                         cur.execute(
-                            "update official_draw_history set verified = true, updated_at = now() where issue = %s",
+                            """
+                            update official_draw_history
+                            set verified = true,
+                                verification_status = 'verified',
+                                updated_at = now()
+                            where issue = %s
+                            """,
                             (item.get("issue"),),
                             prepare=False,
                         )
@@ -626,7 +646,13 @@ def save_draw_verification(item: dict) -> dict:
             )
             if item.get("verified"):
                 conn.execute(
-                    "update official_draw_history set verified = 1, updated_at = ? where issue = ?",
+                    """
+                    update official_draw_history
+                    set verified = 1,
+                        verification_status = 'verified',
+                        updated_at = ?
+                    where issue = ?
+                    """,
                     (_now(), item.get("issue")),
                 )
             verification_id = int(cursor.lastrowid or 0)
@@ -672,7 +698,13 @@ def save_draw_verifications(items: list[dict]) -> dict:
                         )
                         if item.get("verified"):
                             cur.execute(
-                                "update official_draw_history set verified = true, updated_at = now() where issue = %s",
+                                """
+                                update official_draw_history
+                                set verified = true,
+                                    verification_status = 'verified',
+                                    updated_at = now()
+                                where issue = %s
+                                """,
                                 (item.get("issue"),),
                                 prepare=False,
                             )
@@ -713,7 +745,13 @@ def save_draw_verifications(items: list[dict]) -> dict:
                 )
                 if item.get("verified"):
                     conn.execute(
-                        "update official_draw_history set verified = 1, updated_at = ? where issue = ?",
+                        """
+                        update official_draw_history
+                        set verified = 1,
+                            verification_status = 'verified',
+                            updated_at = ?
+                        where issue = ?
+                        """,
                         (_now(), item.get("issue")),
                     )
         return {"status": "ok", "storage": "sqlite", "saved": len(items), "cloud_error": cloud_error}
