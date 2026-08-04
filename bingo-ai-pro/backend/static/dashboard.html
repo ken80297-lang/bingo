@@ -1475,18 +1475,18 @@
       const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]);
       const ruleLibrary = next.rule_library || {};
       const officialStatus = (officialDraw || {}).verification_status;
-      const hasCompleteCardOne = isCompleteOfficialDraw(officialDraw)
-        && isCompletePrediction(next)
-        && isCardOneIssueAligned(officialDraw, next);
+      const hasOfficialNumbers = hasValidNumberSet((officialDraw || {}).raw_numbers, 20);
+      const hasPredictionNumbers = hasValidNumberSet((next || {}).raw_candidates, 20);
+      const officialNumbersHtml = hasOfficialNumbers
+        ? numberGrid(officialNumbers, "", officialSuper, "super")
+        : `<div class="empty">Waiting official verification</div>`;
+      const predictionNumbersHtml = hasPredictionNumbers
+        ? numberGrid(numbers, "", superCandidates, "super")
+        : `<div class="empty">Waiting recommendation</div>`;
       const recommendationCreatedMetric = hasDisplayableDateTime(next.generated_at)
         ? metric("推薦建立時間", formatDateTime(next.generated_at))
         : "";
       const card = document.getElementById("cardNext");
-      if (!hasCompleteCardOne && card.innerHTML.trim()) return;
-      if (!hasCompleteCardOne) {
-        if (cardOneFallbackHtml) card.innerHTML = cardOneFallbackHtml;
-        return;
-      }
       const cardHtml = `
         <div class="card1-title">
           <h2>🎯 最新開獎與 AI 推薦</h2>
@@ -1503,7 +1503,7 @@
           <div class="summary-line">開獎時間：${formatDateTime((officialDraw || {}).draw_time)}</div>
           <div class="section">
             <p class="mini-title">官方開獎 20 碼</p>
-            ${numberGrid(officialNumbers, "", officialSuper, "super")}
+            ${officialNumbersHtml}
           </div>
         </div>
 
@@ -1519,7 +1519,7 @@
           </div>
           <div class="section">
             <p class="mini-title">AI 推薦 20 碼</p>
-            ${numberGrid(numbers, "", superCandidates, "super")}
+            ${predictionNumbersHtml}
           </div>
           ${renderCompactHighProbability(next, numbers)}
           ${renderPredictionBalance("大小預測", next.size_prediction, "小", "大", "small_count", "large_count")}

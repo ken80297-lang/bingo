@@ -96,6 +96,19 @@ if (mode === 'source_issue_mismatch') next.playerSummary.next_prediction.based_o
 if (mode === 'missing_official_time') delete next.playerSummary.latest_official_draw.draw_time;
 if (mode === 'missing_official_numbers') next.playerSummary.latest_official_draw.numbers = [1, 2, 3];
 if (mode === 'missing_prediction_numbers') next.playerSummary.next_prediction.candidates = [21, 22, 23];
+if (mode === 'fast_path_pending_empty') {{
+  next.playerSummary.partial = true;
+  next.playerSummary.stale = true;
+  next.playerSummary.latest_official_draw = null;
+  next.playerSummary.current_draw = null;
+  next.playerSummary.next_prediction = {{
+    status: 'prediction_pending',
+    prediction_issue: '115040999',
+    recommend_numbers: [],
+    high_probability_numbers: [],
+    confidence_percent: 0
+  }};
+}}
 context.render(next, []);
 const second = el('cardNext').innerHTML;
 console.log(JSON.stringify({{
@@ -111,7 +124,10 @@ console.log(JSON.stringify({{
   hasHighProbability: second.includes('高機率五個'),
   hasSize: second.includes('大小預測'),
   hasOddEven: second.includes('單雙預測'),
-  hasConfidence: second.includes('AI 信心')
+  hasConfidence: second.includes('AI 信心'),
+  hasWaitingOfficial: second.includes('Waiting official verification'),
+  hasWaitingRecommendation: second.includes('Waiting recommendation'),
+  hasCardHtml: second.trim().length > 0
 }}));
 """
     return subprocess.check_output(
@@ -226,7 +242,7 @@ def test_dashboard_formats_twenty_number_history_and_production_only():
     assert "尚無資料" in html
 
 
-def test_card_one_guard_uses_memory_fallback_and_strict_completeness():
+def test_card_one_renders_fast_path_placeholders_without_blocking():
     html = _html()
     script = _script()
     card1 = _card1_renderer()
@@ -263,11 +279,13 @@ def test_card_one_guard_uses_memory_fallback_and_strict_completeness():
     assert "hasDisplayableConfidence" in script
     assert "renderConfidence" in script
 
-    assert "const hasCompleteCardOne = isCompleteOfficialDraw(officialDraw)" in card1
-    assert "&& isCompletePrediction(next)" in card1
-    assert "&& isCardOneIssueAligned(officialDraw, next);" in card1
-    assert "if (!hasCompleteCardOne && card.innerHTML.trim()) return;" in card1
-    assert "if (cardOneFallbackHtml) card.innerHTML = cardOneFallbackHtml;" in card1
+    assert "const hasCompleteCardOne" not in card1
+    assert "const hasOfficialNumbers = hasValidNumberSet((officialDraw || {}).raw_numbers, 20);" in card1
+    assert "const hasPredictionNumbers = hasValidNumberSet((next || {}).raw_candidates, 20);" in card1
+    assert "Waiting official verification" in card1
+    assert "Waiting recommendation" in card1
+    assert "if (!hasCompleteCardOne && card.innerHTML.trim()) return;" not in card1
+    assert "if (cardOneFallbackHtml) card.innerHTML = cardOneFallbackHtml;" not in card1
 
 
 def test_card_one_raw_fields_preserve_duplicate_and_subset_validation():
@@ -343,33 +361,46 @@ def test_card_one_omits_recommendation_created_time_when_missing():
     assert result["hasGeneratedAt"] is False
 
 
-def test_card_one_does_not_update_when_official_is_not_verified():
+def test_card_one_updates_when_official_is_not_verified():
     result = json.loads(_run_card1_vm_scenario("unverified_official"))
-    assert result["updated"] is False
-    assert result["has102"] is False
-    assert result["hasVerified"] is True
-    assert result["hasPendingStatus"] is False
+    assert result["updated"] is True
+    assert result["has102"] is True
+    assert result["hasCardHtml"] is True
 
 
-def test_card_one_does_not_update_when_source_issue_mismatches_official_issue():
+def test_card_one_updates_when_source_issue_mismatches_official_issue():
     result = json.loads(_run_card1_vm_scenario("source_issue_mismatch"))
-    assert result["updated"] is False
-    assert result["has102"] is False
+    assert result["updated"] is True
+    assert result["has102"] is True
+    assert result["hasCardHtml"] is True
 
 
-def test_card_one_does_not_update_when_official_time_is_missing():
+def test_card_one_updates_when_official_time_is_missing():
     result = json.loads(_run_card1_vm_scenario("missing_official_time"))
-    assert result["updated"] is False
-    assert result["has102"] is False
+    assert result["updated"] is True
+    assert result["has102"] is True
+    assert result["hasCardHtml"] is True
 
 
-def test_card_one_does_not_update_when_official_numbers_are_incomplete():
+def test_card_one_updates_with_placeholder_when_official_numbers_are_incomplete():
     result = json.loads(_run_card1_vm_scenario("missing_official_numbers"))
-    assert result["updated"] is False
-    assert result["has102"] is False
+    assert result["updated"] is True
+    assert result["has102"] is True
+    assert result["hasCardHtml"] is True
+    assert result["hasWaitingOfficial"] is True
 
 
-def test_card_one_does_not_update_when_prediction_numbers_are_incomplete():
+def test_card_one_updates_with_placeholder_when_prediction_numbers_are_incomplete():
     result = json.loads(_run_card1_vm_scenario("missing_prediction_numbers"))
-    assert result["updated"] is False
-    assert result["has102"] is False
+    assert result["updated"] is True
+    assert result["has102"] is True
+    assert result["hasCardHtml"] is True
+    assert result["hasWaitingRecommendation"] is True
+
+
+def test_card_one_renders_fast_path_pending_empty_payload():
+    result = json.loads(_run_card1_vm_scenario("fast_path_pending_empty"))
+    assert result["updated"] is True
+    assert result["hasCardHtml"] is True
+    assert result["hasWaitingOfficial"] is True
+    assert result["hasWaitingRecommendation"] is True
