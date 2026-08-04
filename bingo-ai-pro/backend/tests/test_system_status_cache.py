@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import db
-from config import production_scope
 from database import cloud_draws, collector_store, data_quality_store, prediction_history_store
 from database import release_store
-from services import catch_up_service, collector_runtime, daily_recovery, learning_engine, prediction_service
+from services import catch_up_service, collector_runtime, daily_recovery, latest_sync, learning_engine, prediction_service
 
 
 def _patch_fast_status_dependencies(monkeypatch):
@@ -22,7 +22,6 @@ def _patch_fast_status_dependencies(monkeypatch):
     monkeypatch.setattr(data_quality_store, "get_data_quality_status", lambda: {"status": "ok"})
     monkeypatch.setattr(collector_runtime, "_sqlite_status", lambda: "available")
     monkeypatch.setattr(collector_runtime, "_cloud_status", lambda: "available")
-    monkeypatch.setattr(collector_runtime, "_learning_status", lambda: {"status": "ok"})
     monkeypatch.setattr(release_store, "get_current_release", lambda: {"status": "ok"})
     monkeypatch.setattr(daily_recovery, "get_recovery_status", lambda: {"status": "disabled"})
     monkeypatch.setattr(daily_recovery, "build_health_report", lambda: {"status": "ok"})
@@ -34,6 +33,8 @@ def _reset_cache():
     collector_runtime._SYSTEM_STATUS_LAST_REFRESH_ERROR = None
     collector_runtime._SYSTEM_STATUS_LAST_REFRESH_DURATION_MS = None
     collector_runtime._SYSTEM_STATUS_REFRESH_IN_PROGRESS = False
+    learning_engine._LEARNING_STATUS_CACHE["payload"] = None
+    learning_engine._LEARNING_STATUS_CACHE["expires_at"] = 0.0
 
 
 def test_system_status_cache_refresh_and_hit(monkeypatch):
@@ -118,39 +119,33 @@ def test_system_status_cache_deadline_returns_partial_cache(monkeypatch):
     collector_runtime._SYSTEM_STATUS_REFRESH_LOCK.release()
 
 
-def test_system_status_cache_production_scope_timeout_returns_partial(monkeypatch):
+def test_system_status_cache_uses_learning_snapshot_when_full_status_blocks(monkeypatch):
     _reset_cache()
-    _patch_fast_status_dependencies(monkeypatch)
-    collector_runtime._SYSTEM_STATUS_CACHE = {
-        "status": "ok",
-        "scheduler": "running",
-        "production_scope": {"production_generation": 9, "stale": True},
-        "cache_refreshed_at": datetime.now(timezone.utc).isoformat(),
-    }
+    calls = {"full_status": 0}
 
+    def blocked_full_learning_status():
+        calls["full_status"] += 1
+        time.sleep(150)
+        return {"status": "ok"}
+
+    _patch_fast_status_dependencies(monkeypatch)
+    monkeypatch.setattr(learning_engine, "get_learning_status", blocked_full_learning_status)
     monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
         "database_latest_issue": "115000001",
         "source_latest_issue": "115000001",
         "lag_count": 0,
         "catch_up_available": True,
     })
-    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_PRODUCTION_SCOPE_TIMEOUT_SECONDS", 0.01)
-
-    def blocked_production_scope():
-        time.sleep(1)
-        return {"production_generation": 2}
-
-    monkeypatch.setattr(production_scope, "production_scope_payload", blocked_production_scope)
 
     started = time.perf_counter()
     payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 0.5
-    assert payload["partial"] is True
-    assert payload["timeout"] is False
-    assert "production_scope" in payload["timeout_steps"]
-    assert payload["production_scope"] == {"production_generation": 9, "stale": True}
+    assert elapsed < 10
+    assert calls["full_status"] == 0
+    assert payload["learning"]["cache"]["status"] == "cache_empty"
+    assert payload["learning"]["stale"] is True
+    assert "learning_status" not in payload["timeout_steps"]
 
 
 def test_system_status_cache_does_not_wait_for_official_source_when_it_hangs(monkeypatch):
@@ -180,6 +175,145 @@ def test_system_status_cache_does_not_wait_for_official_source_when_it_hangs(mon
     assert payload["source_latest_issue"] == "115000001"
     assert payload["lag_count"] == 0
     assert payload["cache_source"] == "refresh"
+
+
+def test_system_status_cache_does_not_submit_second_learning_task_or_grow_threads(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
+        "database_latest_issue": "115000001",
+        "source_latest_issue": "115000001",
+        "lag_count": 0,
+        "catch_up_available": True,
+    })
+
+    acquired = learning_engine._LEARNING_STATUS_CACHE_LOCK.acquire(blocking=False)
+    before_threads = threading.active_count()
+    try:
+        first = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+        second = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+    finally:
+        if acquired:
+            learning_engine._LEARNING_STATUS_CACHE_LOCK.release()
+
+    after_threads = threading.active_count()
+    assert first["learning"]["cache"]["status"] == "lock_unavailable"
+    assert second["learning"]["cache"]["status"] == "lock_unavailable"
+    assert after_threads <= before_threads + 1
+
+
+def test_status_step_worker_allows_only_one_inflight_task():
+    before_threads = threading.active_count()
+
+    try:
+        collector_runtime._run_bounded_step(lambda: (time.sleep(1) or {"status": "slow"}), 0.01)
+    except collector_runtime._StatusCacheStepTimeout:
+        pass
+    else:
+        raise AssertionError("expected first bounded step to time out")
+
+    try:
+        collector_runtime._run_bounded_step(lambda: {"status": "second"}, 0.01)
+    except collector_runtime._StatusCacheStepWorkerBusy:
+        pass
+    else:
+        raise AssertionError("expected second bounded step to see busy worker")
+
+    assert threading.active_count() <= before_threads + 1
+    time.sleep(1.05)
+
+
+def test_system_status_cache_learning_failure_does_not_block_other_steps(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
+        "database_latest_issue": "115000001",
+        "source_latest_issue": "115000001",
+        "lag_count": 0,
+        "catch_up_available": True,
+    })
+    monkeypatch.setattr(collector_runtime, "_learning_status", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+
+    assert payload["learning"]["status"] == "unknown"
+    assert payload["production_scope"]["production_generation"] == 2
+    assert payload["release"]["status"] == "ok"
+
+
+def test_system_status_cache_timeout_attribution_marks_learning_status(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", 0.1)
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_STEP_MIN_REMAINING_SECONDS", 0)
+    monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
+        "database_latest_issue": "115000001",
+        "source_latest_issue": "115000001",
+        "lag_count": 0,
+        "catch_up_available": True,
+    })
+    monkeypatch.setattr(collector_runtime, "_learning_status", lambda: (time.sleep(0.12) or {"status": "ok"}))
+
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+
+    assert payload["timeout"] is True
+    assert "learning_status" in payload["timeout_steps"]
+    assert "production_scope" not in payload["timeout_steps"]
+
+
+def test_system_status_cache_release_fast_is_not_misattributed(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_STEP_MIN_REMAINING_SECONDS", 0.02)
+    monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
+        "database_latest_issue": "115000001",
+        "source_latest_issue": "115000001",
+        "lag_count": 0,
+        "catch_up_available": True,
+    })
+    monkeypatch.setattr(data_quality_store, "get_data_quality_status", lambda: (time.sleep(0.04) or {"status": "ok"}))
+
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+
+    release_step = next(item for item in payload["status_cache_steps"] if item["step"] == "release")
+    assert release_step["result"] == "stale"
+    assert release_step["timeout"] is False
+    assert "release" not in payload["timeout_steps"]
+
+
+def test_learning_snapshot_uses_stale_cache_when_available():
+    _reset_cache()
+    learning_engine._LEARNING_STATUS_CACHE["payload"] = {"status": "ok", "total_records": 10}
+    learning_engine._LEARNING_STATUS_CACHE["expires_at"] = time.monotonic() - 1
+
+    payload = learning_engine.get_learning_status_snapshot()
+
+    assert payload["status"] == "ok"
+    assert payload["stale"] is True
+    assert payload["cache"]["status"] == "snapshot_stale"
+
+
+def test_learning_status_records_substep_timings(monkeypatch):
+    _reset_cache()
+    monkeypatch.setattr(learning_engine, "get_learning_status_counts", lambda: {"failed_records": 0, "total_records": 1})
+    monkeypatch.setattr(learning_engine, "get_prediction_history_statistics", lambda limit: {
+        "pending_learning": 0,
+        "verified_waiting_learning": 0,
+        "last_learning_time": None,
+    })
+
+    payload = learning_engine.get_learning_status()
+
+    steps = {item["step"]: item for item in payload["learning_status_steps"]}
+    assert "learning_history_counts_query" in steps
+    assert "prediction_history_statistics_query" in steps
+    assert all("duration_ms" in item and item["result"] == "ok" for item in payload["learning_status_steps"])
+
+
+def test_system_status_cache_policy_flags_unchanged():
+    assert latest_sync.HISTORICAL_CATCHUP_ENABLED is False
+    assert latest_sync.LATEST_ISSUE_PRIORITY is True
 
 
 def test_official_lock_stale_recovery_clears_runtime(monkeypatch):

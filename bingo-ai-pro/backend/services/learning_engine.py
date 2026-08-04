@@ -54,6 +54,51 @@ def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
 
 
+def _default_learning_status_snapshot(reason: str) -> dict:
+    return {
+        "status": "unknown",
+        "engine_version": ENGINE_VERSION,
+        "observation_version": OBSERVATION_VERSION,
+        "stale": True,
+        "partial": True,
+        "total_records": None,
+        "live_prediction_count": None,
+        "historical_backtest_count": None,
+        "learned_records": None,
+        "pending_records": None,
+        "pending_official_records": None,
+        "pending_target_records": None,
+        "resolved_pending_records": None,
+        "missing_snapshot_records": None,
+        "failed_records": None,
+        "evaluation_error_records": None,
+        "latest_snapshot_issue": None,
+        "latest_snapshot_at": None,
+        "latest_learned_issue": None,
+        "latest_learned_at": None,
+        "latest_official_issue": None,
+        "official_lag_issues": None,
+        "model_count": None,
+        "live_target_count": None,
+        "complete_live_target_count": None,
+        "incomplete_live_target_count": None,
+        "duplicate_risk_count": None,
+        "snapshot_success_rate": None,
+        "learning_success_rate": None,
+        "pending_learning": None,
+        "verified_waiting_learning": None,
+        "last_learning_time": None,
+        "readiness_status": "unknown",
+        "ready_for_phase_22_2": False,
+        "readiness_reasons": [reason],
+        "cache": {
+            "status": reason,
+            "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+            "expires_in_seconds": 0,
+        },
+    }
+
+
 def _cached_learning_status() -> dict | None:
     now = time.monotonic()
     with _LEARNING_STATUS_CACHE_LOCK:
@@ -90,6 +135,32 @@ def _stale_learning_status() -> dict | None:
             "expires_in_seconds": 0,
         }
         return payload
+
+
+def get_learning_status_snapshot() -> dict:
+    """Return the last known learning status without database or external work."""
+    acquired = _LEARNING_STATUS_CACHE_LOCK.acquire(blocking=False)
+    if not acquired:
+        return _default_learning_status_snapshot("lock_unavailable")
+    try:
+        cached = _LEARNING_STATUS_CACHE.get("payload")
+        expires_at = float(_LEARNING_STATUS_CACHE.get("expires_at") or 0)
+        if cached is None:
+            return _default_learning_status_snapshot("cache_empty")
+        payload = copy.deepcopy(cached)
+    finally:
+        _LEARNING_STATUS_CACHE_LOCK.release()
+
+    now = time.monotonic()
+    expired = expires_at <= now
+    payload["stale"] = bool(expired)
+    payload["partial"] = bool(payload.get("partial", False))
+    payload["cache"] = {
+        "status": "snapshot_stale" if expired else "snapshot_hit",
+        "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
+        "expires_in_seconds": round(max(0.0, expires_at - now), 3),
+    }
+    return payload
 
 
 def invalidate_learning_status_cache() -> None:
@@ -739,17 +810,42 @@ def get_learning_status() -> dict:
     if cached_status is not None:
         return cached_status
     start = time.perf_counter()
+    timings: list[dict[str, Any]] = []
+
+    def timed_step(name: str, func):
+        step_start = time.perf_counter()
+        try:
+            value = func()
+            timings.append(
+                {
+                    "step": name,
+                    "duration_ms": _duration_ms(step_start),
+                    "result": "ok",
+                }
+            )
+            return value
+        except Exception:
+            timings.append(
+                {
+                    "step": name,
+                    "duration_ms": _duration_ms(step_start),
+                    "result": "error",
+                }
+            )
+            raise
+
     try:
-        counts = get_learning_status_counts()
-        observation = _cached_observation()
+        counts = timed_step("learning_history_counts_query", get_learning_status_counts)
+        observation = timed_step("observation_memory_cache", _cached_observation)
         records = (observation or {}).get("records") or {}
         targets = (observation or {}).get("targets") or {}
         quality = (observation or {}).get("quality") or {}
         readiness = (observation or {}).get("readiness") or {}
-        prediction_stats = get_prediction_history_statistics(100)
+        prediction_stats = timed_step("prediction_history_statistics_query", lambda: get_prediction_history_statistics(100))
         status = "ok"
         if int(counts.get("failed_records") or 0) > 0:
             status = "warning"
+        assemble_start = time.perf_counter()
         payload = {
             "status": (observation or {}).get("status", status),
             "engine_version": ENGINE_VERSION,
@@ -791,7 +887,15 @@ def get_learning_status() -> dict:
                 "elapsed_ms": _duration_ms(start),
             },
         }
-        _store_learning_status_cache(payload)
+        timings.append(
+            {
+                "step": "status_payload_assembly",
+                "duration_ms": _duration_ms(assemble_start),
+                "result": "ok",
+            }
+        )
+        payload["learning_status_steps"] = timings
+        timed_step("learning_status_memory_cache_store", lambda: _store_learning_status_cache(payload))
         return payload
     except Exception as exc:
         logger.exception("learning status failed")
@@ -800,12 +904,14 @@ def get_learning_status() -> dict:
             stale["status"] = "warning"
             stale["stale"] = True
             stale["error"] = "learning status unavailable"
+            stale["learning_status_steps"] = timings
             return stale
         return {
             "status": "error",
             "engine_version": ENGINE_VERSION,
             "observation_version": OBSERVATION_VERSION,
             "error": str(exc),
+            "learning_status_steps": timings,
             "cache": {
                 "status": "bypass_error",
                 "ttl_seconds": LEARNING_STATUS_CACHE_TTL_SECONDS,
