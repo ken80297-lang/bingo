@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
@@ -111,6 +112,9 @@ logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 30
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
+PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS = 4.5
+PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 1.0
+PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS = 0.25
 PLAYER_DASHBOARD_HISTORY_LIMIT = 10
 CARD_TWO_TITLE = "📖 AI 驗證與分析報告"
 CARD_TWO_RULE_ORDER = [
@@ -149,13 +153,32 @@ CARD_TWO_FINALIZED_DISALLOWED = {
     "legacy",
 }
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
+_PLAYER_SUMMARY_CACHE_LOCK = threading.RLock()
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
     "latest_prediction": None,
+    "next_prediction_snapshot": None,
     "prediction_history": [],
+    "card_two_history": [],
+    "prediction_aggregates": {},
+    "analysis": {},
+    "kuaishou": {},
+    "previous_verification": None,
+    "card_two": None,
+    "active_release": None,
+    "production_scope": None,
 }
 PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
 _PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="player-dashboard")
+_PLAYER_IN_FLIGHT_LOCK = threading.Lock()
+_PLAYER_COMPONENT_IN_FLIGHT: dict[str, Any] = {}
+_PLAYER_RUNTIME_METRICS: dict[str, int] = {
+    "submitted_count": 0,
+    "skipped_busy_count": 0,
+    "cache_hit_count": 0,
+    "stale_fallback_count": 0,
+    "timeout_count": 0,
+}
 
 
 def _now() -> str:
@@ -163,8 +186,13 @@ def _now() -> str:
 
 
 def _cached_summary() -> dict | None:
-    payload = _PLAYER_SUMMARY_CACHE.get("payload")
-    expires_at = float(_PLAYER_SUMMARY_CACHE.get("expires_at") or 0)
+    if not _PLAYER_SUMMARY_CACHE_LOCK.acquire(blocking=False):
+        return None
+    try:
+        payload = _PLAYER_SUMMARY_CACHE.get("payload")
+        expires_at = float(_PLAYER_SUMMARY_CACHE.get("expires_at") or 0)
+    finally:
+        _PLAYER_SUMMARY_CACHE_LOCK.release()
     if isinstance(payload, dict) and time.monotonic() < expires_at:
         if payload.get("cache_filter_version") != PLAYER_CACHE_FILTER_VERSION:
             return None
@@ -177,13 +205,15 @@ def _cached_summary() -> dict | None:
             return None
         cached = deepcopy(payload)
         cached["cached"] = True
+        _PLAYER_RUNTIME_METRICS["cache_hit_count"] += 1
         return cached
     return None
 
 
 def _store_summary_cache(payload: dict) -> None:
-    _PLAYER_SUMMARY_CACHE["payload"] = deepcopy(payload)
-    _PLAYER_SUMMARY_CACHE["expires_at"] = time.monotonic() + PLAYER_SUMMARY_TTL_SECONDS
+    with _PLAYER_SUMMARY_CACHE_LOCK:
+        _PLAYER_SUMMARY_CACHE["payload"] = deepcopy(payload)
+        _PLAYER_SUMMARY_CACHE["expires_at"] = time.monotonic() + PLAYER_SUMMARY_TTL_SECONDS
 
 
 def _store_component_cache(name: str, payload: Any) -> None:
@@ -203,6 +233,144 @@ def _load_component_cache(name: str, fallback=None):
     if name == "prediction_history" and isinstance(cached, list):
         cached = [item for item in cached if is_production_prediction(item)]
     return deepcopy(cached)
+
+
+def _deadline_remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _timed_default(name: str, started: float, result: str, source: str | None = None, **extra: Any) -> dict:
+    payload = {
+        "step": name,
+        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        "result": result,
+    }
+    if source:
+        payload["source"] = source
+    payload.update(extra)
+    return payload
+
+
+def _submit_component(name: str, fn):
+    with _PLAYER_IN_FLIGHT_LOCK:
+        existing = _PLAYER_COMPONENT_IN_FLIGHT.get(name)
+        if existing is not None and not existing.done():
+            _PLAYER_RUNTIME_METRICS["skipped_busy_count"] += 1
+            return None, "busy"
+        future = _PLAYER_EXECUTOR.submit(fn)
+        _PLAYER_COMPONENT_IN_FLIGHT[name] = future
+        _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
+        return future, "submitted"
+
+
+def _component_result(
+    name: str,
+    future,
+    *,
+    deadline: float,
+    timeout_seconds: float,
+    timings: list[dict],
+    warnings: list[str],
+    fallback=None,
+):
+    started = time.perf_counter()
+    if future is None:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        warnings.append(f"{name} stale cache")
+        timings.append(
+            _timed_default(
+                name,
+                started,
+                "stale",
+                "last_good_cache",
+                reason="worker_busy",
+                in_flight_count=_player_in_flight_count(),
+            )
+        )
+        return _load_component_cache(name, fallback)
+
+    remaining = _deadline_remaining(deadline)
+    if remaining <= 0:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        warnings.append(f"{name} skipped budget")
+        timings.append(_timed_default(name, started, "skipped", "last_good_cache", reason="budget_exhausted"))
+        return _load_component_cache(name, fallback)
+
+    wait_seconds = max(0.0, min(timeout_seconds, remaining))
+    try:
+        result = future.result(timeout=wait_seconds)
+        _store_component_cache(name, result)
+        timings.append(_timed_default(name, started, "ok", "fresh"))
+        return result
+    except TimeoutError:
+        _PLAYER_RUNTIME_METRICS["timeout_count"] += 1
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        logger.warning(
+            "player_dashboard_component_timeout component=%s timeout_seconds=%s fallback=last_good_cache",
+            name,
+            round(wait_seconds, 3),
+        )
+        warnings.append(f"{name} fallback cache")
+        timings.append(
+            _timed_default(
+                name,
+                started,
+                "timeout",
+                "last_good_cache",
+                timeout_seconds=round(wait_seconds, 3),
+                in_flight_count=_player_in_flight_count(),
+            )
+        )
+        return _load_component_cache(name, fallback)
+    except Exception as exc:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        logger.warning("player_dashboard_component_failed component=%s fallback=last_good_cache", name, exc_info=True)
+        warnings.append(f"{name} fallback cache")
+        timings.append(_timed_default(name, started, "error", "last_good_cache", exception_type=type(exc).__name__))
+        return _load_component_cache(name, fallback)
+
+
+def _run_inline_step(
+    name: str,
+    fn,
+    *,
+    deadline: float,
+    timings: list[dict],
+    warnings: list[str],
+    fallback=None,
+    cache_name: str | None = None,
+):
+    started = time.perf_counter()
+    if _deadline_remaining(deadline) <= 0:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        warnings.append(f"{name} skipped budget")
+        timings.append(_timed_default(name, started, "skipped", "last_good_cache", reason="budget_exhausted"))
+        return _load_component_cache(cache_name or name, fallback)
+    try:
+        result = fn()
+        if cache_name or name in _PLAYER_COMPONENT_CACHE:
+            _store_component_cache(cache_name or name, result)
+        timings.append(_timed_default(name, started, "ok", "fresh"))
+        return result
+    except Exception as exc:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        logger.warning("player_dashboard_inline_step_failed component=%s fallback=last_good_cache", name, exc_info=True)
+        warnings.append(f"{name} fallback cache")
+        timings.append(_timed_default(name, started, "error", "last_good_cache", exception_type=type(exc).__name__))
+        return _load_component_cache(cache_name or name, fallback)
+
+
+def _player_in_flight_count() -> int:
+    with _PLAYER_IN_FLIGHT_LOCK:
+        return sum(1 for future in _PLAYER_COMPONENT_IN_FLIGHT.values() if future is not None and not future.done())
+
+
+def player_dashboard_runtime_metrics() -> dict:
+    return {
+        **dict(_PLAYER_RUNTIME_METRICS),
+        "in_flight_count": _player_in_flight_count(),
+        "max_workers": getattr(_PLAYER_EXECUTOR, "_max_workers", None),
+    }
 
 
 def _as_int(value: Any) -> int | None:
@@ -527,6 +695,8 @@ def _prediction_from_history(
     record: dict | None,
     current_draw: dict | None,
     detected_latest_issue: Any = None,
+    *,
+    allow_slow_lookups: bool = True,
 ) -> dict | None:
     if not record:
         return None
@@ -555,8 +725,11 @@ def _prediction_from_history(
         return None
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
-    based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue else None
-    based_time = _based_on_time(based_on_issue, based_draw)
+    based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue and allow_slow_lookups else None
+    based_time = _based_on_time(based_on_issue, based_draw) if allow_slow_lookups else {
+        "based_on_draw_time": _format_draw_time(record.get("based_on_draw_time") or record.get("source_draw_time")),
+        "based_on_time_source": "snapshot" if (record.get("based_on_draw_time") or record.get("source_draw_time")) else "unavailable",
+    }
     recommendation_warning = None
     if len(numbers) < 20:
         recommendation_warning = f"目前僅產生 {len(numbers)} 個有效推薦號碼"
@@ -1308,7 +1481,254 @@ def _future_result(name: str, future, warnings: list[str], fallback=None):
         return _load_component_cache(name, fallback)
 
 
+def _empty_rule_library() -> dict:
+    return {
+        "title": "AI rule library",
+        "completed_count": 0,
+        "total_count": len(RULE_LIBRARY_NAMES),
+        "summary": "rule snapshot unavailable",
+        "primary_rules": [],
+        "rules": [],
+        "stale": True,
+    }
+
+
+def _last_summary_cache() -> dict | None:
+    if not _PLAYER_SUMMARY_CACHE_LOCK.acquire(blocking=False):
+        return None
+    try:
+        payload = _PLAYER_SUMMARY_CACHE.get("payload")
+        expires_at = float(_PLAYER_SUMMARY_CACHE.get("expires_at") or 0)
+        if not isinstance(payload, dict):
+            return None
+        cached = deepcopy(payload)
+        cached["cached"] = True
+        cached["stale"] = True
+        cached["partial"] = True
+        cached["cache_age_seconds"] = round(max(0.0, time.monotonic() - (expires_at - PLAYER_SUMMARY_TTL_SECONDS)), 3)
+        return cached
+    finally:
+        _PLAYER_SUMMARY_CACHE_LOCK.release()
+
+
+def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnings: list[str]) -> dict:
+    started = time.perf_counter()
+    official_future, official_state = _submit_component("official_draw", get_latest_official_draw)
+    official = _component_result(
+        "official_draw",
+        official_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+    )
+    current = _current_draw(official)
+
+    kuaishou_future, _ = _submit_component("kuaishou", get_latest_kuaishou_snapshot)
+    kuaishou = _component_result(
+        "kuaishou",
+        kuaishou_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+    ) or {}
+    detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
+
+    next_prediction = None
+    if current:
+        def build_next_snapshot():
+            record = _current_prediction_for_draw(current)
+            if record:
+                _store_component_cache("latest_prediction", record)
+            return _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=True)
+
+        prediction_future, _ = _submit_component("next_prediction_snapshot", build_next_snapshot)
+        next_prediction = _component_result(
+            "next_prediction_snapshot",
+            prediction_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+        )
+    else:
+        next_prediction = _load_component_cache("next_prediction_snapshot")
+        if next_prediction:
+            _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+            warnings.append("next_prediction_snapshot stale cache")
+            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
+
+    next_prediction = (
+        next_prediction
+        or _load_component_cache("next_prediction_snapshot")
+        or _pending_next_prediction(current, detected_latest_issue)
+    )
+    next_prediction["history"] = _load_component_cache("prediction_history_stats", {}) or {}
+    next_prediction["rule_library"] = _load_component_cache("rule_library", _empty_rule_library()) or _empty_rule_library()
+    next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
+
+    timings.append(
+        _timed_default(
+            "card_one_core",
+            started,
+            "ok" if current else "stale",
+            "fast_snapshot",
+            official_submit_state=official_state,
+        )
+    )
+    return {
+        "official": official,
+        "current": current,
+        "next_prediction": next_prediction,
+        "detected_latest_issue": detected_latest_issue,
+    }
+
+
+def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
+    verified_record, previous_result_mode = _previous_result_for_based_on(previous_target_issue)
+    displayed_target_issue = (verified_record or {}).get("prediction_issue")
+    verification_draw = get_official_draw_by_issue(displayed_target_issue) if displayed_target_issue else None
+    previous_verification = _verification(verified_record, verification_draw) if verified_record else _unavailable_previous_result(previous_target_issue)
+    previous_verification["previous_result_mode"] = previous_result_mode
+    previous_verification["requested_target_issue"] = previous_target_issue
+    previous_verification["displayed_target_issue"] = displayed_target_issue
+    return previous_verification
+
+
 def build_player_dashboard_summary() -> dict:
+    cached = _cached_summary()
+    if cached:
+        return cached
+
+    total_start = time.perf_counter()
+    deadline = time.monotonic() + PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS
+    warnings: list[str] = []
+    timings: list[dict] = []
+    generated_at = _now()
+
+    card_one = get_player_card_one_snapshot(deadline=deadline, timings=timings, warnings=warnings)
+    current = card_one["current"]
+    official = card_one["official"]
+    next_prediction = card_one["next_prediction"]
+    detected_latest_issue = card_one["detected_latest_issue"]
+    if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
+        next_prediction["sync_status"] = "database_behind"
+        next_prediction["recommendation_warning"] = (
+            f"Production sync stale: database latest issue {(current or {}).get('issue')} "
+            f"is behind detected issue {detected_latest_issue}."
+        )
+
+    history_records = _load_component_cache("prediction_history", []) or []
+    card_two_history = _load_component_cache("card_two_history", history_records) or []
+    aggregates = _load_component_cache("prediction_aggregates", {}) or {}
+    analysis = _load_component_cache("analysis", {}) or {}
+    kuaishou = _load_component_cache("kuaishou", {}) or {}
+    active_release = _load_component_cache("active_release", {}) or {}
+    production_scope = _run_inline_step(
+        "production_scope",
+        production_scope_payload,
+        deadline=deadline,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+        cache_name="production_scope",
+    ) or {}
+
+    prediction_stats = _history_stats(history_records)
+    prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
+    prediction_stats["stale"] = True
+    production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
+
+    previous_target_issue = next_prediction.get("based_on_issue")
+    if previous_target_issue:
+        previous_future, _ = _submit_component(
+            "previous_verification",
+            lambda: _build_previous_verification_snapshot(previous_target_issue),
+        )
+        previous_verification = _component_result(
+            "previous_verification",
+            previous_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+        )
+    else:
+        previous_verification = None
+    if not previous_verification:
+        previous_verification = _unavailable_previous_result(previous_target_issue)
+        previous_verification["previous_result_mode"] = "stale_unavailable"
+    previous_verification.setdefault("requested_target_issue", previous_target_issue)
+    previous_verification.setdefault("displayed_target_issue", None)
+
+    card_two = _load_component_cache("card_two") or _card_two_empty()
+    if isinstance(card_two, dict):
+        card_two = {**card_two, "stale": True}
+
+    database_issue = (current or {}).get("issue")
+    official_issue = detected_latest_issue or (current or {}).get("issue")
+    database_int = _as_int(database_issue)
+    official_int = _as_int(official_issue)
+    lag_count = max((official_int or 0) - (database_int or 0), 0) if database_int and official_int else 0
+
+    stale_steps = [
+        name
+        for name in ("history", "card_two", "aggregates", "verification", "release")
+        if name in {"history", "card_two", "aggregates", "verification", "release"}
+    ]
+    timeout_steps = [item["step"] for item in timings if item.get("result") == "timeout"]
+    skipped_busy_steps = [item["step"] for item in timings if item.get("reason") == "worker_busy"]
+    partial = bool(stale_steps or timeout_steps or skipped_busy_steps)
+
+    payload = {
+        "status": "ok",
+        "generated_at": generated_at,
+        "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
+        "production_filtered": True,
+        "production_scope": production_scope,
+        "active_release": active_release,
+        "release": active_release,
+        "current_draw": current,
+        "latest_official_draw": _latest_official_draw_card(official),
+        "sync": {
+            "database_latest_issue": database_issue,
+            "official_latest_issue": detected_latest_issue or official_issue,
+            "detected_latest_issue": detected_latest_issue,
+            "latest_kuaishou_issue": (kuaishou or {}).get("issue"),
+            "lag_count": lag_count,
+            "is_synced": lag_count == 0 and str(detected_latest_issue or official_issue or "") == str(database_issue or ""),
+            "last_successful_collection": (current or {}).get("collected_at"),
+            "collection_duration_seconds": None,
+        },
+        "next_prediction": next_prediction,
+        "card_two": card_two,
+        "previous_verification": previous_verification,
+        "prediction_history": production_history,
+        "data_counts": _data_counts(history_records, prediction_stats, aggregates),
+        "history": prediction_stats,
+        "aggregates": {**aggregates, "stale": True} if isinstance(aggregates, dict) else {"stale": True},
+        "rule_library": next_prediction.get("rule_library"),
+        "warnings": warnings,
+        "partial": partial,
+        "stale": partial,
+        "stale_steps": stale_steps,
+        "timeout_steps": timeout_steps,
+        "skipped_busy_steps": skipped_busy_steps,
+        "timing": {
+            "total_duration_ms": round((time.perf_counter() - total_start) * 1000, 2),
+            "steps": timings,
+            "cache_hits": _PLAYER_RUNTIME_METRICS["cache_hit_count"],
+            "in_flight_count": _player_in_flight_count(),
+            "runtime_metrics": player_dashboard_runtime_metrics(),
+        },
+    }
+    _store_summary_cache(payload)
+    return payload
+
+
+def _build_player_dashboard_summary_legacy() -> dict:
     cached = _cached_summary()
     if cached:
         return cached
