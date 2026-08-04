@@ -2,13 +2,31 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import db
+from config import production_scope
 from database import cloud_draws, collector_store, data_quality_store, prediction_history_store
-from services import catch_up_service, collector_runtime, learning_engine
+from database import release_store
+from services import catch_up_service, collector_runtime, daily_recovery, learning_engine, prediction_service
+
+
+def _patch_fast_status_dependencies(monkeypatch):
+    monkeypatch.setattr(db, "get_statistics", lambda: {"latest_issue": "115000001", "last_update": "2026-07-15T00:00:00+00:00"})
+    monkeypatch.setattr(db, "get_latest_draw", lambda: {"issue": "115000001"})
+    monkeypatch.setattr(prediction_history_store, "get_prediction_history_count", lambda: 12)
+    monkeypatch.setattr(collector_store, "get_collector_status", lambda: {"status": "ok"})
+    monkeypatch.setattr(data_quality_store, "get_data_quality_status", lambda: {"status": "ok"})
+    monkeypatch.setattr(collector_runtime, "_sqlite_status", lambda: "available")
+    monkeypatch.setattr(collector_runtime, "_cloud_status", lambda: "available")
+    monkeypatch.setattr(collector_runtime, "_learning_status", lambda: {"status": "ok"})
+    monkeypatch.setattr(release_store, "get_current_release", lambda: {"status": "ok"})
+    monkeypatch.setattr(daily_recovery, "get_recovery_status", lambda: {"status": "disabled"})
+    monkeypatch.setattr(daily_recovery, "build_health_report", lambda: {"status": "ok"})
+    monkeypatch.setattr(prediction_service, "prediction_lock_status", lambda: {"status": "idle"})
 
 
 def _reset_cache():
@@ -98,6 +116,70 @@ def test_system_status_cache_deadline_returns_partial_cache(monkeypatch):
     assert payload["refresh_in_progress"] is False
     assert collector_runtime._SYSTEM_STATUS_REFRESH_LOCK.acquire(blocking=False) is True
     collector_runtime._SYSTEM_STATUS_REFRESH_LOCK.release()
+
+
+def test_system_status_cache_production_scope_timeout_returns_partial(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    collector_runtime._SYSTEM_STATUS_CACHE = {
+        "status": "ok",
+        "scheduler": "running",
+        "production_scope": {"production_generation": 9, "stale": True},
+        "cache_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    monkeypatch.setattr(catch_up_service, "get_catch_up_status", lambda fetch_source=False: {
+        "database_latest_issue": "115000001",
+        "source_latest_issue": "115000001",
+        "lag_count": 0,
+        "catch_up_available": True,
+    })
+    monkeypatch.setattr(collector_runtime, "SYSTEM_STATUS_PRODUCTION_SCOPE_TIMEOUT_SECONDS", 0.01)
+
+    def blocked_production_scope():
+        time.sleep(1)
+        return {"production_generation": 2}
+
+    monkeypatch.setattr(production_scope, "production_scope_payload", blocked_production_scope)
+
+    started = time.perf_counter()
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.5
+    assert payload["partial"] is True
+    assert payload["timeout"] is False
+    assert "production_scope" in payload["timeout_steps"]
+    assert payload["production_scope"] == {"production_generation": 9, "stale": True}
+
+
+def test_system_status_cache_does_not_wait_for_official_source_when_it_hangs(monkeypatch):
+    _reset_cache()
+    _patch_fast_status_dependencies(monkeypatch)
+    catch_up_service.LAST_CATCH_UP_RESULT.update(
+        {
+            "status": "ok",
+            "source_latest_issue": "115000001",
+            "last_successful_collect_time": datetime.now(timezone.utc).isoformat(),
+            "last_collect_duration": 0.1,
+        }
+    )
+    monkeypatch.setattr(catch_up_service, "get_database_latest_issue", lambda: "115000001")
+
+    def blocked_source_latest_issue():
+        time.sleep(1)
+        return "115000999"
+
+    monkeypatch.setattr(catch_up_service, "get_source_latest_issue", blocked_source_latest_issue)
+
+    started = time.perf_counter()
+    payload = collector_runtime.refresh_system_status_cache(scheduler_status="running")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.5
+    assert payload["source_latest_issue"] == "115000001"
+    assert payload["lag_count"] == 0
+    assert payload["cache_source"] == "refresh"
 
 
 def test_official_lock_stale_recovery_clears_runtime(monkeypatch):

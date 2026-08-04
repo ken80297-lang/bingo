@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -12,7 +13,8 @@ from typing import Any, Iterator
 logger = logging.getLogger(__name__)
 
 SYSTEM_STATUS_CACHE_TTL_SECONDS = int(os.getenv("SYSTEM_STATUS_CACHE_TTL_SECONDS", "75"))
-SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS = float(os.getenv("SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", "20"))
+SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS = min(float(os.getenv("SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS", "9")), 9.0)
+SYSTEM_STATUS_PRODUCTION_SCOPE_TIMEOUT_SECONDS = float(os.getenv("SYSTEM_STATUS_PRODUCTION_SCOPE_TIMEOUT_SECONDS", "3"))
 OFFICIAL_LOCK_STALE_SECONDS = 180
 
 _OFFICIAL_LOCK = threading.Lock()
@@ -62,6 +64,10 @@ _SYSTEM_STATUS_LAST_REFRESH_DURATION_MS: float | None = None
 
 
 class _StatusCacheDeadlineExceeded(Exception):
+    pass
+
+
+class _StatusCacheStepTimeout(Exception):
     pass
 
 
@@ -123,6 +129,34 @@ def _status_cache_step_log(step: str, start: float, success: bool, timeout: bool
 
 def _status_cache_deadline_exceeded(start: float) -> bool:
     return (time.perf_counter() - start) >= SYSTEM_STATUS_CACHE_REFRESH_DEADLINE_SECONDS
+
+
+def _run_with_timeout(func, timeout_seconds: float):
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def target() -> None:
+        try:
+            result_queue.put(("ok", func()), block=False)
+        except Exception as exc:
+            result_queue.put(("error", exc), block=False)
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    try:
+        status, value = result_queue.get(timeout=max(0.001, timeout_seconds))
+    except queue.Empty as exc:
+        raise _StatusCacheStepTimeout() from exc
+    if status == "error":
+        raise value
+    return value
+
+
+def _cached_status_value(key: str, default):
+    with _SYSTEM_STATUS_CACHE_LOCK:
+        cached = deepcopy(_SYSTEM_STATUS_CACHE)
+    if isinstance(cached, dict) and key in cached:
+        return cached.get(key)
+    return default
 
 
 def _collector_health_from_runtime(payload: dict) -> dict:
@@ -442,25 +476,53 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
     try:
         steps: list[dict[str, Any]] = []
         timeout_steps: list[str] = []
+        partial = False
 
-        def run_step(step: str, func, default):
+        def run_step(step: str, func, default, *, timeout_seconds: float | None = None):
+            nonlocal partial
             step_start = time.perf_counter()
             if _status_cache_deadline_exceeded(start):
                 timeout_steps.append(step)
                 _status_cache_step_log(step, step_start, success=False, timeout=True)
                 raise _StatusCacheDeadlineExceeded(step)
             try:
-                value = func()
+                value = _run_with_timeout(func, timeout_seconds) if timeout_seconds else func()
+                elapsed_ms = round((time.perf_counter() - step_start) * 1000, 2)
+                if _status_cache_deadline_exceeded(start):
+                    timeout_steps.append(step)
+                    steps.append(
+                        {
+                            "step": step,
+                            "duration_ms": elapsed_ms,
+                            "success": False,
+                            "timeout": True,
+                        }
+                    )
+                    _status_cache_step_log(step, step_start, success=False, timeout=True)
+                    raise _StatusCacheDeadlineExceeded(step)
                 steps.append(
                     {
                         "step": step,
-                        "duration_ms": round((time.perf_counter() - step_start) * 1000, 2),
+                        "duration_ms": elapsed_ms,
                         "success": True,
                         "timeout": False,
                     }
                 )
                 _status_cache_step_log(step, step_start, success=True)
                 return value
+            except _StatusCacheStepTimeout:
+                timeout_steps.append(step)
+                partial = True
+                steps.append(
+                    {
+                        "step": step,
+                        "duration_ms": round((time.perf_counter() - step_start) * 1000, 2),
+                        "success": False,
+                        "timeout": True,
+                    }
+                )
+                _status_cache_step_log(step, step_start, success=False, timeout=True)
+                return default
             except _StatusCacheDeadlineExceeded:
                 raise
             except Exception as exc:
@@ -516,7 +578,12 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
             "collector": run_step("collector_status", get_collector_status, {"status": "unknown"}),
             "data_quality": run_step("data_quality_status", get_data_quality_status, {"status": "unknown"}),
             "learning": run_step("learning_status", _learning_status, {"status": "unknown"}),
-            "production_scope": run_step("production_scope", production_scope_payload, {}),
+            "production_scope": run_step(
+                "production_scope",
+                production_scope_payload,
+                _cached_status_value("production_scope", {}),
+                timeout_seconds=SYSTEM_STATUS_PRODUCTION_SCOPE_TIMEOUT_SECONDS,
+            ),
             "release": run_step("release", get_current_release, {}),
             "daily_recovery": run_step("daily_recovery", get_recovery_status, {"status": "unknown"}),
             "prediction_lock": run_step("prediction_lock", prediction_lock_status, {"status": "unknown"}),
@@ -525,6 +592,7 @@ def refresh_system_status_cache(scheduler_status: str = "unknown") -> dict:
             "status_cache_steps": steps,
             "timeout_steps": timeout_steps,
             "timeout": False,
+            "partial": partial,
         }
     except _StatusCacheDeadlineExceeded as exc:
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
