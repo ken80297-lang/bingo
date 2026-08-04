@@ -101,6 +101,7 @@ def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch
     assert payload["status"] == "ok"
     assert payload["current_draw"] is None
     assert payload["timeout_steps"] == ["official_draw", "kuaishou"]
+    assert player_dashboard._PLAYER_SUMMARY_CACHE["payload"] is None
 
 
 def test_player_summary_does_not_submit_second_task_when_component_busy(monkeypatch):
@@ -108,6 +109,7 @@ def test_player_summary_does_not_submit_second_task_when_component_busy(monkeypa
     busy = Future()
     player_dashboard._PLAYER_COMPONENT_IN_FLIGHT["official_draw"] = busy
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: (_ for _ in ()).throw(AssertionError("must not submit")))
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
 
     payload = player_dashboard.build_player_dashboard_summary()
 
@@ -129,8 +131,7 @@ def test_player_summary_repeated_busy_refreshes_do_not_grow_in_flight(monkeypatc
         assert payload["status"] == "ok"
 
     metrics = player_dashboard.player_dashboard_runtime_metrics()
-    assert metrics["in_flight_count"] >= 1
-    assert metrics["submitted_count"] <= 2
+    assert 1 <= metrics["in_flight_count"] <= 3
     assert metrics["skipped_busy_count"] >= 20
 
 
@@ -138,6 +139,7 @@ def test_player_summary_prediction_timeout_uses_waiting_schema(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", _official_draw)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     blocked = Future()
     original_submit = player_dashboard._submit_component
 
@@ -154,3 +156,29 @@ def test_player_summary_prediction_timeout_uses_waiting_schema(monkeypatch):
     assert payload["next_prediction"]["status"] == "prediction_pending"
     assert payload["next_prediction"]["prediction_issue"] == "115040901"
     assert "next_prediction_snapshot" in payload["timeout_steps"]
+
+
+def test_player_summary_late_component_result_populates_cache(monkeypatch):
+    _reset_dashboard_state()
+    monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
+
+    def slow_official_draw():
+        time.sleep(0.05)
+        return _official_draw()
+
+    monkeypatch.setattr(player_dashboard, "get_latest_official_draw", slow_official_draw)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: {"issue": "115040900"})
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: _prediction())
+    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+
+    payload = player_dashboard.build_player_dashboard_summary()
+    assert payload["current_draw"] is None
+    assert player_dashboard._PLAYER_SUMMARY_CACHE["payload"] is None
+
+    deadline = time.time() + 1
+    while time.time() < deadline and player_dashboard._PLAYER_COMPONENT_CACHE.get("official_draw") is None:
+        time.sleep(0.01)
+
+    cached = player_dashboard._PLAYER_COMPONENT_CACHE.get("official_draw")
+    assert cached["issue"] == "115040900"

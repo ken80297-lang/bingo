@@ -258,9 +258,19 @@ def _submit_component(name: str, fn):
             _PLAYER_RUNTIME_METRICS["skipped_busy_count"] += 1
             return None, "busy"
         future = _PLAYER_EXECUTOR.submit(fn)
+        future.add_done_callback(lambda completed, component=name: _complete_component(component, completed))
         _PLAYER_COMPONENT_IN_FLIGHT[name] = future
         _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
         return future, "submitted"
+
+
+def _complete_component(name: str, future) -> None:
+    try:
+        result = future.result()
+    except Exception:
+        logger.warning("player_dashboard_component_late_result_failed component=%s", name, exc_info=True)
+        return
+    _store_component_cache(name, result)
 
 
 def _component_result(
@@ -1724,7 +1734,8 @@ def build_player_dashboard_summary() -> dict:
             "runtime_metrics": player_dashboard_runtime_metrics(),
         },
     }
-    _store_summary_cache(payload)
+    if current or ("official_draw" not in timeout_steps and "official_draw" not in skipped_busy_steps):
+        _store_summary_cache(payload)
     return payload
 
 
