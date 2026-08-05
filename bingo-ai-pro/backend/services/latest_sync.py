@@ -161,13 +161,51 @@ def _select_collector_target_draw(database_issue: Any, source_draws: list[dict])
 
     target_number = database_number + 1
     if target_number > source_number:
+        current_draw = {str(draw.get("issue")): draw for draw in source_draws}.get(str(database_number))
+        if current_draw:
+            return current_draw, source_issue, "database_already_at_source_latest"
         return None, source_issue, "target_waiting_for_source"
 
     by_issue = {str(draw.get("issue")): draw for draw in source_draws}
     target_draw = by_issue.get(str(target_number))
     if target_draw:
         return target_draw, source_issue, None
+    source_latest_draw = by_issue.get(str(source_number))
+    if source_latest_draw:
+        return source_latest_draw, source_issue, "gap_jump_to_source_latest"
     return None, source_issue, "target_issue_not_in_source_page"
+
+
+def invalidate_latest_sync_cache(reason: str | None = None) -> dict[str, Any]:
+    with _STATE_LOCK:
+        _LATEST_SYNC_CACHE["snapshot"] = None
+        _LATEST_SYNC_CACHE["expires_at"] = 0.0
+    logger.info("latest sync cache invalidated reason=%s", reason or "unspecified")
+    return {"status": "ok", "reason": reason}
+
+
+def _invalidate_downstream_caches(reason: str) -> dict[str, Any]:
+    invalidated: dict[str, Any] = {"latest_sync": invalidate_latest_sync_cache(reason)}
+    try:
+        from services.player_dashboard import invalidate_player_dashboard_cache
+
+        invalidated["player_dashboard"] = invalidate_player_dashboard_cache(reason)
+    except Exception as exc:
+        logger.exception("player dashboard cache invalidation failed")
+        invalidated["player_dashboard"] = {"status": "error", "error": str(exc)}
+    return invalidated
+
+
+def _reload_downstream_snapshot(latest_draw: dict | None, reason: str) -> dict[str, Any]:
+    reloaded: dict[str, Any] = {}
+    try:
+        from services.player_dashboard import reload_latest_production_snapshot
+
+        reloaded["player_dashboard"] = reload_latest_production_snapshot(latest_draw, reason)
+    except Exception as exc:
+        logger.exception("player dashboard snapshot reload failed")
+        reloaded["player_dashboard"] = {"status": "error", "error": str(exc)}
+    return reloaded
 
 
 def _analysis_exists(issue: str) -> bool:
@@ -751,6 +789,7 @@ def process_latest_official_draw() -> dict[str, Any]:
         save_result = save_official_draws([source_draw])
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
             return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
+        _invalidate_downstream_caches("official_draw_saved")
         saved_draw = get_official_draw_by_issue(source_issue)
         if not is_complete_official_draw(saved_draw):
             return _failure(source_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
@@ -821,6 +860,8 @@ def process_latest_official_draw() -> dict[str, Any]:
             "saved": save_result,
             "analysis": analysis_result,
             "lifecycle": lifecycle,
+            "target_select_reason": target_select_reason,
+            "snapshot_reload": _reload_downstream_snapshot(saved_draw, "official_latest_sync_completed"),
             "elapsed_seconds": round(time.perf_counter() - start, 3),
             "exit_reason": "completed" if completed else "partial",
         }

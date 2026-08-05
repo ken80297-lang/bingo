@@ -172,6 +172,7 @@ PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
 _PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="player-dashboard")
 _PLAYER_IN_FLIGHT_LOCK = threading.Lock()
 _PLAYER_COMPONENT_IN_FLIGHT: dict[str, Any] = {}
+_PLAYER_CACHE_GENERATION = 0
 _PLAYER_RUNTIME_METRICS: dict[str, int] = {
     "submitted_count": 0,
     "skipped_busy_count": 0,
@@ -216,6 +217,67 @@ def _store_summary_cache(payload: dict) -> None:
         _PLAYER_SUMMARY_CACHE["expires_at"] = time.monotonic() + PLAYER_SUMMARY_TTL_SECONDS
 
 
+def invalidate_player_dashboard_cache(reason: str | None = None) -> dict:
+    global _PLAYER_CACHE_GENERATION
+    with _PLAYER_SUMMARY_CACHE_LOCK:
+        _PLAYER_SUMMARY_CACHE["payload"] = None
+        _PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
+    for key in list(_PLAYER_COMPONENT_CACHE):
+        _PLAYER_COMPONENT_CACHE[key] = None if not isinstance(_PLAYER_COMPONENT_CACHE[key], list) else []
+    with _PLAYER_IN_FLIGHT_LOCK:
+        stale = [
+            name
+            for name, future in _PLAYER_COMPONENT_IN_FLIGHT.items()
+            if future is not None and not future.done()
+        ]
+        _PLAYER_CACHE_GENERATION += 1
+        _PLAYER_COMPONENT_IN_FLIGHT.clear()
+    logger.info(
+        "player dashboard cache invalidated reason=%s stale_in_flight=%s",
+        reason or "unspecified",
+        stale,
+    )
+    return {"status": "ok", "reason": reason, "stale_in_flight": stale}
+
+
+def reload_latest_production_snapshot(official_draw: dict | None = None, reason: str | None = None) -> dict:
+    official = official_draw or get_latest_official_draw()
+    current = _current_draw(official)
+    if not current:
+        return {"status": "skipped", "reason": "latest_official_draw_unavailable"}
+    prediction = _current_prediction_for_draw(current)
+    detected_latest_issue = current.get("issue")
+    next_prediction = (
+        _prediction_from_history(
+            prediction,
+            current,
+            detected_latest_issue,
+            allow_slow_lookups=False,
+        )
+        or _pending_next_prediction(current, detected_latest_issue)
+    )
+    next_prediction["history"] = _load_component_cache("prediction_history_stats", {}) or {}
+    next_prediction["rule_library"] = _load_component_cache("rule_library", _empty_rule_library()) or _empty_rule_library()
+    next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
+    _store_component_cache("official_draw", official)
+    if prediction:
+        _store_component_cache("latest_prediction", prediction)
+    _store_component_cache("next_prediction_snapshot", next_prediction)
+    logger.info(
+        "player dashboard latest production snapshot reloaded reason=%s issue=%s target_issue=%s",
+        reason or "unspecified",
+        current.get("issue"),
+        next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),
+    )
+    return {
+        "status": "ok",
+        "reason": reason,
+        "issue": current.get("issue"),
+        "target_issue": next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),
+        "recommend_count": len(_as_int_list(next_prediction.get("recommend_numbers"))),
+    }
+
+
 def _store_component_cache(name: str, payload: Any) -> None:
     if name == "latest_prediction" and payload and not is_production_prediction(payload):
         return
@@ -257,14 +319,25 @@ def _submit_component(name: str, fn):
         if existing is not None and not existing.done():
             _PLAYER_RUNTIME_METRICS["skipped_busy_count"] += 1
             return None, "busy"
+        generation = _PLAYER_CACHE_GENERATION
         future = _PLAYER_EXECUTOR.submit(fn)
-        future.add_done_callback(lambda completed, component=name: _complete_component(component, completed))
         _PLAYER_COMPONENT_IN_FLIGHT[name] = future
         _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
-        return future, "submitted"
+    future.add_done_callback(
+        lambda completed, component=name, submitted_generation=generation: _complete_component(
+            component,
+            completed,
+            submitted_generation,
+        )
+    )
+    return future, "submitted"
 
 
-def _complete_component(name: str, future) -> None:
+def _complete_component(name: str, future, submitted_generation: int) -> None:
+    with _PLAYER_IN_FLIGHT_LOCK:
+        if submitted_generation != _PLAYER_CACHE_GENERATION:
+            logger.info("player dashboard stale component result discarded component=%s", name)
+            return
     try:
         result = future.result()
     except Exception:
