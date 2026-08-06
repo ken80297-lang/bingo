@@ -167,6 +167,7 @@ _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "card_two": None,
     "active_release": None,
     "production_scope": None,
+    "rule_library": None,
 }
 PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
 _PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="player-dashboard")
@@ -311,6 +312,15 @@ def _timed_default(name: str, started: float, result: str, source: str | None = 
         payload["source"] = source
     payload.update(extra)
     return payload
+
+
+def _public_step_name(name: str) -> str:
+    return {
+        "prediction_history": "history",
+        "prediction_aggregates": "aggregates",
+        "active_release": "release",
+        "previous_verification": "verification",
+    }.get(name, name)
 
 
 def _submit_component(name: str, fn):
@@ -1576,6 +1586,177 @@ def _empty_rule_library() -> dict:
     }
 
 
+def _card_one_payload(
+    *,
+    current_draw: dict | None,
+    latest_official_draw: dict | None,
+    next_prediction: dict,
+    previous_verification: dict | None,
+    rule_library: dict | None,
+) -> dict:
+    prediction_numbers = _as_int_list(
+        next_prediction.get("recommend_numbers") or next_prediction.get("main_numbers")
+    )
+    official_numbers = _as_int_list((latest_official_draw or current_draw or {}).get("numbers"))
+    high_probability = _as_int_list(next_prediction.get("high_probability_numbers"))[:5]
+    super_candidates_payload = _as_int_list(next_prediction.get("super_candidates"))[:3]
+    return {
+        "title": "🎯 最新開獎與 AI 推薦",
+        "current_draw": current_draw,
+        "latest_official_draw": latest_official_draw,
+        "next_prediction": next_prediction,
+        "previous_verification": previous_verification,
+        "rule_library": rule_library or _empty_rule_library(),
+        "official_numbers": official_numbers,
+        "prediction_numbers": prediction_numbers,
+        "high_probability_numbers": high_probability,
+        "super_candidates": super_candidates_payload,
+        "official_numbers_complete": len(official_numbers) == 20,
+        "prediction_numbers_complete": len(prediction_numbers) == 20,
+        "high_probability_complete": len(high_probability) == 5,
+        "super_candidates_complete": len(super_candidates_payload) > 0,
+        "status": next_prediction.get("status") or "unknown",
+        "source_issue": next_prediction.get("based_on_issue"),
+        "target_issue": next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),
+        "generated_at": next_prediction.get("generated_at"),
+        "confidence_percent": next_prediction.get("confidence_percent"),
+        "diagnostics": (next_prediction.get("diagnostics") or {}).get("dashboard_card_v1", {}),
+    }
+
+
+def _card_three_payload(
+    *,
+    current_draw: dict | None,
+    next_prediction: dict,
+    prediction_stats: dict,
+    data_counts: dict,
+    sync: dict,
+    aggregates: dict | None,
+    production_scope: dict | None,
+    active_release: dict | None,
+    timings: list[dict],
+    warnings: list[str],
+    partial: bool,
+) -> dict:
+    aggregates = aggregates if isinstance(aggregates, dict) else {}
+    production_scope = production_scope if isinstance(production_scope, dict) else {}
+    active_release = active_release if isinstance(active_release, dict) else {}
+    timeout_steps = [item["step"] for item in timings if item.get("result") == "timeout"]
+    stale_steps = [
+        item["step"]
+        for item in timings
+        if item.get("result") in {"stale", "skipped", "error"}
+    ]
+    sections = {
+        "latest_processing": {
+            "label": "最新處理資訊",
+            "current_issue": (current_draw or {}).get("issue"),
+            "database_latest_issue": sync.get("database_latest_issue"),
+            "source_latest_issue": sync.get("official_latest_issue") or sync.get("detected_latest_issue"),
+            "last_successful_collection": sync.get("last_successful_collection"),
+        },
+        "ai_flow": {
+            "label": "AI 流程",
+            "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
+            "next_prediction_status": next_prediction.get("status") or "unknown",
+            "partial": partial,
+            "timeout_steps": timeout_steps,
+            "stale_steps": stale_steps,
+        },
+        "today_summary": {
+            "label": "今日運作摘要",
+            "draw_count": data_counts.get("draw_count", 0),
+            "prediction_count": data_counts.get("prediction_count", 0),
+            "verified_prediction_count": data_counts.get("verified_prediction_count", 0),
+            "statistics_sample_count": data_counts.get("statistics_sample_count", 0),
+        },
+        "system_health": {
+            "label": "系統健康",
+            "status": "partial" if partial else "ok",
+            "is_synced": sync.get("is_synced"),
+            "lag_count": sync.get("lag_count", 0),
+            "warnings": warnings,
+        },
+        "learning_status": {
+            "label": "AI 學習狀態",
+            "status": "ready" if (prediction_stats or {}).get("sample_size") else "waiting_data",
+            "sample_size": (prediction_stats or {}).get("sample_size", 0),
+            "average_hits": (prediction_stats or {}).get("average_hits", 0),
+            "pending_learning": (prediction_stats or {}).get("pending_learning", 0),
+        },
+        "version_info": {
+            "label": "版本資訊",
+            "model_version": next_prediction.get("model_version") or active_release.get("model_version"),
+            "feature_version": next_prediction.get("feature_version") or active_release.get("feature_version"),
+            "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
+            "git_commit_hash": next_prediction.get("git_commit_hash") or active_release.get("git_commit_hash"),
+            "production_generation": next_prediction.get("production_generation") or production_scope.get("production_generation"),
+        },
+        "next_issue": {
+            "label": "下一期資訊",
+            "target_issue": next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),
+            "source_issue": next_prediction.get("based_on_issue"),
+            "expected_draw_time": next_prediction.get("expected_draw_time") or next_prediction.get("target_draw_time"),
+            "recommendation_ready": len(_as_int_list(next_prediction.get("recommend_numbers") or next_prediction.get("main_numbers"))) == 20,
+        },
+    }
+    return {
+        "title": "🤖 AI 運作中心",
+        "status": "partial" if partial else "ok",
+        "current_issue": (current_draw or {}).get("issue"),
+        "next_prediction_status": next_prediction.get("status") or "unknown",
+        "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
+        "sections": sections,
+        "learning": {
+            "status": "ready" if (prediction_stats or {}).get("sample_size") else "waiting_data",
+            "sample_size": (prediction_stats or {}).get("sample_size", 0),
+            "history_limit": (prediction_stats or {}).get("history_limit"),
+            "average_hits": (prediction_stats or {}).get("average_hits", 0),
+            "three_star_rate": (prediction_stats or {}).get("three_star_rate", 0),
+            "four_star_rate": (prediction_stats or {}).get("four_star_rate", 0),
+            "five_star_rate": (prediction_stats or {}).get("five_star_rate", 0),
+            "super_hit_rate": (prediction_stats or {}).get("super_hit_rate", 0),
+            "pending_learning": (prediction_stats or {}).get("pending_learning", 0),
+            "verified_waiting_learning": (prediction_stats or {}).get("verified_waiting_learning", 0),
+        },
+        "data_quality": {
+            "draw_count": data_counts.get("draw_count", 0),
+            "prediction_count": data_counts.get("prediction_count", 0),
+            "valid_prediction_count": data_counts.get("valid_prediction_count", 0),
+            "verified_prediction_count": data_counts.get("verified_prediction_count", 0),
+            "statistics_sample_count": data_counts.get("statistics_sample_count", 0),
+            "null_target_count": data_counts.get("null_target_count", 0),
+            "valid_target_count": data_counts.get("valid_target_count"),
+            "has_official_result_count": data_counts.get("has_official_result_count"),
+        },
+        "system": {
+            "sync": sync,
+            "production_scope": production_scope,
+            "active_release": active_release,
+            "aggregates_stale": bool(aggregates.get("stale")),
+            "partial": partial,
+            "warnings": warnings,
+            "timeout_steps": timeout_steps,
+            "stale_steps": stale_steps,
+            "timing_steps": timings,
+        },
+        "collector": {
+            "latest_issue": sync.get("official_latest_issue") or sync.get("detected_latest_issue"),
+            "database_latest_issue": sync.get("database_latest_issue"),
+            "lag_count": sync.get("lag_count", 0),
+            "is_synced": sync.get("is_synced"),
+            "last_successful_collection": sync.get("last_successful_collection"),
+        },
+        "ai_model": {
+            "model_version": next_prediction.get("model_version") or active_release.get("model_version"),
+            "feature_version": next_prediction.get("feature_version") or active_release.get("feature_version"),
+            "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
+            "git_commit_hash": next_prediction.get("git_commit_hash") or active_release.get("git_commit_hash"),
+            "production_generation": next_prediction.get("production_generation") or production_scope.get("production_generation"),
+        },
+    }
+
+
 def _last_summary_cache() -> dict | None:
     if not _PLAYER_SUMMARY_CACHE_LOCK.acquire(blocking=False):
         return None
@@ -1703,12 +1884,179 @@ def build_player_dashboard_summary() -> dict:
             f"is behind detected issue {detected_latest_issue}."
         )
 
-    history_records = _load_component_cache("prediction_history", []) or []
-    card_two_history = _load_component_cache("card_two_history", history_records) or []
-    aggregates = _load_component_cache("prediction_aggregates", {}) or {}
-    analysis = _load_component_cache("analysis", {}) or {}
+    if not current:
+        stale_steps = [
+            _public_step_name(item["step"])
+            for item in timings
+            if item.get("result") in {"stale", "skipped", "error"}
+        ]
+        timeout_steps = [
+            _public_step_name(item["step"])
+            for item in timings
+            if item.get("result") == "timeout"
+        ]
+        skipped_busy_steps = [
+            _public_step_name(item["step"])
+            for item in timings
+            if item.get("reason") == "worker_busy"
+        ]
+        partial = bool(stale_steps or timeout_steps or skipped_busy_steps)
+        prediction_stats = {
+            "status": "empty",
+            "message": "尚未取得最新正式開獎資料。",
+            "sample_size": 0,
+            "three_star_rate": 0,
+            "four_star_rate": 0,
+            "five_star_rate": 0,
+            "super_hit_rate": 0,
+            "average_hits": 0,
+            "pending_learning": 0,
+            "verified_waiting_learning": 0,
+            "history_limit": PLAYER_DASHBOARD_HISTORY_LIMIT,
+            "stale": True,
+        }
+        aggregates = {"stale": True}
+        production_scope = {}
+        active_release = {}
+        sync = {
+            "database_latest_issue": None,
+            "official_latest_issue": detected_latest_issue,
+            "detected_latest_issue": detected_latest_issue,
+            "latest_kuaishou_issue": None,
+            "lag_count": 0,
+            "is_synced": False,
+            "last_successful_collection": None,
+            "collection_duration_seconds": None,
+        }
+        data_counts = _data_counts([], prediction_stats, aggregates)
+        rule_library = next_prediction.get("rule_library") or _empty_rule_library()
+        previous_verification = _unavailable_previous_result(next_prediction.get("based_on_issue"))
+        latest_official_draw = _latest_official_draw_card(official)
+        card_one_payload = _card_one_payload(
+            current_draw=current,
+            latest_official_draw=latest_official_draw,
+            next_prediction=next_prediction,
+            previous_verification=previous_verification,
+            rule_library=rule_library,
+        )
+        card_two = _card_two_empty()
+        card_three_payload = _card_three_payload(
+            current_draw=current,
+            next_prediction=next_prediction,
+            prediction_stats=prediction_stats,
+            data_counts=data_counts,
+            sync=sync,
+            aggregates=aggregates,
+            production_scope=production_scope,
+            active_release=active_release,
+            timings=timings,
+            warnings=warnings,
+            partial=partial,
+        )
+        meta = {
+            "generated_at": generated_at,
+            "partial": partial,
+            "warnings": warnings,
+            "timeout_steps": timeout_steps,
+            "stale_steps": stale_steps,
+            "skipped_busy_steps": skipped_busy_steps,
+            "schema_version": "player_summary_cards_v1",
+        }
+        return {
+            "status": "ok",
+            "generated_at": generated_at,
+            "meta": meta,
+            "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
+            "production_filtered": True,
+            "production_scope": production_scope,
+            "active_release": active_release,
+            "release": active_release,
+            "current_draw": current,
+            "latest_official_draw": latest_official_draw,
+            "sync": sync,
+            "card_one": card_one_payload,
+            "next_prediction": next_prediction,
+            "card_two": card_two,
+            "card_three": card_three_payload,
+            "previous_verification": previous_verification,
+            "prediction_history": [],
+            "data_counts": data_counts,
+            "history": prediction_stats,
+            "aggregates": aggregates,
+            "rule_library": rule_library,
+            "warnings": warnings,
+            "partial": partial,
+            "stale": partial,
+            "stale_steps": stale_steps,
+            "timeout_steps": timeout_steps,
+            "skipped_busy_steps": skipped_busy_steps,
+            "timing": {
+                "total_duration_ms": round((time.perf_counter() - total_start) * 1000, 2),
+                "steps": timings,
+                "cache_hits": _PLAYER_RUNTIME_METRICS["cache_hit_count"],
+                "in_flight_count": _player_in_flight_count(),
+                "runtime_metrics": player_dashboard_runtime_metrics(),
+            },
+        }
+
+    history_future, _ = _submit_component(
+        "prediction_history",
+        lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT),
+    )
+    card_two_history_future, _ = _submit_component(
+        "card_two_history",
+        lambda: get_prediction_history_records(100),
+    )
+    aggregates_future, _ = _submit_component("prediction_aggregates", get_prediction_lifecycle_aggregates)
+    analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+    release_future, _ = _submit_component("active_release", get_current_release)
+
+    history_records = _component_result(
+        "prediction_history",
+        history_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback=[],
+    ) or []
+    card_two_history = _component_result(
+        "card_two_history",
+        card_two_history_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback=history_records,
+    ) or history_records
+    aggregates = _component_result(
+        "prediction_aggregates",
+        aggregates_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+    ) or {}
+    analysis = _component_result(
+        "analysis",
+        analysis_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+    ) or {}
+    active_release = _component_result(
+        "active_release",
+        release_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+    ) or {}
     kuaishou = _load_component_cache("kuaishou", {}) or {}
-    active_release = _load_component_cache("active_release", {}) or {}
     production_scope = _run_inline_step(
         "production_scope",
         production_scope_payload,
@@ -1721,8 +2069,16 @@ def build_player_dashboard_summary() -> dict:
 
     prediction_stats = _history_stats(history_records)
     prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
-    prediction_stats["stale"] = True
+    prediction_stats["stale"] = any(
+        item.get("step") == "prediction_history" and item.get("result") != "ok"
+        for item in timings
+    )
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
+
+    rule_library = _rule_library(analysis, next_prediction)
+    _store_component_cache("rule_library", rule_library)
+    next_prediction["rule_library"] = rule_library
+    next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
 
     previous_target_issue = next_prediction.get("based_on_issue")
     if previous_target_issue:
@@ -1746,9 +2102,22 @@ def build_player_dashboard_summary() -> dict:
     previous_verification.setdefault("requested_target_issue", previous_target_issue)
     previous_verification.setdefault("displayed_target_issue", None)
 
-    card_two = _load_component_cache("card_two") or _card_two_empty()
-    if isinstance(card_two, dict):
-        card_two = {**card_two, "stale": True}
+    card_two_future, _ = _submit_component(
+        "card_two",
+        lambda: _card_two_from_record(
+            get_latest_finalized_analysis_report(card_two_history, current),
+            current,
+        ),
+    )
+    card_two = _component_result(
+        "card_two",
+        card_two_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback=_card_two_empty(),
+    ) or _card_two_empty()
 
     database_issue = (current or {}).get("issue")
     official_issue = detected_latest_issue or (current or {}).get("issue")
@@ -1757,42 +2126,80 @@ def build_player_dashboard_summary() -> dict:
     lag_count = max((official_int or 0) - (database_int or 0), 0) if database_int and official_int else 0
 
     stale_steps = [
-        name
-        for name in ("history", "card_two", "aggregates", "verification", "release")
-        if name in {"history", "card_two", "aggregates", "verification", "release"}
+        _public_step_name(item["step"])
+        for item in timings
+        if item.get("result") in {"stale", "skipped", "error"}
     ]
-    timeout_steps = [item["step"] for item in timings if item.get("result") == "timeout"]
-    skipped_busy_steps = [item["step"] for item in timings if item.get("reason") == "worker_busy"]
+    timeout_steps = [_public_step_name(item["step"]) for item in timings if item.get("result") == "timeout"]
+    skipped_busy_steps = [_public_step_name(item["step"]) for item in timings if item.get("reason") == "worker_busy"]
     partial = bool(stale_steps or timeout_steps or skipped_busy_steps)
+
+    sync = {
+        "database_latest_issue": database_issue,
+        "official_latest_issue": detected_latest_issue or official_issue,
+        "detected_latest_issue": detected_latest_issue,
+        "latest_kuaishou_issue": (kuaishou or {}).get("issue"),
+        "lag_count": lag_count,
+        "is_synced": lag_count == 0 and str(detected_latest_issue or official_issue or "") == str(database_issue or ""),
+        "last_successful_collection": (current or {}).get("collected_at"),
+        "collection_duration_seconds": None,
+    }
+    data_counts = _data_counts(history_records, prediction_stats, aggregates)
+    latest_official_draw = _latest_official_draw_card(official)
+    previous_verification.setdefault("requested_target_issue", previous_target_issue)
+    previous_verification.setdefault("displayed_target_issue", None)
+    card_one_payload = _card_one_payload(
+        current_draw=current,
+        latest_official_draw=latest_official_draw,
+        next_prediction=next_prediction,
+        previous_verification=previous_verification,
+        rule_library=rule_library,
+    )
+    card_three_payload = _card_three_payload(
+        current_draw=current,
+        next_prediction=next_prediction,
+        prediction_stats=prediction_stats,
+        data_counts=data_counts,
+        sync=sync,
+        aggregates=aggregates,
+        production_scope=production_scope,
+        active_release=active_release,
+        timings=timings,
+        warnings=warnings,
+        partial=partial,
+    )
+    meta = {
+        "generated_at": generated_at,
+        "partial": partial,
+        "warnings": warnings,
+        "timeout_steps": timeout_steps,
+        "stale_steps": stale_steps,
+        "skipped_busy_steps": skipped_busy_steps,
+        "schema_version": "player_summary_cards_v1",
+    }
 
     payload = {
         "status": "ok",
         "generated_at": generated_at,
+        "meta": meta,
         "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
         "release": active_release,
         "current_draw": current,
-        "latest_official_draw": _latest_official_draw_card(official),
-        "sync": {
-            "database_latest_issue": database_issue,
-            "official_latest_issue": detected_latest_issue or official_issue,
-            "detected_latest_issue": detected_latest_issue,
-            "latest_kuaishou_issue": (kuaishou or {}).get("issue"),
-            "lag_count": lag_count,
-            "is_synced": lag_count == 0 and str(detected_latest_issue or official_issue or "") == str(database_issue or ""),
-            "last_successful_collection": (current or {}).get("collected_at"),
-            "collection_duration_seconds": None,
-        },
+        "latest_official_draw": latest_official_draw,
+        "sync": sync,
+        "card_one": card_one_payload,
         "next_prediction": next_prediction,
         "card_two": card_two,
+        "card_three": card_three_payload,
         "previous_verification": previous_verification,
         "prediction_history": production_history,
-        "data_counts": _data_counts(history_records, prediction_stats, aggregates),
+        "data_counts": data_counts,
         "history": prediction_stats,
-        "aggregates": {**aggregates, "stale": True} if isinstance(aggregates, dict) else {"stale": True},
-        "rule_library": next_prediction.get("rule_library"),
+        "aggregates": aggregates if isinstance(aggregates, dict) else {},
+        "rule_library": rule_library,
         "warnings": warnings,
         "partial": partial,
         "stale": partial,
