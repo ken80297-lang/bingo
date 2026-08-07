@@ -1003,6 +1003,11 @@ def _enrich_dashboard_card_v1(next_prediction: dict, current_draw: dict | None) 
     return payload
 
 
+def _official_super_in_numbers(draw: dict | None, numbers: list[int]) -> int | None:
+    super_number = _as_int((draw or {}).get("super_number"))
+    return super_number if super_number in numbers else None
+
+
 def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
     exact = _prediction_by_target_issue(target_issue)
     if exact:
@@ -1599,7 +1604,7 @@ def _card_one_payload(
     )
     official_numbers = _as_int_list((latest_official_draw or current_draw or {}).get("numbers"))
     high_probability = _as_int_list(next_prediction.get("high_probability_numbers"))[:5]
-    super_candidates_payload = _as_int_list(next_prediction.get("super_candidates"))[:3]
+    official_super_number = _official_super_in_numbers(latest_official_draw or current_draw, official_numbers)
     return {
         "title": "🎯 最新開獎與 AI 推薦",
         "current_draw": current_draw,
@@ -1608,13 +1613,14 @@ def _card_one_payload(
         "previous_verification": previous_verification,
         "rule_library": rule_library or _empty_rule_library(),
         "official_numbers": official_numbers,
+        "official_super_number": official_super_number,
         "prediction_numbers": prediction_numbers,
         "high_probability_numbers": high_probability,
-        "super_candidates": super_candidates_payload,
+        "super_candidates": [],
         "official_numbers_complete": len(official_numbers) == 20,
         "prediction_numbers_complete": len(prediction_numbers) == 20,
         "high_probability_complete": len(high_probability) == 5,
-        "super_candidates_complete": len(super_candidates_payload) > 0,
+        "super_candidates_complete": official_super_number is not None,
         "status": next_prediction.get("status") or "unknown",
         "source_issue": next_prediction.get("based_on_issue"),
         "target_issue": next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),

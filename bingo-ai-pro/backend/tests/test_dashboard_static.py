@@ -111,6 +111,12 @@ if (mode === 'fast_path_pending_empty') {{
 }}
 context.render(next, []);
 const second = el('cardNext').innerHTML;
+const numberGrids = [...second.matchAll(/<div class="number-grid">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
+const gridLabels = (html) => [...(html || '').matchAll(/<span[^>]*>(\d\d)<\/span>/g)].map((match) => match[1]);
+const officialLabels = gridLabels(numberGrids[0]);
+const predictionLabels = gridLabels(numberGrids[1]);
+const officialSuperLabels = [...(numberGrids[0] || '').matchAll(/<span class="[^"]*super[^"]*">(\d\d)<\/span>/g)].map((match) => match[1]);
+const predictionSuperLabels = [...(numberGrids[1] || '').matchAll(/<span class="[^"]*super[^"]*">(\d\d)<\/span>/g)].map((match) => match[1]);
 console.log(JSON.stringify({{
   updated: second !== first,
   has102: second.includes('102'),
@@ -121,12 +127,17 @@ console.log(JSON.stringify({{
   hasBasedOnTime: second.includes('依據時間') && second.includes('2026/07/30'),
   hasGeneratedAt: second.includes('推薦建立時間') && second.includes('12:01'),
   hasRuleSnapshotHidden: second.includes('id="card1RuleSnapshotBody" hidden'),
-  hasHighProbability: second.includes('高機率五個'),
-  hasSize: second.includes('大小預測'),
-  hasOddEven: second.includes('單雙預測'),
-  hasConfidence: second.includes('AI 信心'),
-  hasWaitingOfficial: second.includes('Waiting official verification'),
-  hasWaitingRecommendation: second.includes('Waiting recommendation'),
+  hasHighProbability: second.includes('高機率五個號碼'),
+  hasSize: second.includes('大小：'),
+  hasOddEven: second.includes('單雙：'),
+  hasConfidence: second.includes('AI信心：'),
+  hasWaitingOfficial: second.includes('等待官方驗證'),
+  hasWaitingRecommendation: second.includes('等待 AI 推薦'),
+  hasIndependentSuperPrediction: second.includes('超級獎推薦') || second.includes('super_candidates'),
+  officialLabels,
+  predictionLabels,
+  officialSuperLabels,
+  predictionSuperLabels,
   hasCardHtml: second.trim().length > 0
 }}));
 """
@@ -144,21 +155,19 @@ def test_dashboard_release_candidate_copy_and_endpoints():
 
     assert "/api/pipeline/health" in html
     assert "🎯 最新開獎與 AI 推薦" in html
-    assert "最新官方開獎" in html
-    assert "官方開獎 20 碼" in html
+    assert "最新一期" in html
+    assert "官方20個號碼" in html
     assert "開獎時間" in html
     assert "預測期號" in html
     assert "依據期號" not in card1
-    assert "依據時間" in html
-    assert "推薦建立時間" in html
+    assert "依據時間" not in card1
+    assert "推薦建立時間" not in card1
     assert "下一期 AI 推薦" in html
-    assert "AI 信心" in html
-    assert "AI 推薦 20 碼" in html
-    assert "高機率五個" in html
-    assert "大小預測" in html
-    assert "單雙預測" in html
-    assert "查看推薦依據" in html
-    assert "推薦依據" in html
+    assert "AI信心：" in html
+    assert "高機率五個號碼" in html
+    assert "大小：" in html
+    assert "單雙：" in html
+    assert "AI 推薦依據" in html
     assert "老玩家分析" in html
     assert "上一期推薦結果" in html
     assert "歷史推薦紀錄" in html
@@ -199,17 +208,13 @@ def test_dashboard_release_candidate_copy_and_endpoints():
     assert "officialStatusText(officialStatus)" in card1
 
     expected_order = [
-        "最新官方開獎",
+        "最新一期",
+        "官方20個號碼",
         "下一期 AI 推薦",
-        "renderConfidence(next)",
         "預測期號",
-        "依據時間",
-        "recommendationCreatedMetric",
-        "AI 推薦 20 碼",
         "renderCompactHighProbability(next, numbers)",
-        "大小預測",
-        "單雙預測",
-        "查看推薦依據",
+        "renderCardOneSignals(next)",
+        "AI 推薦依據",
     ]
     card1_template = card1[card1.index("const cardHtml") :]
     positions = [card1_template.index(token) for token in expected_order]
@@ -282,8 +287,8 @@ def test_card_one_renders_fast_path_placeholders_without_blocking():
     assert "const hasCompleteCardOne" not in card1
     assert "const hasOfficialNumbers = hasValidNumberSet((officialDraw || {}).raw_numbers, 20);" in card1
     assert "const hasPredictionNumbers = hasValidNumberSet((next || {}).raw_candidates, 20);" in card1
-    assert "Waiting official verification" in card1
-    assert "Waiting recommendation" in card1
+    assert "等待官方驗證" in card1
+    assert "等待 AI 推薦" in card1
     assert "if (!hasCompleteCardOne && card.innerHTML.trim()) return;" not in card1
     assert "if (cardOneFallbackHtml) card.innerHTML = cardOneFallbackHtml;" not in card1
 
@@ -317,14 +322,14 @@ def test_card_one_updates_when_size_prediction_is_missing():
     result = json.loads(_run_card1_vm_scenario("missing_size"))
     assert result["updated"] is True
     assert result["has102"] is True
-    assert result["hasSize"] is False
+    assert result["hasSize"] is True
 
 
 def test_card_one_updates_when_confidence_is_missing():
     result = json.loads(_run_card1_vm_scenario("missing_confidence"))
     assert result["updated"] is True
     assert result["has102"] is True
-    assert result["hasConfidence"] is False
+    assert result["hasConfidence"] is True
 
 
 def test_card_one_updates_when_high_probability_is_missing():
@@ -334,14 +339,24 @@ def test_card_one_updates_when_high_probability_is_missing():
     assert result["hasHighProbability"] is False
 
 
+def test_card1_render_sorts_numbers_and_embeds_super_in_official_20_only():
+    result = json.loads(_run_card1_vm_scenario("complete"))
+
+    assert result["officialLabels"] == [str(number).zfill(2) for number in range(1, 21)]
+    assert result["predictionLabels"] == [str(number).zfill(2) for number in range(21, 41)]
+    assert result["officialSuperLabels"] == ["05"]
+    assert result["predictionSuperLabels"] == []
+    assert result["hasIndependentSuperPrediction"] is False
+
+
 def test_card_one_updates_when_odd_even_prediction_is_missing():
     result = json.loads(_run_card1_vm_scenario("missing_odd_even"))
     assert result["updated"] is True
     assert result["has102"] is True
-    assert result["hasOddEven"] is False
+    assert result["hasOddEven"] is True
 
 
-def test_card_one_uses_verified_status_and_three_distinct_time_rows():
+def test_card_one_uses_verified_status_and_official_time_only():
     result = json.loads(_run_card1_vm_scenario("complete"))
     assert result["updated"] is True
     assert result["has102"] is True
@@ -349,8 +364,8 @@ def test_card_one_uses_verified_status_and_three_distinct_time_rows():
     assert result["hasPendingStatus"] is False
     assert result["hasBasedOnIssue"] is False
     assert result["hasOfficialTime"] is True
-    assert result["hasBasedOnTime"] is True
-    assert result["hasGeneratedAt"] is True
+    assert result["hasBasedOnTime"] is False
+    assert result["hasGeneratedAt"] is False
     assert result["hasRuleSnapshotHidden"] is True
 
 

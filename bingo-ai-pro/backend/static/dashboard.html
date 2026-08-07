@@ -443,6 +443,15 @@
       margin-bottom: 4px;
     }
 
+    #cardNext {
+      height: 1080px;
+      overflow-y: auto;
+    }
+
+    #cardNext .number-grid {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
     .card1-section {
       padding: 14px 0;
       border-top: 1px solid rgba(255,255,255,.08);
@@ -483,6 +492,47 @@
     .card1-info-line .summary-line {
       margin-top: 3px;
       font-weight: 500;
+    }
+
+    .card1-fixed-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 7px 0;
+      font-weight: 900;
+    }
+
+    .card1-fixed-row span:first-child {
+      color: var(--muted);
+    }
+
+    .card1-signal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .card1-signal {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      background: var(--panel-soft);
+    }
+
+    .card1-signal span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .card1-signal strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 22px;
+      line-height: 1.2;
     }
 
     .number-grid {
@@ -869,6 +919,17 @@
         .sort((a, b) => a - b);
     };
 
+    const normalizeNumbersInOrder = (values) => {
+      const source = Array.isArray(values) ? values : [];
+      const seen = new Set();
+      return source.map((value) => Number(value))
+        .filter((number) => {
+          if (!Number.isInteger(number) || number < 1 || number > 80 || seen.has(number)) return false;
+          seen.add(number);
+          return true;
+        });
+    };
+
     const issueNumber = (value) => {
       if (value === null || value === undefined || value === "") return null;
       const text = String(value).trim();
@@ -946,6 +1007,13 @@
     const balls = (values, type = "", hitValues = []) => {
       const hits = new Set(normalizeNumbers(hitValues));
       const items = normalizeNumbers(values);
+      if (!items.length) return `<div class="empty">尚無資料</div>`;
+      return `<div class="balls">${items.map((n) => `<span class="ball ${type} ${hits.has(Number(n)) ? "hit" : ""}">${numberLabel(n)}</span>`).join("")}</div>`;
+    };
+
+    const ballsInOrder = (values, type = "", hitValues = []) => {
+      const hits = new Set(normalizeNumbers(hitValues));
+      const items = normalizeNumbersInOrder(values);
       if (!items.length) return `<div class="empty">尚無資料</div>`;
       return `<div class="balls">${items.map((n) => `<span class="ball ${type} ${hits.has(Number(n)) ? "hit" : ""}">${numberLabel(n)}</span>`).join("")}</div>`;
     };
@@ -1044,25 +1112,25 @@
     }
 
     const CARD1_RULE_ORDER = [
-      ["hot"],
-      ["cold"],
-      ["missing"],
-      ["repeat"],
-      ["tail"],
-      ["gap"],
-      ["cluster"],
-      ["diagonal"],
-      ["super", "super_number_trajectory_recovery"],
-      ["laowanjia"],
-      ["ladder"],
-      ["partial_ladder"],
-      ["extended_ladder"],
-      ["reverse"],
-      ["neighbor"],
-      ["guide"],
-      ["integrated"],
-      ["sunset"],
-      ["momentum"]
+      ["hot", "熱門"],
+      ["cold", "冷門"],
+      ["missing", "缺號"],
+      ["repeat", "重號"],
+      ["tail", "尾數"],
+      ["gap", "間距"],
+      ["cluster", "群聚"],
+      ["diagonal", "斜線"],
+      ["super", "超級獎", "super_number_trajectory_recovery"],
+      ["laowanjia", "老玩家"],
+      ["ladder", "階梯"],
+      ["partial_ladder", "偏階"],
+      ["extended_ladder", "延階"],
+      ["reverse", "反號"],
+      ["neighbor", "隔壁號"],
+      ["guide", "引路牌"],
+      ["integrated", "整合數"],
+      ["sunset", "太陽下山"],
+      ["momentum", "盤勢動能"]
     ];
 
     function hasDisplayableHighProbability(next, predictionNumbers) {
@@ -1078,13 +1146,14 @@
 
     function renderCompactHighProbability(next, predictionNumbers) {
       if (!hasDisplayableHighProbability(next, predictionNumbers)) return "";
-      const numbers = normalizeNumbers(next.high_probability_numbers).slice(0, 5);
+      const numbers = normalizeNumbersInOrder((next || {}).raw_high_probability_numbers).slice(0, 5);
+      if (numbers.length !== 5) return "";
       return `
         <div class="compact-section">
           <div class="compact-heading">
-            <h3>高機率五個</h3>
+            <h3>高機率五個號碼</h3>
           </div>
-          ${balls(numbers, "featured")}
+          ${ballsInOrder(numbers, "featured")}
         </div>
       `;
     }
@@ -1106,16 +1175,18 @@
         return acc;
       }, {});
       const rules = CARD1_RULE_ORDER
-        .map((keys) => keys.map((key) => rulesByKey[key]).find(hasRuleSnapshotData))
+        .map(([key, label, alias]) => {
+          const rule = [rulesByKey[key], rulesByKey[alias]].find(hasRuleSnapshotData);
+          return rule ? { ...rule, display_label: label } : null;
+        })
         .filter(Boolean);
       if (!rules.length) return `<div class="empty">AI 推薦依據整理中</div>`;
       return `
         <div class="rule-snapshot-list">
           ${rules.map((rule) => `
             <div class="rule-snapshot-row">
-              <strong>${safe(rule.name || rule.label || rule.key)}</strong>
-              <span>${statusText(rule.status)}</span>
-              <span>${rule.score === undefined || rule.score === null ? "尚待分析" : `${fmtNumber(rule.score)}分`}</span>
+              <strong>${safe(rule.display_label)}</strong>
+              <span>${rule.score === undefined || rule.score === null ? "資料已整理" : `信心 ${fmtNumber(rule.score)}%`}</span>
             </div>
           `).join("")}
         </div>
@@ -1162,6 +1233,19 @@
             <h3>AI 信心</h3>
           </div>
           <div class="confidence-badge">AI 信心 ${fmtNumber(next.confidence_percent)}%</div>
+        </div>
+      `;
+    }
+
+    function renderCardOneSignals(next) {
+      const sizeLabel = next && next.size_prediction ? labelZh(next.size_prediction.label) : "資料整理中";
+      const oddEvenLabel = next && next.odd_even_prediction ? labelZh(next.odd_even_prediction.label) : "資料整理中";
+      const confidenceLabel = hasDisplayableConfidence(next) ? `${fmtNumber(next.confidence_percent)}%` : "資料整理中";
+      return `
+        <div class="card1-signal-grid">
+          <div class="card1-signal"><span>大小：</span><strong>${sizeLabel}</strong></div>
+          <div class="card1-signal"><span>單雙：</span><strong>${oddEvenLabel}</strong></div>
+          <div class="card1-signal"><span>AI信心：</span><strong>${confidenceLabel}</strong></div>
         </div>
       `;
     }
@@ -1489,22 +1573,18 @@
 
     function renderNext(next, officialDraw) {
       const numbers = normalizeNumbers(next.candidates);
-      const superCandidates = normalizeNumbers(next.super_candidates).slice(0, 3);
       const officialNumbers = normalizeNumbers((officialDraw || {}).numbers);
-      const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]);
+      const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]).filter((number) => officialNumbers.includes(number));
       const ruleLibrary = next.rule_library || {};
       const officialStatus = (officialDraw || {}).verification_status;
       const hasOfficialNumbers = hasValidNumberSet((officialDraw || {}).raw_numbers, 20);
       const hasPredictionNumbers = hasValidNumberSet((next || {}).raw_candidates, 20);
       const officialNumbersHtml = hasOfficialNumbers
         ? numberGrid(officialNumbers, "", officialSuper, "super")
-        : `<div class="empty">Waiting official verification</div>`;
+        : `<div class="empty">等待官方驗證</div>`;
       const predictionNumbersHtml = hasPredictionNumbers
-        ? numberGrid(numbers, "", superCandidates, "super")
-        : `<div class="empty">Waiting recommendation</div>`;
-      const recommendationCreatedMetric = hasDisplayableDateTime(next.generated_at)
-        ? metric("推薦建立時間", formatDateTime(next.generated_at))
-        : "";
+        ? numberGrid(numbers)
+        : `<div class="empty">等待 AI 推薦</div>`;
       const card = document.getElementById("cardNext");
       const cardHtml = `
         <div class="card1-title">
@@ -1513,42 +1593,50 @@
 
         <div class="card1-section">
           <div class="card1-section-title">
-            <h3>最新官方開獎</h3>
+            <h3>最新一期</h3>
           </div>
           <div class="card1-info-line">
             <span>第 ${safe((officialDraw || {}).issue)} 期</span>
             <span class="status-pill ${statusClass(officialStatus)}">${officialStatusText(officialStatus)}</span>
           </div>
           <div class="summary-line">開獎時間：${formatDateTime((officialDraw || {}).draw_time)}</div>
-          <div class="section">
-            <p class="mini-title">官方開獎 20 碼</p>
-            ${officialNumbersHtml}
+        </div>
+
+        <div class="card1-section">
+          <div class="card1-section-title">
+            <h3>官方20個號碼</h3>
           </div>
+          ${officialNumbersHtml}
         </div>
 
         <div class="card1-section">
           <div class="card1-section-title">
             <h3>下一期 AI 推薦</h3>
           </div>
-          ${renderConfidence(next)}
-          <div class="grid">
-            ${metric("預測期號", `第 ${safe(next.prediction_issue)} 期`)}
-            ${metric("依據時間", formatDateTime(next.based_on_draw_time))}
-            ${recommendationCreatedMetric}
+          <div class="card1-fixed-row">
+            <span>預測期號</span>
+            <strong>第 ${safe(next.prediction_issue)} 期</strong>
           </div>
-          <div class="section">
-            <p class="mini-title">AI 推薦 20 碼</p>
+          <div>
             ${predictionNumbersHtml}
           </div>
+        </div>
+
+        <div class="card1-section">
           ${renderCompactHighProbability(next, numbers)}
-          ${renderPredictionBalance("大小預測", next.size_prediction, "小", "大", "small_count", "large_count")}
-          ${renderPredictionBalance("單雙預測", next.odd_even_prediction, "單", "雙", "odd_count", "even_count")}
+        </div>
+
+        <div class="card1-section">
+          ${renderCardOneSignals(next)}
+        </div>
+
+        <div class="card1-section">
           <button class="collapse-button" type="button" aria-expanded="false" aria-controls="card1RuleSnapshotBody" onclick="toggleSection('card1RuleSnapshotBody', this)">
-            <span>查看推薦依據</span><span>展開查看</span>
+            <span>AI 推薦依據</span><span>展開查看</span>
           </button>
           <div id="card1RuleSnapshotBody" hidden>
             <div class="section">
-              <p class="mini-title">推薦依據</p>
+              <p class="mini-title">AI 推薦依據</p>
               ${renderRuleSnapshotPreview(ruleLibrary)}
             </div>
           </div>

@@ -86,6 +86,5 @@ def test_card_two_frontend_states_and_card_one_boundary():
     assert "Card 1 template is UI-frozen." not in card1
     assert "預測期號" in card1
     assert "依據期號" not in card1
-    assert "大小預測" in card1
-    assert "單雙預測" in card1
+    assert "renderCardOneSignals(next)" in card1
     assert "Prediction 狀態" not in card1
