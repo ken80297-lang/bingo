@@ -767,6 +767,17 @@
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
     const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
     let cardOneFallbackHtml = "";
+    const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
+    const DASHBOARD_LEADER_TTL_MS = 30 * 1000;
+    const DASHBOARD_LEADER_HEARTBEAT_MS = 10 * 1000;
+    const DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS = 120 * 1000;
+    const DASHBOARD_SYSTEM_INTERVAL_MS = 120 * 1000;
+    const DASHBOARD_LATEST_SYNC_INTERVAL_MS = 120 * 1000;
+    const DASHBOARD_WAKE_STATUS_INTERVAL_MS = 300 * 1000;
+    const DASHBOARD_SLOW_INTERVAL_MS = 5 * 60 * 1000;
+    const DASHBOARD_SLOW_INITIAL_DELAY_MS = 10 * 1000;
+    const DASHBOARD_SLOW_STAGGER_MS = 1000;
 
     const apis = {
       playerSummary: "/api/dashboard/player-summary",
@@ -788,9 +799,13 @@
     const slowApiKeys = Object.keys(apis).filter((key) => !fastApiKeys.includes(key));
     const pollState = {
       latest: {},
-      fastTimer: null,
-      slowTimer: null,
-      hiddenTimer: null
+      timers: [],
+      inFlight: {},
+      isLeader: false,
+      slowTimersScheduled: false,
+      slowCursor: 0,
+      leaderHeartbeatTimer: null,
+      broadcast: null
     };
 
     const zhStatus = {
@@ -1334,6 +1349,10 @@
     }
 
     async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
+      if (pollState.inFlight[key]) {
+        return { __skipped: true, status: "skipped", reason: "request_in_flight" };
+      }
+      pollState.inFlight[key] = true;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -1354,28 +1373,18 @@
         return { status: "unknown", unavailable: true, error: message };
       } finally {
         clearTimeout(timer);
+        pollState.inFlight[key] = false;
       }
     }
 
     async function loadAll() {
-      document.getElementById("refreshState").textContent = "載入中";
-      const loaded = await Promise.allSettled(
-        Object.entries(apis).map(async ([key, url]) => [key, await loadJson(key, url)])
-      );
-      const data = {};
-      const errors = [];
-      for (const entry of loaded) {
-        if (entry.status === "fulfilled") {
-          data[entry.value[0]] = entry.value[1];
-        } else {
-          errors.push(entry.reason && entry.reason.message ? entry.reason.message : String(entry.reason));
-        }
-      }
-      render(data, errors);
-      document.getElementById("refreshState").textContent = `最後刷新：${new Date().toLocaleString()}`;
+      if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
+      await loadApiGroup(fastApiKeys);
+      scheduleSlowApiStagger({ immediate: true });
     }
 
     async function loadApiGroup(keys, renderAfter = true) {
+      if (document.visibilityState !== "visible" || !pollState.isLeader) return;
       document.getElementById("refreshState").textContent = "Loading";
       const loaded = await Promise.allSettled(
         keys.map(async (key) => [key, await loadJson(key, apis[key])])
@@ -1383,43 +1392,165 @@
       const errors = [];
       for (const entry of loaded) {
         if (entry.status === "fulfilled") {
-          pollState.latest[entry.value[0]] = entry.value[1];
+          const [key, payload] = entry.value;
+          if (payload && payload.__skipped) continue;
+          pollState.latest[key] = payload;
         } else {
           errors.push(entry.reason && entry.reason.message ? entry.reason.message : String(entry.reason));
         }
       }
       if (renderAfter) render(pollState.latest, errors);
+      publishDashboardSnapshot();
       document.getElementById("refreshState").textContent = `Updated ${new Date().toLocaleString()}`;
     }
 
-    function stopPolling() {
-      [pollState.fastTimer, pollState.slowTimer, pollState.hiddenTimer].forEach((timer) => {
-        if (timer) clearInterval(timer);
-      });
-      pollState.fastTimer = null;
-      pollState.slowTimer = null;
-      pollState.hiddenTimer = null;
+    function safeReadLeaderLease() {
+      try {
+        return JSON.parse(localStorage.getItem(DASHBOARD_LEADER_KEY) || "null");
+      } catch (error) {
+        return null;
+      }
     }
 
-    function startVisiblePolling() {
+    function safeWriteLeaderLease() {
+      try {
+        localStorage.setItem(DASHBOARD_LEADER_KEY, JSON.stringify({
+          tabId: DASHBOARD_TAB_ID,
+          expiresAt: Date.now() + DASHBOARD_LEADER_TTL_MS,
+          updatedAt: Date.now()
+        }));
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function ensurePollingLeader() {
+      if (document.visibilityState !== "visible") {
+        pollState.isLeader = false;
+        return false;
+      }
+      const lease = safeReadLeaderLease();
+      const now = Date.now();
+      if (!lease || lease.tabId === DASHBOARD_TAB_ID || Number(lease.expiresAt || 0) <= now) {
+        pollState.isLeader = safeWriteLeaderLease();
+      } else {
+        pollState.isLeader = false;
+      }
+      return pollState.isLeader;
+    }
+
+    function startLeaderHeartbeat() {
+      if (pollState.leaderHeartbeatTimer) clearInterval(pollState.leaderHeartbeatTimer);
+      pollState.leaderHeartbeatTimer = setInterval(() => {
+        if (!ensurePollingLeader()) {
+          stopPolling();
+          return;
+        }
+        safeWriteLeaderLease();
+      }, DASHBOARD_LEADER_HEARTBEAT_MS);
+    }
+
+    function publishDashboardSnapshot() {
+      const message = { type: "dashboard-snapshot", latest: pollState.latest, at: Date.now(), tabId: DASHBOARD_TAB_ID };
+      if (pollState.broadcast) {
+        try {
+          pollState.broadcast.postMessage(message);
+        } catch (error) {
+          console.warn("[dashboard] broadcast failed", error);
+        }
+      }
+      try {
+        localStorage.setItem("bingo-ai-dashboard-snapshot", JSON.stringify(message));
+      } catch (error) {
+        console.warn("[dashboard] snapshot save failed", error);
+      }
+    }
+
+    function receiveDashboardSnapshot(message) {
+      if (!message || message.type !== "dashboard-snapshot" || message.tabId === DASHBOARD_TAB_ID) return;
+      if (!message.latest || typeof message.latest !== "object") return;
+      pollState.latest = message.latest;
+      render(pollState.latest, []);
+      document.getElementById("refreshState").textContent = `Updated ${new Date().toLocaleString()}`;
+    }
+
+    function scheduleTimer(callback, delayMs) {
+      const timer = setInterval(callback, delayMs);
+      pollState.timers.push(timer);
+      return timer;
+    }
+
+    function scheduleSlowApiStagger({ immediate = false } = {}) {
+      if (document.visibilityState !== "visible" || !pollState.isLeader) return;
+      slowApiKeys.forEach((key, index) => {
+        const delay = immediate ? index * DASHBOARD_SLOW_STAGGER_MS : DASHBOARD_SLOW_INITIAL_DELAY_MS + (index * DASHBOARD_SLOW_STAGGER_MS);
+        setTimeout(() => {
+          if (document.visibilityState === "visible" && pollState.isLeader) loadApiGroup([key]);
+        }, delay);
+      });
+      if (pollState.slowTimersScheduled) return;
+      scheduleTimer(() => {
+        const key = slowApiKeys[pollState.slowCursor % slowApiKeys.length];
+        pollState.slowCursor += 1;
+        loadApiGroup([key]);
+      }, DASHBOARD_SLOW_INTERVAL_MS);
+      pollState.slowTimersScheduled = true;
+    }
+
+    function stopPolling() {
+      pollState.timers.forEach((timer) => clearInterval(timer));
+      pollState.timers = [];
+      pollState.slowTimersScheduled = false;
+      if (pollState.leaderHeartbeatTimer) clearInterval(pollState.leaderHeartbeatTimer);
+      pollState.leaderHeartbeatTimer = null;
+    }
+
+    function startVisiblePolling({ initial = false } = {}) {
       stopPolling();
-      loadApiGroup(Object.keys(apis));
-      pollState.fastTimer = setInterval(() => loadApiGroup(fastApiKeys), 60000);
-      pollState.slowTimer = setInterval(() => loadApiGroup(slowApiKeys), 5 * 60 * 1000);
+      if (!ensurePollingLeader()) return;
+      startLeaderHeartbeat();
+      loadApiGroup(initial ? fastApiKeys : ["playerSummary", "system"]);
+      scheduleTimer(() => loadApiGroup(["playerSummary"]), DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS);
+      scheduleTimer(() => loadApiGroup(["system"]), DASHBOARD_SYSTEM_INTERVAL_MS);
+      scheduleTimer(() => loadApiGroup(["latestSync"]), DASHBOARD_LATEST_SYNC_INTERVAL_MS);
+      scheduleTimer(() => loadApiGroup(["wakeStatus"], false), DASHBOARD_WAKE_STATUS_INTERVAL_MS);
+      scheduleSlowApiStagger({ immediate: false });
     }
 
     function startHiddenPolling() {
       stopPolling();
-      pollState.hiddenTimer = setInterval(() => loadApiGroup(["wakeStatus"], false), 5 * 60 * 1000);
+      pollState.isLeader = false;
     }
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        startVisiblePolling();
+        startVisiblePolling({ initial: false });
       } else {
         startHiddenPolling();
       }
     });
+
+    if (typeof BroadcastChannel !== "undefined") {
+      pollState.broadcast = new BroadcastChannel("bingo-ai-dashboard-traffic");
+      pollState.broadcast.onmessage = (event) => receiveDashboardSnapshot(event.data);
+    }
+
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("storage", (event) => {
+        if (event.key === "bingo-ai-dashboard-snapshot" && event.newValue) {
+          try {
+            receiveDashboardSnapshot(JSON.parse(event.newValue));
+          } catch (error) {
+            console.warn("[dashboard] snapshot parse failed", error);
+          }
+        }
+        if (event.key === DASHBOARD_LEADER_KEY && document.visibilityState === "visible" && !pollState.isLeader) {
+          const lease = safeReadLeaderLease();
+          if (!lease || Number(lease.expiresAt || 0) <= Date.now()) startVisiblePolling({ initial: false });
+        }
+      });
+    }
 
     function normalizeNext(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
@@ -2214,7 +2345,7 @@
 
     document.getElementById("refreshButton").addEventListener("click", loadAll);
     if (document.visibilityState === "visible") {
-      startVisiblePolling();
+      startVisiblePolling({ initial: true });
     } else {
       startHiddenPolling();
     }

@@ -150,3 +150,28 @@ def test_next_prediction_card_fields_accept_confidence_percent():
     assert fields["confidence_percent"] == 77
     assert fields["super_candidates"] == [3, 9, 18]
     assert fields["diagnostics"]["dashboard_card_v1"]["valid"] is True
+
+
+def test_player_summary_cache_ttl_and_single_flight_stale_fallback(monkeypatch):
+    assert player_dashboard.PLAYER_SUMMARY_TTL_SECONDS == 60
+
+    payload = {
+        "status": "ok",
+        "cache_filter_version": player_dashboard.PLAYER_CACHE_FILTER_VERSION,
+        "next_prediction": {
+            "prediction_issue": "115040902",
+            "based_on_issue": "115040901",
+            "recommend_numbers": list(range(1, 21)),
+        },
+    }
+    player_dashboard._store_summary_cache(payload)
+    player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
+    assert player_dashboard._PLAYER_SUMMARY_BUILD_LOCK.acquire(blocking=False) is True
+    try:
+        result = player_dashboard.build_player_dashboard_summary()
+    finally:
+        player_dashboard._PLAYER_SUMMARY_BUILD_LOCK.release()
+
+    assert result["cached"] is True
+    assert result["stale"] is True
+    assert "summary build in flight" in result["warnings"]

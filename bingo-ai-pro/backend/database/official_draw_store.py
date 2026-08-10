@@ -29,6 +29,7 @@ OFFICIAL_DRAW_COLUMNS = (
     "created_at",
     "updated_at",
 )
+OFFICIAL_DRAW_SUMMARY_COLUMNS = tuple(column for column in OFFICIAL_DRAW_COLUMNS if column != "raw_json")
 
 
 def _now() -> str:
@@ -380,6 +381,27 @@ def _row_to_official(row: Any) -> dict:
     }
 
 
+def _row_to_official_summary(row: Any) -> dict:
+    data = dict(zip(OFFICIAL_DRAW_SUMMARY_COLUMNS, row))
+    return {
+        "id": data.get("id"),
+        "issue": data.get("issue"),
+        "draw_date": str(data["draw_date"]) if data.get("draw_date") is not None else None,
+        "draw_time": data.get("draw_time"),
+        "numbers": _json_loads(data.get("numbers")) or [],
+        "open_order_numbers": _json_loads(data.get("open_order_numbers")) or [],
+        "super_number": data.get("super_number"),
+        "win_no_only": bool(data.get("win_no_only")),
+        "source": data.get("source"),
+        "verified": bool(data.get("verified")),
+        "verification_status": data.get("verification_status") or "validated",
+        "fetched_at": str(data["fetched_at"]) if data.get("fetched_at") is not None else None,
+        "raw_json": {},
+        "created_at": str(data["created_at"]) if data.get("created_at") is not None else None,
+        "updated_at": str(data["updated_at"]) if data.get("updated_at") is not None else None,
+    }
+
+
 def _row_to_verification(row: Any) -> dict:
     return {
         "id": row[0],
@@ -423,6 +445,31 @@ def get_official_draw_by_issue(issue: str, verified_only: bool = False) -> dict 
     return _row_to_official(rows[0]) if rows else None
 
 
+def get_official_draw_summary_by_issue(issue: str, verified_only: bool = False) -> dict | None:
+    where_verified = "and verified = true" if verified_only else ""
+    sqlite_where_verified = "and verified = 1" if verified_only else ""
+    rows = _query_with_fallback(
+        f"""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue = %s {where_verified}
+        limit 1
+        """,
+        (str(issue),),
+        sqlite_sql=f"""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue = ? {sqlite_where_verified}
+        limit 1
+        """,
+    )
+    return _row_to_official_summary(rows[0]) if rows else None
+
+
 def get_latest_official_draw() -> dict | None:
     rows = _query_with_fallback(
         """
@@ -451,6 +498,36 @@ def get_latest_official_draw() -> dict | None:
         """,
     )
     return _row_to_official(rows[0]) if rows else None
+
+
+def get_latest_official_draw_summary() -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue ~ '^[0-9]+$'
+          and length(issue) >= 6
+          and issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+        order by issue::bigint desc
+        limit 1
+        """,
+        sqlite_sql="""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue glob '[0-9]*'
+          and length(issue) >= 6
+          and issue not like '99%'
+          and upper(issue) not like 'TEST%'
+        order by cast(issue as integer) desc
+        limit 1
+        """,
+    )
+    return _row_to_official_summary(rows[0]) if rows else None
 
 
 def get_latest_official_draw_sync_status() -> dict | None:

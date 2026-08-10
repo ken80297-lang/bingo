@@ -419,3 +419,33 @@ def test_card_one_renders_fast_path_pending_empty_payload():
     assert result["hasCardHtml"] is True
     assert result["hasWaitingOfficial"] is True
     assert result["hasWaitingRecommendation"] is True
+
+
+def test_dashboard_traffic_1_1_polling_intervals_and_hidden_zero_polling():
+    script = _script()
+
+    assert "DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS = 120 * 1000" in script
+    assert "DASHBOARD_SYSTEM_INTERVAL_MS = 120 * 1000" in script
+    assert "DASHBOARD_LATEST_SYNC_INTERVAL_MS = 120 * 1000" in script
+    assert "DASHBOARD_WAKE_STATUS_INTERVAL_MS = 300 * 1000" in script
+    assert "DASHBOARD_SLOW_INITIAL_DELAY_MS = 10 * 1000" in script
+    assert "DASHBOARD_SLOW_STAGGER_MS = 1000" in script
+    assert "setInterval(() => loadApiGroup(fastApiKeys), 60000)" not in script
+    assert 'setInterval(() => loadApiGroup(["wakeStatus"], false), 5 * 60 * 1000)' not in script
+    assert "pollState.isLeader = false" in script
+
+
+def test_dashboard_traffic_1_1_initial_load_leader_and_overlap_guards():
+    script = _script()
+
+    assert 'loadApiGroup(initial ? fastApiKeys : ["playerSummary", "system"])' in script
+    assert "scheduleSlowApiStagger({ immediate: false })" in script
+    assert "if (pollState.inFlight[key])" in script
+    assert 'reason: "request_in_flight"' in script
+    assert "pollState.inFlight[key] = false" in script
+    assert "DASHBOARD_LEADER_KEY" in script
+    assert "DASHBOARD_LEADER_TTL_MS = 30 * 1000" in script
+    assert "DASHBOARD_LEADER_HEARTBEAT_MS = 10 * 1000" in script
+    assert "new BroadcastChannel" in script
+    assert 'localStorage.setItem("bingo-ai-dashboard-snapshot"' in script
+    assert "startVisiblePolling({ initial: true })" in script

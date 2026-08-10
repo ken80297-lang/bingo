@@ -343,6 +343,19 @@ def _row_to_snapshot(row: Any) -> dict:
     }
 
 
+def _row_to_snapshot_summary(row: Any) -> dict:
+    return {
+        "id": row[0],
+        "issue": row[1],
+        "draw_time": row[2],
+        "raw_html": None,
+        "parsed_json": {},
+        "source": row[3],
+        "created_at": str(row[4]) if row[4] is not None else None,
+        "updated_at": str(row[5]) if row[5] is not None else None,
+    }
+
+
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
@@ -390,6 +403,21 @@ def get_latest_kuaishou_snapshot() -> dict | None:
         (),
     )
     return _row_to_snapshot(rows[0]) if rows else None
+
+
+def get_latest_kuaishou_summary() -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select id, issue, draw_time, source, created_at, updated_at
+        from kuaishou_snapshots order by updated_at desc, id desc limit 1
+        """,
+        (),
+        sqlite_sql="""
+        select id, issue, draw_time, source, created_at, updated_at
+        from kuaishou_snapshots order by updated_at desc, id desc limit 1
+        """,
+    )
+    return _row_to_snapshot_summary(rows[0]) if rows else None
 
 
 def get_kuaishou_history(limit: int = 50) -> list[dict]:

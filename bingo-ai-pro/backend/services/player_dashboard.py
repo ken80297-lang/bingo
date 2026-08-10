@@ -8,14 +8,15 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from database.collector_store import get_latest_kuaishou_snapshot
+from database.collector_store import get_latest_kuaishou_summary as get_latest_kuaishou_snapshot
 from database.analysis_store import get_latest_analysis_history
-from database.official_draw_store import get_latest_official_draw, get_official_draw_by_issue
+from database.official_draw_store import get_latest_official_draw_summary as get_latest_official_draw
+from database.official_draw_store import get_official_draw_summary_by_issue as get_official_draw_by_issue
 from database.operations_store import get_latest_operation_event
-from database.prediction_history_store import get_prediction_history_records
+from database.prediction_history_store import get_prediction_history_summary_records as get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
-from database.prediction_history_store import get_prediction_for_source_target
-from database.prediction_history_store import get_latest_verified_prediction_at_or_before
+from database.prediction_history_store import get_prediction_summary_for_source_target as get_prediction_for_source_target
+from database.prediction_history_store import get_latest_verified_prediction_summary_at_or_before as get_latest_verified_prediction_at_or_before
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
 from database.prediction_history_store import is_production_prediction
@@ -110,7 +111,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback keeps dashboard read 
 
 logger = logging.getLogger(__name__)
 
-PLAYER_SUMMARY_TTL_SECONDS = 30
+PLAYER_SUMMARY_TTL_SECONDS = 60
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS = 4.5
 PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 1.0
@@ -154,6 +155,7 @@ CARD_TWO_FINALIZED_DISALLOWED = {
 }
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_SUMMARY_CACHE_LOCK = threading.RLock()
+_PLAYER_SUMMARY_BUILD_LOCK = threading.Lock()
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
     "latest_prediction": None,
@@ -818,8 +820,16 @@ def _prediction_from_history(
         return None
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
-    based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue and allow_slow_lookups else None
-    based_time = _based_on_time(based_on_issue, based_draw) if allow_slow_lookups else {
+    if based_on_issue and str(based_on_issue) == str((current_draw or {}).get("issue") or ""):
+        based_draw = current_draw
+    else:
+        based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue and allow_slow_lookups else None
+    can_resolve_based_time = (
+        allow_slow_lookups
+        or bool((based_draw or {}).get("draw_time"))
+        or bool((based_draw or {}).get("collected_at"))
+    )
+    based_time = _based_on_time(based_on_issue, based_draw) if can_resolve_based_time else {
         "based_on_draw_time": _format_draw_time(record.get("based_on_draw_time") or record.get("source_draw_time")),
         "based_on_time_source": "snapshot" if (record.get("based_on_draw_time") or record.get("source_draw_time")) else "unavailable",
     }
@@ -1812,7 +1822,7 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
             record = _current_prediction_for_draw(current)
             if record:
                 _store_component_cache("latest_prediction", record)
-            return _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=True)
+            return _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=False)
 
         prediction_future, _ = _submit_component("next_prediction_snapshot", build_next_snapshot)
         next_prediction = _component_result(
@@ -1868,6 +1878,25 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
 
 
 def build_player_dashboard_summary() -> dict:
+    cached = _cached_summary()
+    if cached:
+        return cached
+
+    if not _PLAYER_SUMMARY_BUILD_LOCK.acquire(blocking=False):
+        stale = _last_summary_cache()
+        if stale:
+            _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+            stale.setdefault("warnings", [])
+            stale["warnings"] = list(stale["warnings"]) + ["summary build in flight"]
+            return stale
+        _PLAYER_SUMMARY_BUILD_LOCK.acquire()
+    try:
+        return _build_player_dashboard_summary_uncached()
+    finally:
+        _PLAYER_SUMMARY_BUILD_LOCK.release()
+
+
+def _build_player_dashboard_summary_uncached() -> dict:
     cached = _cached_summary()
     if cached:
         return cached
@@ -2005,10 +2034,6 @@ def build_player_dashboard_summary() -> dict:
             },
         }
 
-    history_future, _ = _submit_component(
-        "prediction_history",
-        lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT),
-    )
     card_two_history_future, _ = _submit_component(
         "card_two_history",
         lambda: get_prediction_history_records(100),
@@ -2017,15 +2042,6 @@ def build_player_dashboard_summary() -> dict:
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
     release_future, _ = _submit_component("active_release", get_current_release)
 
-    history_records = _component_result(
-        "prediction_history",
-        history_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback=[],
-    ) or []
     card_two_history = _component_result(
         "card_two_history",
         card_two_history_future,
@@ -2033,8 +2049,10 @@ def build_player_dashboard_summary() -> dict:
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
         timings=timings,
         warnings=warnings,
-        fallback=history_records,
-    ) or history_records
+        fallback=_load_component_cache("card_two_history", []),
+    ) or []
+    history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
+    _store_component_cache("prediction_history", history_records)
     aggregates = _component_result(
         "prediction_aggregates",
         aggregates_future,
@@ -2076,7 +2094,7 @@ def build_player_dashboard_summary() -> dict:
     prediction_stats = _history_stats(history_records)
     prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
     prediction_stats["stale"] = any(
-        item.get("step") == "prediction_history" and item.get("result") != "ok"
+        item.get("step") == "card_two_history" and item.get("result") != "ok"
         for item in timings
     )
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
@@ -2235,15 +2253,14 @@ def _build_player_dashboard_summary_legacy() -> dict:
 
     futures = {
         "official_draw": _PLAYER_EXECUTOR.submit(get_latest_official_draw),
-        "prediction_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT)),
         "card_two_history": _PLAYER_EXECUTOR.submit(lambda: get_prediction_history_records(100)),
         "prediction_aggregates": _PLAYER_EXECUTOR.submit(get_prediction_lifecycle_aggregates),
         "analysis": _PLAYER_EXECUTOR.submit(get_latest_analysis_history),
         "kuaishou": _PLAYER_EXECUTOR.submit(get_latest_kuaishou_snapshot),
     }
     official = _future_result("official_draw", futures["official_draw"], warnings)
-    history_records = _future_result("prediction_history", futures["prediction_history"], warnings, []) or []
-    card_two_history = _future_result("card_two_history", futures["card_two_history"], warnings, history_records) or []
+    card_two_history = _future_result("card_two_history", futures["card_two_history"], warnings, []) or []
+    history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     aggregates = _future_result("prediction_aggregates", futures["prediction_aggregates"], warnings, {}) or {}
     analysis = _future_result("analysis", futures["analysis"], warnings, {}) or {}
     kuaishou = _future_result("kuaishou", futures["kuaishou"], warnings, {}) or {}
