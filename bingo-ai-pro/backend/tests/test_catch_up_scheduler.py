@@ -35,6 +35,40 @@ def test_production_catch_up_jobs_schedule_when_historical_catchup_disabled(monk
     assert runtime["catch_up_interval_job_registered"] is True
 
 
+def test_collector_jobs_skip_when_scheduler_disabled(monkeypatch):
+    import app as app_module
+
+    calls = []
+
+    class FakeScheduler:
+        def add_job(self, func, trigger, **kwargs):
+            calls.append({"func": func, "trigger": trigger, **kwargs})
+
+    monkeypatch.setattr(app_module, "scheduler", FakeScheduler())
+    monkeypatch.setattr(app_module, "COLLECTOR_SCHEDULER_ENABLED", False)
+
+    app_module._schedule_collector_jobs()
+
+    assert calls == []
+
+
+def test_legacy_refresh_jobs_skip_when_scheduler_disabled(monkeypatch):
+    import app as app_module
+
+    calls = []
+
+    class FakeScheduler:
+        def add_job(self, func, trigger, **kwargs):
+            calls.append({"func": func, "trigger": trigger, **kwargs})
+
+    monkeypatch.setattr(app_module, "scheduler", FakeScheduler())
+    monkeypatch.setattr(app_module, "LEGACY_REFRESH_SCHEDULER_ENABLED", False)
+
+    app_module._schedule_legacy_refresh_jobs()
+
+    assert calls == []
+
+
 def test_daily_recovery_runs_production_catch_up(monkeypatch):
     from services import catch_up_service, collector_runtime, daily_recovery
     from services import latest_sync, official_verification, learning_engine

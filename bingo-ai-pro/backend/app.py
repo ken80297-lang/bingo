@@ -107,7 +107,23 @@ from services.daily_recovery import (
 
 DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
-CATCH_UP_SCHEDULER_ENABLED = os.getenv("CATCH_UP_SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_raw(name: str) -> str:
+    raw = os.getenv(name)
+    return "<unset>" if raw is None else str(raw)
+
+
+CATCH_UP_SCHEDULER_ENABLED = _env_bool("CATCH_UP_SCHEDULER_ENABLED", True)
+COLLECTOR_SCHEDULER_ENABLED = _env_bool("COLLECTOR_SCHEDULER_ENABLED", True)
+LEGACY_REFRESH_SCHEDULER_ENABLED = _env_bool("LEGACY_REFRESH_SCHEDULER_ENABLED", True)
 
 app = FastAPI(title="Bingo AI Pro API")
 STARTUP_TIME = datetime.now(timezone.utc).isoformat()
@@ -186,6 +202,7 @@ async def record_get_traffic_metrics(request: Request, call_next):
         view=request.query_params.get("view"),
     )
     return response
+
 
 STATE: dict[str, str | int | None] = {
     "last_update": "-",
@@ -275,6 +292,7 @@ def _ensure_scheduler_listener() -> None:
 
 def _schedule_production_catch_up_jobs() -> None:
     if not CATCH_UP_SCHEDULER_ENABLED:
+        print("catch_up_scheduler_disabled startup_job_registered=false interval_job_registered=false")
         update_collector_runtime(
             catch_up_scheduler_enabled=False,
             catch_up_startup_job_registered=False,
@@ -305,6 +323,75 @@ def _schedule_production_catch_up_jobs() -> None:
         catch_up_scheduler_enabled=True,
         catch_up_startup_job_registered=True,
         catch_up_interval_job_registered=True,
+    )
+
+
+def _schedule_collector_jobs() -> None:
+    if not COLLECTOR_SCHEDULER_ENABLED:
+        print("collector_scheduler_disabled startup_job_registered=false interval_job_registered=false")
+        update_collector_runtime(
+            collector_scheduler_enabled=False,
+            collector_startup_job_registered=False,
+            collector_interval_job_registered=False,
+            official_collector_interval_job_registered=False,
+        )
+        return
+    scheduler.add_job(
+        collect_pilio_today,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=3),
+        id="collector_pilio_startup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        collect_kuaishou_snapshot,
+        "interval",
+        minutes=5,
+        id="collector_kuaishou_snapshot",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        collect_pilio_today,
+        "interval",
+        hours=1,
+        id="collector_pilio_today",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        collect_official_today,
+        "interval",
+        minutes=2,
+        id="collector_official_today",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    update_collector_runtime(
+        collector_scheduler_enabled=True,
+        collector_startup_job_registered=True,
+        collector_interval_job_registered=True,
+        official_collector_interval_job_registered=True,
+    )
+
+
+def _schedule_legacy_refresh_jobs() -> None:
+    if not LEGACY_REFRESH_SCHEDULER_ENABLED:
+        print("legacy_refresh_scheduler_disabled startup_job_registered=false interval_job_registered=false")
+        return
+    scheduler.add_job(
+        refresh_data,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=10),
+        id="first_refresh",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_data,
+        "interval",
+        minutes=5,
+        id="refresh_job",
+        replace_existing=True,
     )
 
 
@@ -362,6 +449,19 @@ def startup_event() -> None:
     print(
         "LATEST_SYNC_MODE "
         f"latest_issue_priority={str(LATEST_ISSUE_PRIORITY).lower()} "
+        f"historical_catchup_enabled={str(HISTORICAL_CATCHUP_ENABLED).lower()}"
+    )
+    print(
+        "SCHEDULER_RUNTIME_FLAGS "
+        f"catch_up_raw={_env_raw('CATCH_UP_SCHEDULER_ENABLED')} "
+        f"catch_up_enabled={str(CATCH_UP_SCHEDULER_ENABLED).lower()} "
+        f"collector_raw={_env_raw('COLLECTOR_SCHEDULER_ENABLED')} "
+        f"collector_enabled={str(COLLECTOR_SCHEDULER_ENABLED).lower()} "
+        f"legacy_refresh_raw={_env_raw('LEGACY_REFRESH_SCHEDULER_ENABLED')} "
+        f"legacy_refresh_enabled={str(LEGACY_REFRESH_SCHEDULER_ENABLED).lower()} "
+        f"daily_recovery_raw={_env_raw('DAILY_RECOVERY_ENABLED')} "
+        f"daily_recovery_enabled={str(DAILY_RECOVERY_ENABLED).lower()} "
+        f"historical_catchup_raw={_env_raw('HISTORICAL_CATCHUP_ENABLED')} "
         f"historical_catchup_enabled={str(HISTORICAL_CATCHUP_ENABLED).lower()}"
     )
     init_db()
@@ -428,37 +528,7 @@ def startup_event() -> None:
             misfire_grace_time=90,
         )
         _schedule_production_catch_up_jobs()
-        scheduler.add_job(
-            collect_pilio_today,
-            "date",
-            run_date=datetime.utcnow() + timedelta(seconds=3),
-            id="collector_pilio_startup",
-            replace_existing=True,
-        )
-        scheduler.add_job(
-            collect_kuaishou_snapshot,
-            "interval",
-            minutes=5,
-            id="collector_kuaishou_snapshot",
-            replace_existing=True,
-        )
-        scheduler.add_job(
-            collect_pilio_today,
-            "interval",
-            hours=1,
-            id="collector_pilio_today",
-            replace_existing=True,
-        )
-        scheduler.add_job(
-            collect_official_today,
-            "interval",
-            minutes=2,
-            id="collector_official_today",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=90,
-        )
+        _schedule_collector_jobs()
         scheduler.add_job(
             run_kuaishou_data_quality_check,
             "date",
@@ -494,21 +564,7 @@ def startup_event() -> None:
     except Exception as exc:
         print(f"Collector scheduler setup failed: {exc}")
 
-    scheduler.add_job(
-        refresh_data,
-        "date",
-        run_date=datetime.utcnow() + timedelta(seconds=10),
-        id="first_refresh",
-        replace_existing=True,
-    )
-
-    scheduler.add_job(
-        refresh_data,
-        "interval",
-        minutes=5,
-        id="refresh_job",
-        replace_existing=True,
-    )
+    _schedule_legacy_refresh_jobs()
 
     if not scheduler.running:
         scheduler.start()

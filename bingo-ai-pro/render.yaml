@@ -6,3 +6,14 @@ services:
     buildCommand: pip install -r backend/requirements.txt
     startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
     autoDeploy: true
+    envVars:
+      - key: CATCH_UP_SCHEDULER_ENABLED
+        value: "false"
+      - key: COLLECTOR_SCHEDULER_ENABLED
+        value: "false"
+      - key: LEGACY_REFRESH_SCHEDULER_ENABLED
+        value: "false"
+      - key: DAILY_RECOVERY_ENABLED
+        value: "false"
+      - key: HISTORICAL_CATCHUP_ENABLED
+        value: "false"
