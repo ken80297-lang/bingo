@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -95,6 +96,7 @@ from services.collector_runtime import mark_scheduler_event, refresh_system_stat
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
 from services.official_verification import collect_official_today
+from services.traffic_observability import normalize_traffic_endpoint, record_traffic_request
 from services.daily_recovery import (
     DAILY_RECOVERY_ENABLED,
     DAILY_RECOVERY_HOUR,
@@ -149,6 +151,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def record_get_traffic_metrics(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        route = request.scope.get("route")
+        endpoint = normalize_traffic_endpoint(request.url.path, getattr(route, "path", None))
+        record_traffic_request(
+            method=request.method,
+            endpoint=endpoint,
+            status_code=500,
+            duration_ms=(time.perf_counter() - start) * 1000,
+            response_bytes=None,
+            view=request.query_params.get("view"),
+        )
+        raise
+    route = request.scope.get("route")
+    endpoint = normalize_traffic_endpoint(request.url.path, getattr(route, "path", None))
+    content_length = response.headers.get("content-length")
+    try:
+        response_bytes = int(content_length) if content_length is not None else None
+    except ValueError:
+        response_bytes = None
+    record_traffic_request(
+        method=request.method,
+        endpoint=endpoint,
+        status_code=response.status_code,
+        duration_ms=(time.perf_counter() - start) * 1000,
+        response_bytes=response_bytes,
+        view=request.query_params.get("view"),
+    )
+    return response
 
 STATE: dict[str, str | int | None] = {
     "last_update": "-",

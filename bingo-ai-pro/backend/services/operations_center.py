@@ -12,6 +12,7 @@ from database.operations_store import (
     resolve_stale_operation_errors,
     save_operation_event,
 )
+from services.traffic_observability import traffic_metrics_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,12 @@ def resolve_stale_errors() -> dict:
 
 def operation_metrics() -> dict:
     try:
-        return get_operation_metrics()
+        payload = get_operation_metrics()
+        payload["traffic"] = traffic_metrics_snapshot()
+        return payload
     except Exception as exc:
         logger.exception("operation metrics failed")
-        return {"status": "error", "components": [], "error": str(exc)}
+        return {"status": "error", "components": [], "traffic": traffic_metrics_snapshot(), "error": str(exc)}
 
 
 def operation_database_health() -> dict:
