@@ -673,6 +673,65 @@ def _row_to_record(row: Any) -> dict:
     }
 
 
+ANALYSIS_SUMMARY_COLUMNS = (
+    "issue",
+    "draw_time",
+    "numbers",
+    "super_number",
+    "big_small",
+    "odd_even",
+    "created_at",
+    "updated_at",
+    "cluster_level",
+    "cluster_score",
+    "diagonal_score",
+    "gap_score",
+    "pattern",
+    "ai_pattern",
+)
+ANALYSIS_SUMMARY_SELECT_COLUMNS = ", ".join(ANALYSIS_SUMMARY_COLUMNS)
+
+
+def _row_to_summary_record(row: Any) -> dict:
+    data = dict(zip(ANALYSIS_SUMMARY_COLUMNS, row))
+    return {
+        "issue": data.get("issue"),
+        "draw_time": data.get("draw_time"),
+        "numbers": _json_loads(data.get("numbers")) or [],
+        "super_number": data.get("super_number"),
+        "big_small": data.get("big_small"),
+        "odd_even": data.get("odd_even"),
+        "created_at": str(data["created_at"]) if data.get("created_at") is not None else None,
+        "updated_at": str(data["updated_at"]) if data.get("updated_at") is not None else None,
+        "cluster_level": data.get("cluster_level"),
+        "cluster_score": data.get("cluster_score"),
+        "diagonal_score": data.get("diagonal_score"),
+        "gap_score": data.get("gap_score"),
+        "pattern": data.get("pattern"),
+        "ai_pattern": data.get("ai_pattern"),
+        "consecutive_numbers": [],
+        "repeated_numbers": [],
+        "hot_numbers": [],
+        "cold_numbers": [],
+        "missing_numbers": [],
+        "difference_values": {},
+        "diagonal_pattern": [],
+        "laowanjia_score": None,
+        "laowanjia_score_detail": {},
+        "ai_score": {},
+        "twins": [],
+        "consecutive": [],
+        "three_star": [],
+        "four_star": [],
+        "five_star": [],
+        "six_star": [],
+        "tail_distribution": {},
+        "hot_zone": [],
+        "cold_zone": [],
+        "patch_numbers": [],
+    }
+
+
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
@@ -719,6 +778,39 @@ def get_latest_analysis_history() -> dict | None:
     return _row_to_record(rows[0]) if rows else None
 
 
+def get_analysis_history_by_issue(issue: str) -> dict | None:
+    rows = _query_with_fallback(
+        """
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue = %s
+        limit 1
+        """,
+        (str(issue),),
+        sqlite_sql="""
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue = ?
+        limit 1
+        """,
+    )
+    return _row_to_record(rows[0]) if rows else None
+
+
 def get_analysis_history(limit: int = 100) -> list[dict]:
     rows = _query_with_fallback(
         """
@@ -756,9 +848,84 @@ def get_analysis_history(limit: int = 100) -> list[dict]:
     return [_row_to_record(row) for row in rows]
 
 
+def get_analysis_summary_records(limit: int = 20) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 100))
+    rows = _query_with_fallback(
+        f"""
+        select {ANALYSIS_SUMMARY_SELECT_COLUMNS}
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql=f"""
+        select {ANALYSIS_SUMMARY_SELECT_COLUMNS}
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit ?
+        """,
+    )
+    return [_row_to_summary_record(row) for row in rows]
+
+
 def get_analysis_statistics(limit: int = 100) -> dict:
-    records = get_analysis_history(limit)
-    if not records:
+    limit = max(1, min(int(limit or 100), 500))
+    score_expr = """
+        case
+            when jsonb_typeof(laowanjia_score) = 'number'
+                then (laowanjia_score #>> '{}')::double precision
+            when jsonb_typeof(laowanjia_score) = 'object' and laowanjia_score ? 'score'
+                then nullif(laowanjia_score->>'score', '')::double precision
+            else null
+        end
+    """
+    sqlite_score_expr = """
+        case
+            when json_valid(laowanjia_score) and json_type(laowanjia_score, '$.score') in ('integer', 'real')
+                then cast(json_extract(laowanjia_score, '$.score') as real)
+            when json_valid(laowanjia_score) and json_type(laowanjia_score) in ('integer', 'real')
+                then cast(laowanjia_score as real)
+            else null
+        end
+    """
+    rows = _query_with_fallback(
+        f"""
+        with recent as (
+            select issue, created_at, updated_at, cluster_level, {score_expr} as score
+            from analysis_history
+            where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+              and cluster_level is not null
+            order by issue desc
+            limit %s
+        )
+        select count(*) as analysis_count,
+               max(issue) as latest_issue,
+               max(coalesce(updated_at, created_at)) as last_analysis_time,
+               avg(score) as average_laowanjia_score
+        from recent
+        """,
+        (limit,),
+        sqlite_sql=f"""
+        with recent as (
+            select issue, created_at, updated_at, cluster_level, {sqlite_score_expr} as score
+            from analysis_history
+            where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+              and cluster_level is not null
+            order by issue desc
+            limit ?
+        )
+        select count(*) as analysis_count,
+               max(issue) as latest_issue,
+               max(coalesce(updated_at, created_at)) as last_analysis_time,
+               avg(score) as average_laowanjia_score
+        from recent
+        """,
+    )
+    if not rows or not int(rows[0][0] or 0):
         return {
             "status": "empty",
             "analysis_count": 0,
@@ -767,18 +934,41 @@ def get_analysis_statistics(limit: int = 100) -> dict:
             "average_laowanjia_score": 0,
             "cluster_distribution": {},
         }
-    clusters = Counter(item.get("cluster_level") or "未知" for item in records)
-    scores = []
-    for item in records:
-        try:
-            scores.append(float(item.get("laowanjia_score") or 0))
-        except Exception:
-            pass
+    cluster_rows = _query_with_fallback(
+        """
+        with recent as (
+            select cluster_level
+            from analysis_history
+            where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+              and cluster_level is not null
+            order by issue desc
+            limit %s
+        )
+        select coalesce(cluster_level, %s) as cluster_level, count(*) as count
+        from recent
+        group by coalesce(cluster_level, %s)
+        """,
+        (limit, "unknown", "unknown"),
+        sqlite_sql="""
+        with recent as (
+            select cluster_level
+            from analysis_history
+            where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+              and cluster_level is not null
+            order by issue desc
+            limit ?
+        )
+        select coalesce(cluster_level, ?) as cluster_level, count(*) as count
+        from recent
+        group by coalesce(cluster_level, ?)
+        """,
+    )
+    row = rows[0]
     return {
         "status": "ok",
-        "analysis_count": len(records),
-        "latest_issue": records[0].get("issue"),
-        "last_analysis_time": records[0].get("updated_at") or records[0].get("created_at"),
-        "average_laowanjia_score": round(sum(scores) / len(scores), 2) if scores else 0,
-        "cluster_distribution": dict(clusters),
+        "analysis_count": int(row[0] or 0),
+        "latest_issue": row[1],
+        "last_analysis_time": str(row[2]) if row[2] is not None else None,
+        "average_laowanjia_score": round(float(row[3] or 0), 2),
+        "cluster_distribution": {str(item[0]): int(item[1] or 0) for item in cluster_rows},
     }
