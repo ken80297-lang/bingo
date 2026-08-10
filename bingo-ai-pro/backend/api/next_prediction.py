@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from database.prediction_history_store import (
     get_latest_prediction_history,
     get_prediction_history_records,
+    get_prediction_history_summary_records,
     get_prediction_history_statistics,
 )
 from services.next_prediction_center import build_next_prediction_dashboard
@@ -21,8 +22,15 @@ def api_prediction_history_latest():
 
 
 @router.get("/prediction-history/history")
-def api_prediction_history(limit: int = 30):
-    return {"status": "ok", "data": get_prediction_history_records(limit)}
+def api_prediction_history(limit: int | None = None, view: str = "full"):
+    normalized_view = str(view or "full").strip().lower()
+    if normalized_view == "summary":
+        safe_limit = max(1, min(int(limit or 20), 100))
+        data = get_prediction_history_summary_records(safe_limit)
+    else:
+        safe_limit = max(1, min(int(limit or 30), 500))
+        data = get_prediction_history_records(safe_limit)
+    return {"status": "ok", "view": "summary" if normalized_view == "summary" else "full", "data": data}
 
 
 @router.get("/prediction-history/statistics")

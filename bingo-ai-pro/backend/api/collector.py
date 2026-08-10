@@ -6,6 +6,7 @@ from database.collector_store import (
     get_collector_status,
     get_draw_history,
     get_kuaishou_history,
+    get_kuaishou_summary_history,
     get_latest_draw_history,
     get_latest_kuaishou_snapshot,
 )
@@ -70,10 +71,18 @@ def api_kuaishou_latest():
 
 
 @router.get("/kuaishou/history")
-def api_kuaishou_history(limit: int = 50):
+def api_kuaishou_history(limit: int | None = None, view: str = "full"):
+    normalized_view = str(view or "full").strip().lower()
+    if normalized_view == "summary":
+        safe_limit = max(1, min(int(limit or 20), 100))
+        data = get_kuaishou_summary_history(safe_limit)
+    else:
+        safe_limit = int(limit or 50)
+        data = get_kuaishou_history(safe_limit)
     return {
         "status": "ok",
-        "data": get_kuaishou_history(limit),
+        "view": "summary" if normalized_view == "summary" else "full",
+        "data": data,
     }
 
 

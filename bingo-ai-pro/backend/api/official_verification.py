@@ -5,6 +5,7 @@ from services.official_verification import (
     official_history,
     official_latest,
     official_statistics,
+    official_summary_history,
     official_verification_history,
     official_verification_latest,
     reverify_recent_draws,
@@ -19,8 +20,13 @@ def api_official_latest():
 
 
 @router.get("/history")
-def api_official_history(limit: int = 30):
-    return official_history(limit)
+def api_official_history(limit: int | None = None, view: str = "full"):
+    normalized_view = str(view or "full").strip().lower()
+    if normalized_view == "summary":
+        return official_summary_history(max(1, min(int(limit or 20), 100)))
+    payload = official_history(max(1, min(int(limit or 30), 200)))
+    payload["view"] = "full"
+    return payload
 
 
 @router.post("/collect-today")

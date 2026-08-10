@@ -1891,7 +1891,7 @@ def get_prediction_history_statistics(limit: int = 100) -> dict:
         }
         return payload
     start = time.perf_counter()
-    all_records = get_prediction_history_records(limit)
+    all_records = get_prediction_history_summary_records(limit)
     records = [item for item in all_records if item.get("winning_numbers")]
     total = len(records)
     learned_issues = _learned_prediction_issues()

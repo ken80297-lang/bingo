@@ -643,6 +643,38 @@ def get_official_draw_history(limit: int = 30) -> list[dict]:
     return [_row_to_official(row) for row in rows]
 
 
+def get_official_draw_summary_history(limit: int = 20) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 100))
+    rows = _query_with_fallback(
+        """
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue ~ '^[0-9]+$'
+          and length(issue) >= 6
+          and issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+        order by issue::bigint desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where issue glob '[0-9]*'
+          and length(issue) >= 6
+          and issue not like '99%'
+          and upper(issue) not like 'TEST%'
+        order by cast(issue as integer) desc
+        limit ?
+        """,
+    )
+    return [_row_to_official_summary(row) for row in rows]
+
+
 def save_draw_verification(item: dict) -> dict:
     cloud_error = None
     if _cloud_enabled():

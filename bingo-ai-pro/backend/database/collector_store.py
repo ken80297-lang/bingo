@@ -435,6 +435,22 @@ def get_kuaishou_history(limit: int = 50) -> list[dict]:
     return [_row_to_snapshot(row) for row in rows]
 
 
+def get_kuaishou_summary_history(limit: int = 20) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 100))
+    rows = _query_with_fallback(
+        """
+        select id, issue, draw_time, source, created_at, updated_at
+        from kuaishou_snapshots order by updated_at desc, id desc limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select id, issue, draw_time, source, created_at, updated_at
+        from kuaishou_snapshots order by updated_at desc, id desc limit ?
+        """,
+    )
+    return [_row_to_snapshot_summary(row) for row in rows]
+
+
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     try:
         return _query_cloud(sql, params)

@@ -16,6 +16,7 @@ from database.official_draw_store import (
     get_latest_verification,
     get_official_draw_by_issue,
     get_official_draw_history,
+    get_official_draw_summary_history,
     get_official_statistics_counts,
     get_verification_history,
     save_draw_verification,
@@ -495,6 +496,10 @@ def official_latest() -> dict:
 
 def official_history(limit: int = 30) -> dict:
     return {"status": "ok", "data": get_official_draw_history(limit)}
+
+
+def official_summary_history(limit: int = 20) -> dict:
+    return {"status": "ok", "view": "summary", "data": get_official_draw_summary_history(limit)}
 
 
 def official_verification_latest() -> dict:

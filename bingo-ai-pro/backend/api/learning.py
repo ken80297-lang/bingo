@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from database.learning_store import get_learning_records
 from services.learning_engine import (
+    ENGINE_VERSION,
     backfill_learning_records,
     get_learning_history,
     get_learning_models_summary,
@@ -39,6 +41,7 @@ def api_learning_observation():
 def api_learning_history(
     limit: int = 100,
     offset: int = 0,
+    view: str = "summary",
     issue: str | None = None,
     model_name: str | None = None,
     model_version: str | None = None,
@@ -46,16 +49,26 @@ def api_learning_history(
     verification_status: str | None = None,
     learned_status: str | None = None,
 ):
-    return get_learning_history(
-        limit=limit,
-        offset=offset,
-        issue=issue,
-        model_name=model_name,
-        model_version=model_version,
-        prediction_type=prediction_type,
-        verification_status=verification_status,
-        learned_status=learned_status,
-    )
+    filters = {
+        "limit": max(1, min(int(limit or 100), 500)),
+        "offset": max(0, int(offset or 0)),
+        "issue": issue,
+        "model_name": model_name,
+        "model_version": model_version,
+        "prediction_type": prediction_type,
+        "verification_status": verification_status,
+        "learned_status": learned_status,
+    }
+    if str(view or "summary").strip().lower() == "full":
+        return {
+            "status": "ok",
+            "engine_version": ENGINE_VERSION,
+            "view": "full",
+            "data": get_learning_records(**filters),
+        }
+    payload = get_learning_history(**filters)
+    payload["view"] = "summary"
+    return payload
 
 
 @router.get("/performance")
