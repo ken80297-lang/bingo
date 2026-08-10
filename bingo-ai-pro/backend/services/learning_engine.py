@@ -11,6 +11,7 @@ from database.analysis_store import get_analysis_history
 from database.learning_store import (
     get_learning_model_performance,
     get_learning_records,
+    get_learning_summary_records,
     get_learning_status_counts,
     upsert_learning_record,
 )
@@ -315,7 +316,7 @@ def _safe_lag(newer: Any, older: Any) -> int | None:
 
 
 def _learning_scope_records(limit: int = 500) -> list[dict]:
-    return get_learning_records(limit=limit, prediction_type="live_prediction")
+    return get_learning_summary_records(limit=limit, prediction_type="live_prediction")
 
 
 def _target_key(record: dict) -> str:
@@ -944,7 +945,7 @@ def get_model_performance(
     }
 
 
-def get_learning_models_summary() -> dict:
+def get_learning_models_summary(live_records: list[dict] | None = None) -> dict:
     all_rows = get_learning_model_performance(window="all")
     recent_10 = {
         item["model_name"]: item
@@ -974,7 +975,7 @@ def get_learning_models_summary() -> dict:
         item["model_name"]: item
         for item in get_learning_model_performance(window=100)
     }
-    live_records = _learning_scope_records(500)
+    live_records = live_records if live_records is not None else _learning_scope_records(500)
     learned_records = [item for item in live_records if item.get("learned_status") == "learned"]
     target_samples_by_model: dict[str, set[str]] = {}
     learned_targets_by_model: dict[str, set[str]] = {}
@@ -1064,7 +1065,7 @@ def get_learning_history(**filters: Any) -> dict:
     return {
         "status": "ok",
         "engine_version": ENGINE_VERSION,
-        "data": get_learning_records(**filters),
+        "data": get_learning_summary_records(**filters),
     }
 
 
@@ -1072,18 +1073,12 @@ def _build_learning_observation() -> dict:
     try:
         base_counts = get_learning_status_counts()
         records = _learning_scope_records(500)
-        all_records = get_learning_records(limit=500)
         grouped_targets = _group_live_targets(records)
         target_rows = [_target_quality(target, items) for target, items in grouped_targets.items()]
         complete_targets = [item for item in target_rows if item["status"] == "complete"]
         incomplete_targets = [item for item in target_rows if item["status"] != "complete"]
         duplicate_risk_count = sum(item["duplicate_count"] for item in target_rows)
-        evaluation_error_count = sum(
-            1
-            for item in all_records
-            if item.get("learned_status") in ("failed", "error")
-            or item.get("verification_status") in ("error", "evaluation_error")
-        )
+        evaluation_error_count = int(base_counts.get("evaluation_error_records") or 0)
         learned_target_count = len(
             {
                 _target_key(item)
@@ -1091,16 +1086,14 @@ def _build_learning_observation() -> dict:
                 if item.get("learned_status") == "learned" and str(item.get("model_name") or "") != "unknown"
             }
         )
-        missing_snapshot_records = [
-            item for item in all_records if item.get("learned_status") == "missing_snapshot"
-        ]
+        missing_snapshot_count = int(base_counts.get("missing_snapshot_records") or 0)
         live_count = int(base_counts.get("live_prediction_count") or 0)
         learned_records = int(base_counts.get("learned_records") or 0)
-        pending_official = sum(1 for item in all_records if item.get("verification_status") == "pending_official")
-        pending_target = sum(1 for item in all_records if item.get("verification_status") == "pending_target_issue")
-        resolved_pending = sum(1 for item in all_records if item.get("learned_status") == "resolved_to_target")
-        failed_records = sum(1 for item in all_records if item.get("learned_status") in ("failed", "error"))
-        historical = sum(1 for item in all_records if item.get("prediction_type") == "historical_backtest")
+        pending_official = int(base_counts.get("pending_official_records") or 0)
+        pending_target = int(base_counts.get("pending_target_records") or 0)
+        resolved_pending = int(base_counts.get("resolved_pending_records") or 0)
+        failed_records = int(base_counts.get("error_records") or base_counts.get("failed_records") or 0)
+        historical = int(base_counts.get("historical_backtest_count") or 0)
         latest_snapshot = next((item for item in records if str(item.get("model_name") or "") != "unknown"), None)
         learned_items = [item for item in records if item.get("learned_status") == "learned" and str(item.get("model_name") or "") != "unknown"]
         latest_learned = learned_items[0] if learned_items else None
@@ -1117,7 +1110,7 @@ def _build_learning_observation() -> dict:
         official_latest = official.get("latest_official_issue")
         official_lag = _safe_lag(collector_latest, official_latest)
         complete_rate = round(len(complete_targets) / len(grouped_targets), 4) if grouped_targets else 0
-        missing_rate = round(len(missing_snapshot_records) / max(1, live_count), 4) if live_count else 0
+        missing_rate = round(missing_snapshot_count / max(1, live_count), 4) if live_count else 0
         snapshot_success_rate = round(complete_rate * 100, 2)
         learning_success_rate = round((learned_target_count / len(grouped_targets)) * 100, 2) if grouped_targets else 0
 
@@ -1154,7 +1147,7 @@ def _build_learning_observation() -> dict:
                 f"learned live target count {learned_target_count} is below {LEARNING_READINESS_THRESHOLDS['minimum_learned_targets']}"
             )
             ready = False
-        model_summary = get_learning_models_summary().get("models", [])
+        model_summary = get_learning_models_summary(live_records=records).get("models", [])
         under_sampled = [
             item.get("model_name")
             for item in model_summary
@@ -1179,15 +1172,15 @@ def _build_learning_observation() -> dict:
                 "official_lag_issues": official_lag,
             },
             "records": {
-                "total": int(base_counts.get("total_records") or len(all_records)),
+                "total": int(base_counts.get("total_records") or 0),
                 "live": live_count,
                 "historical": int(base_counts.get("historical_backtest_count") or historical),
                 "learned": learned_records,
-                "pending": int(base_counts.get("pending_records") or sum(1 for item in all_records if item.get("learned_status") == "pending")),
+                "pending": int(base_counts.get("pending_records") or 0),
                 "pending_official": pending_official,
                 "pending_target": pending_target,
                 "resolved_pending": resolved_pending,
-                "missing_snapshot": len(missing_snapshot_records),
+                "missing_snapshot": missing_snapshot_count,
                 "failed": failed_records,
                 "model_count": len(model_names),
                 "latest_snapshot_issue": (latest_snapshot or {}).get("issue"),

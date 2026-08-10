@@ -447,6 +447,91 @@ def _row_to_record(row: Any) -> dict:
     }
 
 
+LEARNING_SUMMARY_COLUMNS = (
+    "id",
+    "issue",
+    "draw_time",
+    "model_name",
+    "model_version",
+    "prediction_type",
+    "predicted_numbers",
+    "official_numbers",
+    "hit_numbers",
+    "hit_count",
+    "precision_score",
+    "rank_score",
+    "top_n",
+    "verification_status",
+    "learned_status",
+    "learned_at",
+    "created_at",
+    "updated_at",
+    "error_message",
+    "source_issue",
+    "target_issue",
+    "history_cutoff_issue",
+    "prediction_created_at",
+    "predicted_count",
+    "official_coverage",
+    "production_generation",
+    "sample_issue",
+    "snapshot_status",
+    "feature_version",
+    "model_version_before",
+    "model_version_after",
+    "weight_changed",
+    "applied_to_prediction_issue",
+    "resolved_at",
+    "resolved_to_issue",
+)
+LEARNING_SUMMARY_SELECT_COLUMNS = ", ".join(LEARNING_SUMMARY_COLUMNS)
+
+
+def _row_to_summary_record(row: Any) -> dict:
+    data = dict(zip(LEARNING_SUMMARY_COLUMNS, row))
+    return {
+        "id": data.get("id"),
+        "issue": data.get("issue"),
+        "draw_time": data.get("draw_time"),
+        "model_name": data.get("model_name"),
+        "model_version": data.get("model_version"),
+        "prediction_type": data.get("prediction_type"),
+        "predicted_numbers": _json_loads(data.get("predicted_numbers")) or [],
+        "predicted_scores": {},
+        "official_numbers": _json_loads(data.get("official_numbers")) or [],
+        "hit_numbers": _json_loads(data.get("hit_numbers")) or [],
+        "hit_count": data.get("hit_count") or 0,
+        "precision_score": data.get("precision_score") or 0,
+        "rank_score": data.get("rank_score") or 0,
+        "top_n": data.get("top_n"),
+        "prediction_snapshot": {},
+        "analysis_snapshot": {},
+        "verification_status": data.get("verification_status"),
+        "learned_status": data.get("learned_status"),
+        "learned_at": str(data["learned_at"]) if data.get("learned_at") is not None else None,
+        "created_at": str(data["created_at"]) if data.get("created_at") is not None else None,
+        "updated_at": str(data["updated_at"]) if data.get("updated_at") is not None else None,
+        "error_message": data.get("error_message"),
+        "source_issue": data.get("source_issue"),
+        "target_issue": data.get("target_issue"),
+        "history_cutoff_issue": data.get("history_cutoff_issue"),
+        "prediction_created_at": str(data["prediction_created_at"]) if data.get("prediction_created_at") is not None else None,
+        "model_weight": {},
+        "predicted_count": data.get("predicted_count") or 0,
+        "official_coverage": data.get("official_coverage") or 0,
+        "production_generation": data.get("production_generation") if data.get("production_generation") is not None else get_production_generation(),
+        "sample_issue": data.get("sample_issue"),
+        "snapshot_status": data.get("snapshot_status"),
+        "feature_version": data.get("feature_version"),
+        "model_version_before": data.get("model_version_before"),
+        "model_version_after": data.get("model_version_after"),
+        "weight_changed": bool(data.get("weight_changed")),
+        "applied_to_prediction_issue": data.get("applied_to_prediction_issue"),
+        "resolved_at": str(data["resolved_at"]) if data.get("resolved_at") is not None else None,
+        "resolved_to_issue": data.get("resolved_to_issue"),
+    }
+
+
 def get_learning_records(
     limit: int = 100,
     offset: int = 0,
@@ -511,6 +596,52 @@ def get_learning_records(
     return [_row_to_record(row) for row in rows]
 
 
+def get_learning_summary_records(
+    limit: int = 100,
+    offset: int = 0,
+    issue: str | None = None,
+    model_name: str | None = None,
+    model_version: str | None = None,
+    prediction_type: str | None = None,
+    verification_status: str | None = None,
+    learned_status: str | None = None,
+) -> list[dict]:
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    clauses = ["production_generation = %s"]
+    params: list[Any] = [get_production_generation()]
+    for column, value in (
+        ("issue", issue),
+        ("model_name", model_name),
+        ("model_version", model_version),
+        ("prediction_type", prediction_type),
+        ("verification_status", verification_status),
+        ("learned_status", learned_status),
+    ):
+        if value not in (None, ""):
+            clauses.append(f"{column} = %s")
+            params.append(str(value))
+    where = f"where {' and '.join(clauses)}"
+    rows = _query_with_fallback(
+        f"""
+        select {LEARNING_SUMMARY_SELECT_COLUMNS}
+        from learning_history
+        {where}
+        order by issue desc, model_name asc, top_n asc
+        limit %s offset %s
+        """,
+        (*params, limit, offset),
+        sqlite_sql=f"""
+        select {LEARNING_SUMMARY_SELECT_COLUMNS}
+        from learning_history
+        {where.replace('%s', '?')}
+        order by issue desc, model_name asc, top_n asc
+        limit ? offset ?
+        """,
+    )
+    return [_row_to_summary_record(row) for row in rows]
+
+
 def get_learning_status_counts() -> dict:
     rows = _query_with_fallback(
         """
@@ -520,6 +651,13 @@ def get_learning_status_counts() -> dict:
             sum(case when learned_status = 'pending' then 1 else 0 end) as pending_records,
             sum(case when learned_status = 'missing_snapshot' then 1 else 0 end) as missing_snapshot_records,
             sum(case when learned_status = 'failed' then 1 else 0 end) as failed_records,
+            sum(case when learned_status in ('failed', 'error') then 1 else 0 end) as error_records,
+            sum(case when verification_status = 'pending_official' then 1 else 0 end) as pending_official_records,
+            sum(case when verification_status = 'pending_target_issue' then 1 else 0 end) as pending_target_records,
+            sum(case when learned_status = 'resolved_to_target' then 1 else 0 end) as resolved_pending_records,
+            sum(case when verification_status in ('error', 'evaluation_error')
+                       or learned_status in ('failed', 'error')
+                     then 1 else 0 end) as evaluation_error_records,
             count(distinct model_name) as model_count,
             sum(case when prediction_type = 'live_prediction' then 1 else 0 end) as live_prediction_count,
             sum(case when prediction_type = 'historical_backtest' then 1 else 0 end) as historical_backtest_count,
@@ -538,6 +676,13 @@ def get_learning_status_counts() -> dict:
             sum(case when learned_status = 'pending' then 1 else 0 end) as pending_records,
             sum(case when learned_status = 'missing_snapshot' then 1 else 0 end) as missing_snapshot_records,
             sum(case when learned_status = 'failed' then 1 else 0 end) as failed_records,
+            sum(case when learned_status in ('failed', 'error') then 1 else 0 end) as error_records,
+            sum(case when verification_status = 'pending_official' then 1 else 0 end) as pending_official_records,
+            sum(case when verification_status = 'pending_target_issue' then 1 else 0 end) as pending_target_records,
+            sum(case when learned_status = 'resolved_to_target' then 1 else 0 end) as resolved_pending_records,
+            sum(case when verification_status in ('error', 'evaluation_error')
+                       or learned_status in ('failed', 'error')
+                     then 1 else 0 end) as evaluation_error_records,
             count(distinct model_name) as model_count,
             sum(case when prediction_type = 'live_prediction' then 1 else 0 end) as live_prediction_count,
             sum(case when prediction_type = 'historical_backtest' then 1 else 0 end) as historical_backtest_count,
@@ -556,6 +701,11 @@ def get_learning_status_counts() -> dict:
             "pending_records": 0,
             "missing_snapshot_records": 0,
             "failed_records": 0,
+            "error_records": 0,
+            "pending_official_records": 0,
+            "pending_target_records": 0,
+            "resolved_pending_records": 0,
+            "evaluation_error_records": 0,
             "model_count": 0,
             "live_prediction_count": 0,
             "historical_backtest_count": 0,
@@ -569,11 +719,16 @@ def get_learning_status_counts() -> dict:
         "pending_records": int(row[2] or 0),
         "missing_snapshot_records": int(row[3] or 0),
         "failed_records": int(row[4] or 0),
-        "model_count": int(row[5] or 0),
-        "live_prediction_count": int(row[6] or 0),
-        "historical_backtest_count": int(row[7] or 0),
-        "latest_learned_issue": row[8],
-        "latest_learned_at": str(row[9]) if row[9] is not None else None,
+        "error_records": int(row[5] or 0),
+        "pending_official_records": int(row[6] or 0),
+        "pending_target_records": int(row[7] or 0),
+        "resolved_pending_records": int(row[8] or 0),
+        "evaluation_error_records": int(row[9] or 0),
+        "model_count": int(row[10] or 0),
+        "live_prediction_count": int(row[11] or 0),
+        "historical_backtest_count": int(row[12] or 0),
+        "latest_learned_issue": row[13],
+        "latest_learned_at": str(row[14]) if row[14] is not None else None,
     }
 
 
