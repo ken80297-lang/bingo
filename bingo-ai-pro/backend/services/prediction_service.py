@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import atexit
+import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,7 +26,9 @@ PREDICTION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_TIMEOUT_SECONDS", "45")
 PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS = float(os.getenv("PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS", "12"))
 PREDICTION_STALE_LOCK_SECONDS = 90
 _PREDICTION_LOCK = threading.Lock()
-_PREDICTION_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prediction-service")
+_PREDICTION_EXECUTOR: ThreadPoolExecutor | None = None
+_PREDICTION_EXECUTOR_LOCK = threading.Lock()
+_PREDICTION_BACKGROUND_ACCEPTING = True
 _LOCK_STATE: dict[str, Any] = {
     "prediction_running": False,
     "prediction_lock_owner": None,
@@ -37,6 +41,69 @@ _LOCK_STATE: dict[str, Any] = {
     "prediction_last_timings": [],
     "prediction_current_stage": None,
 }
+
+
+def _prediction_background_accepting() -> bool:
+    return bool(_PREDICTION_BACKGROUND_ACCEPTING and not sys.is_finalizing())
+
+
+def _get_prediction_executor() -> ThreadPoolExecutor | None:
+    global _PREDICTION_EXECUTOR
+    if not _prediction_background_accepting():
+        return None
+    with _PREDICTION_EXECUTOR_LOCK:
+        if not _prediction_background_accepting():
+            return None
+        if _PREDICTION_EXECUTOR is None:
+            _PREDICTION_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prediction-service")
+        return _PREDICTION_EXECUTOR
+
+
+def _submit_prediction_background(fn, *args, **kwargs) -> Future | None:
+    global _PREDICTION_EXECUTOR
+    executor = _get_prediction_executor()
+    if executor is None:
+        return None
+    if not _prediction_background_accepting():
+        return None
+    try:
+        return executor.submit(fn, *args, **kwargs)
+    except RuntimeError as exc:
+        if "shutdown" not in str(exc).lower():
+            raise
+        with _PREDICTION_EXECUTOR_LOCK:
+            if _PREDICTION_EXECUTOR is executor:
+                _PREDICTION_EXECUTOR = None
+        return None
+
+
+def shutdown_prediction_background_tasks(*, wait: bool = False) -> dict:
+    global _PREDICTION_EXECUTOR
+    global _PREDICTION_BACKGROUND_ACCEPTING
+
+    _PREDICTION_BACKGROUND_ACCEPTING = False
+    with _PREDICTION_EXECUTOR_LOCK:
+        executor = _PREDICTION_EXECUTOR
+        _PREDICTION_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    _LOCK_STATE["prediction_running"] = False
+    _LOCK_STATE["prediction_lock_owner"] = None
+    _LOCK_STATE["prediction_current_stage"] = "background_stopped"
+    try:
+        _PREDICTION_LOCK.release()
+    except RuntimeError:
+        pass
+    return {"status": "stopped", "accepting": False, "executor_shutdown": executor is not None}
+
+
+def reset_prediction_background_tasks_for_tests() -> dict:
+    global _PREDICTION_BACKGROUND_ACCEPTING
+    _PREDICTION_BACKGROUND_ACCEPTING = True
+    return {"status": "running", "accepting": True}
+
+
+atexit.register(shutdown_prediction_background_tasks)
 
 
 def _now() -> str:
@@ -460,12 +527,47 @@ def create_for_official_draw(
         mark = time.perf_counter()
         if recommendation_result is None:
             recommendation_timeout = min(PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS, _remaining_seconds(start))
-            future = _PREDICTION_EXECUTOR.submit(
+            future = _submit_prediction_background(
                 calculate_recommendation,
                 based_on,
                 target,
                 context=recommendation_context,
             )
+            if future is None:
+                _stage_done(
+                    stages,
+                    "recommendation_build",
+                    mark,
+                    status="skipped",
+                    reason="background_stopped",
+                    timed_out=False,
+                )
+                _record_event(
+                    event_type="prediction_skipped",
+                    status="warning",
+                    based_on_issue=based_on,
+                    target_issue=target,
+                    source=source,
+                    trigger=trigger,
+                    reason="background_stopped",
+                    started_at=started_at,
+                    completed_at=_now(),
+                    duration_ms=_duration_ms(start),
+                    error_type="background_stopped",
+                    error_message="prediction background executor is not accepting work",
+                )
+                return {
+                    "status": "skipped",
+                    "based_on_issue": based_on,
+                    "target_issue": target,
+                    "prediction_id": None,
+                    "recommended_count": 0,
+                    "skip_reason": "background_stopped",
+                    "duration_ms": _duration_ms(start),
+                    "persisted": False,
+                    "timings": stages,
+                    "pending_usable": False,
+                }
             try:
                 recommendation_result = future.result(timeout=recommendation_timeout)
                 _stage_done(

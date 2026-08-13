@@ -48,6 +48,7 @@ from api.prediction_tracker import router as prediction_tracker_router
 from api.recommendation_center import router as recommendation_center_router
 from api.recovery import router as recovery_router
 from api.releases import router as releases_router
+from api.runtime_diagnostics import router as runtime_diagnostics_router
 from api.simulation import router as simulation_router
 from api.simulation_evaluation import router as simulation_evaluation_router
 from api.strategy_evolution import router as strategy_evolution_router
@@ -93,6 +94,7 @@ from db import (
 from services.data_quality import run_kuaishou_data_quality_check
 from services.catch_up_service import catch_up_missing_issues
 from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache, update_collector_runtime
+from config.runtime_flags import env_bool as _env_bool, env_raw as _env_raw, scheduler_flag_enabled
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
 from services.official_verification import collect_official_today
@@ -109,21 +111,12 @@ DIST_DIR = ROOT.parent / "frontend" / "dist"
 STATIC_DIR = ROOT / "static"
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_raw(name: str) -> str:
-    raw = os.getenv(name)
-    return "<unset>" if raw is None else str(raw)
-
-
-CATCH_UP_SCHEDULER_ENABLED = _env_bool("CATCH_UP_SCHEDULER_ENABLED", True)
-COLLECTOR_SCHEDULER_ENABLED = _env_bool("COLLECTOR_SCHEDULER_ENABLED", True)
-LEGACY_REFRESH_SCHEDULER_ENABLED = _env_bool("LEGACY_REFRESH_SCHEDULER_ENABLED", True)
+CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
+COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
+LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
+STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
+BACKGROUND_CACHE_SCHEDULER_ENABLED = _env_bool("BACKGROUND_CACHE_SCHEDULER_ENABLED", False)
+DATA_QUALITY_SCHEDULER_ENABLED = _env_bool("DATA_QUALITY_SCHEDULER_ENABLED", False)
 
 app = FastAPI(title="Bingo AI Pro API")
 STARTUP_TIME = datetime.now(timezone.utc).isoformat()
@@ -151,6 +144,7 @@ app.include_router(prediction_tracker_router)
 app.include_router(recommendation_center_router)
 app.include_router(recovery_router)
 app.include_router(releases_router)
+app.include_router(runtime_diagnostics_router)
 app.include_router(simulation_router)
 app.include_router(simulation_evaluation_router)
 app.include_router(strategy_evolution_router)
@@ -290,6 +284,13 @@ def _ensure_scheduler_listener() -> None:
     app.state.scheduler_listener_registered = True
 
 
+def _scheduler_has_jobs() -> bool:
+    try:
+        return bool(scheduler.get_jobs())
+    except AttributeError:
+        return bool(getattr(scheduler, "calls", []))
+
+
 def _schedule_production_catch_up_jobs() -> None:
     if not CATCH_UP_SCHEDULER_ENABLED:
         print("catch_up_scheduler_disabled startup_job_registered=false interval_job_registered=false")
@@ -395,6 +396,96 @@ def _schedule_legacy_refresh_jobs() -> None:
     )
 
 
+def _run_startup_db_init() -> None:
+    init_db()
+    init_collector_tables()
+    init_analysis_tables()
+    init_data_quality_tables()
+    init_simulation_tables()
+    init_simulation_evaluation_tables()
+    init_adaptive_weight_tables()
+    init_strategy_ranking_tables()
+    init_strategy_evolution_tables()
+    init_system_health_tables()
+    init_operations_tables()
+    init_production_scope_tables()
+    init_official_draw_tables()
+    init_prediction_history_tables()
+    init_learning_tables()
+    init_recommendation_center_tables()
+    init_recovery_tables()
+    init_release_tables()
+    init_laowanjia_feature_tables()
+    init_prediction_tracker_tables()
+
+
+def _schedule_background_cache_jobs() -> None:
+    if not BACKGROUND_CACHE_SCHEDULER_ENABLED:
+        print("background_cache_scheduler_disabled startup_job_registered=false interval_job_registered=false")
+        return
+    scheduler.add_job(
+        refresh_health_cache,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=5),
+        id="system_health_cache_startup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_health_cache,
+        "interval",
+        minutes=5,
+        id="system_health_cache_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        refresh_system_status_cache,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=5),
+        id="system_status_runtime_cache_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    scheduler.add_job(
+        refresh_system_status_cache,
+        "interval",
+        seconds=60,
+        id="system_status_runtime_cache_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+
+
+def _schedule_data_quality_jobs() -> None:
+    if not DATA_QUALITY_SCHEDULER_ENABLED:
+        print("data_quality_scheduler_disabled startup_job_registered=false daily_job_registered=false")
+        return
+    scheduler.add_job(
+        run_kuaishou_data_quality_check,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=15),
+        id="data_quality_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_kuaishou_data_quality_check,
+        "cron",
+        hour=3,
+        minute=0,
+        id="data_quality_daily",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
 def summary_statistics(draws: list[dict]) -> dict:
     return {
         "total_draws": len(draws),
@@ -464,90 +555,21 @@ def startup_event() -> None:
         f"historical_catchup_raw={_env_raw('HISTORICAL_CATCHUP_ENABLED')} "
         f"historical_catchup_enabled={str(HISTORICAL_CATCHUP_ENABLED).lower()}"
     )
-    init_db()
     _ensure_scheduler_listener()
 
     try:
-        init_collector_tables()
-        init_analysis_tables()
-        init_data_quality_tables()
-        init_simulation_tables()
-        init_simulation_evaluation_tables()
-        init_adaptive_weight_tables()
-        init_strategy_ranking_tables()
-        init_strategy_evolution_tables()
-        init_system_health_tables()
-        init_operations_tables()
-        init_production_scope_tables()
-        init_official_draw_tables()
-        init_prediction_history_tables()
-        init_learning_tables()
-        init_recommendation_center_tables()
-        init_recovery_tables()
-        init_release_tables()
-        init_laowanjia_feature_tables()
-        init_prediction_tracker_tables()
-        try:
-            warm_health_cache()
-        except Exception as exc:
-            print(f"Health cache warm-up failed: {exc}")
-        scheduler.add_job(
-            refresh_health_cache,
-            "date",
-            run_date=datetime.utcnow() + timedelta(seconds=5),
-            id="system_health_cache_startup",
-            replace_existing=True,
-        )
-        scheduler.add_job(
-            refresh_health_cache,
-            "interval",
-            minutes=5,
-            id="system_health_cache_refresh",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        scheduler.add_job(
-            refresh_system_status_cache,
-            "date",
-            run_date=datetime.utcnow() + timedelta(seconds=5),
-            id="system_status_runtime_cache_startup",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=90,
-        )
-        scheduler.add_job(
-            refresh_system_status_cache,
-            "interval",
-            seconds=60,
-            id="system_status_runtime_cache_refresh",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=90,
-        )
+        if STARTUP_DB_INIT_ENABLED:
+            _run_startup_db_init()
+            try:
+                warm_health_cache()
+            except Exception as exc:
+                print(f"Health cache warm-up failed: {exc}")
+        else:
+            print("startup_db_init_disabled database_initialization=false health_cache_warmup=false")
+        _schedule_background_cache_jobs()
         _schedule_production_catch_up_jobs()
         _schedule_collector_jobs()
-        scheduler.add_job(
-            run_kuaishou_data_quality_check,
-            "date",
-            run_date=datetime.utcnow() + timedelta(seconds=15),
-            id="data_quality_startup",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        scheduler.add_job(
-            run_kuaishou_data_quality_check,
-            "cron",
-            hour=3,
-            minute=0,
-            id="data_quality_daily",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
+        _schedule_data_quality_jobs()
         if DAILY_RECOVERY_ENABLED:
             scheduler.add_job(
                 run_daily_recovery,
@@ -566,7 +588,7 @@ def startup_event() -> None:
 
     _schedule_legacy_refresh_jobs()
 
-    if not scheduler.running:
+    if not scheduler.running and _scheduler_has_jobs():
         scheduler.start()
     duration_ms = round((datetime.utcnow() - startup_started).total_seconds() * 1000, 2)
     print(
@@ -582,7 +604,17 @@ def startup_event() -> None:
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
-    latest_sync = get_latest_sync_snapshot()
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+    try:
+        from services.latest_sync import shutdown_latest_sync_background_tasks
+        from services.prediction_service import shutdown_prediction_background_tasks
+
+        shutdown_latest_sync_background_tasks()
+        shutdown_prediction_background_tasks()
+    except Exception as exc:
+        print(f"background task shutdown failed: {exc}")
+    latest_sync = get_latest_sync_snapshot(allow_reconcile=False)
     print("WAKE_MONITOR shutting_down")
     print(
         f"last_health_request_at={app.state.last_health_request_at} "
@@ -590,7 +622,6 @@ def shutdown_event() -> None:
         f"last_collector_success_at={latest_sync.get('latest_saved_at')} "
         f"database_latest_issue={latest_sync.get('database_latest_issue')}"
     )
-    scheduler.shutdown(wait=False)
 
 
 @app.get("/api/latest")

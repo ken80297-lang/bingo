@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import sqlite3
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -13,6 +14,8 @@ from services import next_prediction_center, prediction_refresh, prediction_serv
 
 
 def setup_function():
+    prediction_service.shutdown_prediction_background_tasks(wait=True)
+    prediction_service.reset_prediction_background_tasks_for_tests()
     try:
         prediction_service._PREDICTION_LOCK.release()
     except RuntimeError:
@@ -29,6 +32,10 @@ def setup_function():
             "prediction_last_timings": [],
         }
     )
+
+
+def teardown_function():
+    prediction_service.shutdown_prediction_background_tasks(wait=True)
 
 
 def _recommendation(numbers=None):
@@ -115,6 +122,74 @@ def test_prediction_service_uses_fast_path_before_heavy_recommendation(monkeypat
     assert result["status"] == "created"
     assert saved[0]["strategy"] == "ProductionFastPath"
     assert any(stage["stage"] == "fast_recommendation_build" and stage["status"] == "ok" for stage in result["timings"])
+
+
+def test_prediction_service_shutdown_rejects_background_submit(monkeypatch):
+    submit_calls = []
+
+    class FakeExecutor:
+        def submit(self, *args, **kwargs):
+            submit_calls.append((args, kwargs))
+            raise AssertionError("submit should be rejected before executor use")
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(prediction_service, "_PREDICTION_EXECUTOR", FakeExecutor())
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: {"status": "fallback"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    prediction_service.shutdown_prediction_background_tasks()
+    result = prediction_service.create_for_official_draw("115040800", source="unit", trigger="shutdown-test")
+
+    assert submit_calls == []
+    assert result["status"] == "skipped"
+    assert result["skip_reason"] == "background_stopped"
+    assert prediction_service.prediction_lock_status()["prediction_running"] is False
+
+
+def test_prediction_service_single_flight_allows_one_recommendation_submit(monkeypatch):
+    submit_calls = []
+    release_result = threading.Event()
+
+    class BlockingFuture:
+        def result(self, timeout=None):
+            release_result.wait(timeout=1)
+            return _recommendation()
+
+        def cancel(self):
+            return False
+
+    class FakeExecutor:
+        def submit(self, *args, **kwargs):
+            submit_calls.append((args, kwargs))
+            return BlockingFuture()
+
+    monkeypatch.setattr(prediction_service, "_PREDICTION_EXECUTOR", FakeExecutor())
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: {"status": "fallback"})
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: {"status": "ok", "id": 101, "storage": "sqlite"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    results = []
+
+    def trigger():
+        results.append(prediction_service.create_for_official_draw("115040800", source="unit", trigger="single-flight"))
+
+    threads = [threading.Thread(target=trigger) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    deadline = time.time() + 1
+    while time.time() < deadline and len(results) < 2:
+        time.sleep(0.01)
+    release_result.set()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(submit_calls) == 1
+    assert sorted(result["status"] for result in results).count("already_running") >= 1
+    assert any(result["status"] == "created" for result in results)
 
 
 def test_prediction_service_skips_invalid_target(monkeypatch):

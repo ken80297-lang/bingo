@@ -156,11 +156,15 @@ def test_startup_with_disabled_schedulers_registers_no_outbound_jobs(monkeypatch
     import app as app_module
 
     scheduler = FakeScheduler()
+    init_calls = []
     monkeypatch.setattr(app_module, "scheduler", scheduler)
     monkeypatch.setattr(app_module, "CATCH_UP_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(app_module, "COLLECTOR_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(app_module, "LEGACY_REFRESH_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(app_module, "DAILY_RECOVERY_ENABLED", False)
+    monkeypatch.setattr(app_module, "STARTUP_DB_INIT_ENABLED", False)
+    monkeypatch.setattr(app_module, "BACKGROUND_CACHE_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "DATA_QUALITY_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(app_module.app.state, "scheduler_listener_registered", False, raising=False)
     monkeypatch.setattr(app_module.app.state, "scheduler", scheduler, raising=False)
 
@@ -187,8 +191,13 @@ def test_startup_with_disabled_schedulers_registers_no_outbound_jobs(monkeypatch
         "init_laowanjia_feature_tables",
         "init_prediction_tracker_tables",
     ):
-        monkeypatch.setattr(app_module, name, lambda: None, raising=False)
-    monkeypatch.setattr(app_module, "warm_health_cache", lambda: {"status": "ok"})
+        monkeypatch.setattr(
+            app_module,
+            name,
+            lambda name=name: init_calls.append(name),
+            raising=False,
+        )
+    monkeypatch.setattr(app_module, "warm_health_cache", lambda: init_calls.append("warm_health_cache") or {"status": "ok"})
     monkeypatch.setattr(app_module, "update_collector_runtime", lambda **kwargs: None)
 
     app_module.startup_event()
@@ -202,3 +211,12 @@ def test_startup_with_disabled_schedulers_registers_no_outbound_jobs(monkeypatch
     assert "collector_official_today" not in job_ids
     assert "first_refresh" not in job_ids
     assert "refresh_job" not in job_ids
+    assert "system_health_cache_startup" not in job_ids
+    assert "system_health_cache_refresh" not in job_ids
+    assert "system_status_runtime_cache_startup" not in job_ids
+    assert "system_status_runtime_cache_refresh" not in job_ids
+    assert "data_quality_startup" not in job_ids
+    assert "data_quality_daily" not in job_ids
+    assert scheduler.calls == []
+    assert scheduler.running is False
+    assert init_calls == []

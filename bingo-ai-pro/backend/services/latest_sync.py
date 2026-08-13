@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import logging
 import os
+import atexit
+import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
+from config.runtime_flags import scheduler_flag_enabled
 from database.collector_store import get_latest_kuaishou_snapshot
 from database.analysis_store import get_analysis_history, save_analysis_history
 from database.official_draw_store import (
@@ -25,13 +28,15 @@ from services.recommendation_center import fast_path_prediction_is_current
 logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
-HISTORICAL_CATCHUP_ENABLED = os.getenv("HISTORICAL_CATCHUP_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+HISTORICAL_CATCHUP_ENABLED = scheduler_flag_enabled("HISTORICAL_CATCHUP_ENABLED")
 LATEST_ISSUE_PRIORITY = os.getenv("LATEST_ISSUE_PRIORITY", "true").lower() not in {"0", "false", "no", "off"}
 LATEST_SYNC_STALE_SECONDS = 12 * 60
 
 _STATE_LOCK = threading.RLock()
 _RECONCILE_LOCK = threading.RLock()
-_RECONCILE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="latest-sync-reconcile")
+_RECONCILE_EXECUTOR: ThreadPoolExecutor | None = None
+_RECONCILE_EXECUTOR_LOCK = threading.Lock()
+_RECONCILE_ACCEPTING = True
 _RECONCILE_IN_FLIGHT: set[str] = set()
 _RECONCILE_QUEUED_STALE_SECONDS = 8
 _RECONCILE_MAX_QUEUED_ATTEMPTS = 3
@@ -61,6 +66,64 @@ _LATEST_SYNC_STATE: dict[str, Any] = {
     "next_retry_expected_at": None,
     "stages": {},
 }
+
+
+def _reconcile_accepting() -> bool:
+    return bool(_RECONCILE_ACCEPTING and not sys.is_finalizing())
+
+
+def _get_reconcile_executor() -> ThreadPoolExecutor | None:
+    global _RECONCILE_EXECUTOR
+    if not _reconcile_accepting():
+        return None
+    with _RECONCILE_EXECUTOR_LOCK:
+        if not _reconcile_accepting():
+            return None
+        if _RECONCILE_EXECUTOR is None:
+            _RECONCILE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="latest-sync-reconcile")
+        return _RECONCILE_EXECUTOR
+
+
+def _submit_reconcile_background(fn, *args) -> Future | None:
+    global _RECONCILE_EXECUTOR
+    executor = _get_reconcile_executor()
+    if executor is None or not _reconcile_accepting():
+        return None
+    try:
+        return executor.submit(fn, *args)
+    except RuntimeError as exc:
+        if "shutdown" not in str(exc).lower():
+            raise
+        with _RECONCILE_EXECUTOR_LOCK:
+            if _RECONCILE_EXECUTOR is executor:
+                _RECONCILE_EXECUTOR = None
+        return None
+
+
+def shutdown_latest_sync_background_tasks(*, wait: bool = False) -> dict:
+    global _RECONCILE_EXECUTOR
+    global _RECONCILE_ACCEPTING
+
+    _RECONCILE_ACCEPTING = False
+    with _RECONCILE_EXECUTOR_LOCK:
+        executor = _RECONCILE_EXECUTOR
+        _RECONCILE_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    with _RECONCILE_LOCK:
+        _RECONCILE_IN_FLIGHT.clear()
+    return {"status": "stopped", "accepting": False, "executor_shutdown": executor is not None}
+
+
+def reset_latest_sync_background_tasks_for_tests() -> dict:
+    global _RECONCILE_ACCEPTING
+    _RECONCILE_ACCEPTING = True
+    with _RECONCILE_LOCK:
+        _RECONCILE_IN_FLIGHT.clear()
+    return {"status": "running", "accepting": True}
+
+
+atexit.register(shutdown_latest_sync_background_tasks)
 
 
 def _now() -> str:
@@ -544,13 +607,40 @@ def _queue_latest_downstream_reconcile(
         },
     )
     try:
-        future = _RECONCILE_EXECUTOR.submit(
+        future = _submit_reconcile_background(
             _run_latest_downstream_reconcile,
             dict(latest),
             source_issue,
             target_issue,
             analysis_created,
         )
+        if future is None:
+            with _RECONCILE_LOCK:
+                _RECONCILE_IN_FLIGHT.discard(source_issue)
+            _update_state(
+                source_issue=source_issue,
+                target_issue=target_issue,
+                failure_stage="background",
+                failure_reason="background_stopped",
+                prediction_reconcile={
+                    "status": "skipped",
+                    "refresh_status": "skipped",
+                    "based_on_issue": source_issue,
+                    "target_issue": target_issue,
+                    "analysis_created": analysis_created,
+                    "reason": "background_stopped",
+                    "attempt_count": attempt_count,
+                },
+            )
+            return {
+                "status": "skipped",
+                "refresh_status": "skipped",
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+                "analysis_created": analysis_created,
+                "reason": "background_stopped",
+                "attempt_count": attempt_count,
+            }
         if hasattr(future, "add_done_callback"):
             future.add_done_callback(lambda completed, issue=source_issue: _reconcile_done(issue, completed))
     except Exception as exc:
@@ -594,7 +684,7 @@ def _queue_latest_downstream_reconcile(
     }
 
 
-def get_latest_sync_snapshot() -> dict[str, Any]:
+def get_latest_sync_snapshot(*, allow_reconcile: bool = True) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
     with _STATE_LOCK:
@@ -628,7 +718,7 @@ def get_latest_sync_snapshot() -> dict[str, Any]:
         timings["analysis_lookup_ms"] = 0.0
         prediction_created = _prediction_exists_for_latest(source_issue)
         timings["prediction_lookup_ms"] = 0.0
-        if is_complete_official_draw(latest) and (not analysis_created or not prediction_created) and target_issue:
+        if allow_reconcile and is_complete_official_draw(latest) and (not analysis_created or not prediction_created) and target_issue:
             reconcile = _queue_latest_downstream_reconcile(
                 latest,
                 source_issue,

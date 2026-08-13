@@ -9,6 +9,8 @@ from services import latest_sync
 
 
 def setup_function():
+    latest_sync.shutdown_latest_sync_background_tasks(wait=True)
+    latest_sync.reset_latest_sync_background_tasks_for_tests()
     latest_sync._LATEST_SYNC_CACHE["snapshot"] = None
     latest_sync._LATEST_SYNC_CACHE["expires_at"] = 0.0
     latest_sync._RECONCILE_IN_FLIGHT.clear()
@@ -23,6 +25,10 @@ def setup_function():
             "attempt_count": 0,
         }
     )
+
+
+def teardown_function():
+    latest_sync.shutdown_latest_sync_background_tasks(wait=True)
 
 
 def _draw(issue: str = "115040550", numbers=None):
@@ -230,6 +236,7 @@ def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeyp
     class Executor:
         def submit(self, fn, *args):
             submitted.append((fn, args))
+            return object()
 
     monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
     result = latest_sync.get_latest_sync_snapshot()
@@ -245,6 +252,69 @@ def test_latest_sync_snapshot_queues_missing_prediction_without_blocking(monkeyp
     assert result["prediction_reconcile"]["refresh_status"] == "queued"
     assert result["stages"]["prediction"]["status"] == "pending"
     assert result["timings_ms"]["total_ms"] >= 0
+
+
+def test_latest_sync_snapshot_read_only_does_not_queue_reconcile(monkeypatch):
+    draw = _draw("115040625")
+    submitted = []
+
+    monkeypatch.setattr(
+        latest_sync,
+        "get_latest_official_draw_sync_status",
+        lambda: {
+            "draw": draw,
+            "analysis_exists": True,
+            "prediction_exists": False,
+            "target_issue": "115040626",
+        },
+    )
+    monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
+    latest_sync._RECONCILE_IN_FLIGHT.clear()
+
+    class Executor:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
+            return object()
+
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
+    result = latest_sync.get_latest_sync_snapshot(allow_reconcile=False)
+
+    assert submitted == []
+    assert result["source_issue"] == "115040625"
+    assert result["target_issue"] == "115040626"
+    assert result["database_saved"] is True
+    assert result["analysis_created"] is True
+    assert result["prediction_created"] is False
+    assert result["sync_status"] == "prediction_pending"
+    assert not result.get("prediction_reconcile")
+
+
+def test_latest_sync_shutdown_rejects_reconcile_submit(monkeypatch):
+    draw = _draw("115040625")
+    submitted = []
+
+    class Executor:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
+            raise AssertionError("submit should be rejected before executor use")
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
+    latest_sync.shutdown_latest_sync_background_tasks()
+
+    result = latest_sync._queue_latest_downstream_reconcile(
+        draw,
+        "115040625",
+        "115040626",
+        analysis_created=True,
+    )
+
+    assert submitted == []
+    assert result["status"] == "skipped"
+    assert result["reason"] == "background_stopped"
+    assert "115040625" not in latest_sync._RECONCILE_IN_FLIGHT
 
 
 def test_latest_sync_snapshot_queues_missing_analysis_and_prediction(monkeypatch):
@@ -267,6 +337,7 @@ def test_latest_sync_snapshot_queues_missing_analysis_and_prediction(monkeypatch
     class Executor:
         def submit(self, fn, *args):
             submitted.append((fn, args))
+            return object()
 
     monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
     result = latest_sync.get_latest_sync_snapshot()

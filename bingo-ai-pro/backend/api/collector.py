@@ -59,7 +59,7 @@ def api_collector_gaps():
 
 @router.get("/collector/latest-sync")
 def api_collector_latest_sync():
-    return get_latest_sync_snapshot()
+    return get_latest_sync_snapshot(allow_reconcile=False)
 
 
 @router.get("/kuaishou/latest")
