@@ -7,12 +7,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from config.runtime_flags import scheduler_flag_enabled
 from config.production_scope import production_scope_payload
 from database.recovery_store import get_latest_recovery_report, save_recovery_report
 from database.release_store import get_current_release
 from services.collector_runtime import collector_runtime_status
 
-DAILY_RECOVERY_ENABLED = os.getenv("DAILY_RECOVERY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+DAILY_RECOVERY_ENABLED = scheduler_flag_enabled("DAILY_RECOVERY_ENABLED")
 DAILY_RECOVERY_HOUR = int(os.getenv("DAILY_RECOVERY_HOUR", "0"))
 DAILY_RECOVERY_MINUTE = int(os.getenv("DAILY_RECOVERY_MINUTE", "30"))
 DAILY_RECOVERY_TIMEZONE = os.getenv("DAILY_RECOVERY_TIMEZONE", "Asia/Taipei")
