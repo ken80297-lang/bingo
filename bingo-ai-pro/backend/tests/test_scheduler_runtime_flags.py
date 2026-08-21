@@ -220,3 +220,101 @@ def test_startup_with_disabled_schedulers_registers_no_outbound_jobs(monkeypatch
     assert scheduler.calls == []
     assert scheduler.running is False
     assert init_calls == []
+
+
+def test_operations_db_init_disabled_does_not_initialize_operations(monkeypatch, capsys):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "OPERATIONS_DB_INIT_ENABLED", False)
+    monkeypatch.setattr(
+        app_module,
+        "init_operations_tables",
+        lambda: (_ for _ in ()).throw(AssertionError("operations init called")),
+    )
+
+    app_module._run_operations_db_init()
+
+    output = capsys.readouterr().out
+    assert "operations_db_init_disabled" in output
+
+
+def test_operations_db_init_enabled_initializes_only_operations(monkeypatch, capsys):
+    import app as app_module
+
+    calls = []
+    monkeypatch.setattr(app_module, "OPERATIONS_DB_INIT_ENABLED", True)
+    monkeypatch.setattr(
+        app_module,
+        "init_operations_tables",
+        lambda: calls.append("init_operations_tables") or {"cloud": "skipped", "sqlite": "ok"},
+    )
+    for name in (
+        "_run_startup_db_init",
+        "_schedule_background_cache_jobs",
+        "_schedule_production_catch_up_jobs",
+        "_schedule_collector_jobs",
+        "_schedule_data_quality_jobs",
+        "_schedule_legacy_refresh_jobs",
+    ):
+        monkeypatch.setattr(app_module, name, lambda name=name: calls.append(name))
+
+    app_module._run_operations_db_init()
+
+    output = capsys.readouterr().out
+    assert calls == ["init_operations_tables"]
+    assert "operations_db_init_completed cloud=skipped sqlite=ok" in output
+
+
+def test_operations_db_init_failure_is_fail_soft(monkeypatch, capsys):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "OPERATIONS_DB_INIT_ENABLED", True)
+    monkeypatch.setattr(
+        app_module,
+        "init_operations_tables",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    app_module._run_operations_db_init()
+
+    output = capsys.readouterr().out
+    assert "operations_db_init_failed error_type=RuntimeError" in output
+
+
+def test_startup_operations_db_init_enabled_does_not_start_other_jobs(monkeypatch, capsys):
+    import app as app_module
+
+    scheduler = FakeScheduler()
+    init_calls = []
+    monkeypatch.setattr(app_module, "scheduler", scheduler)
+    monkeypatch.setattr(app_module.app.state, "scheduler_listener_registered", False, raising=False)
+    monkeypatch.setattr(app_module.app.state, "scheduler", scheduler, raising=False)
+    monkeypatch.setattr(app_module, "STARTUP_DB_INIT_ENABLED", False)
+    monkeypatch.setattr(app_module, "OPERATIONS_DB_INIT_ENABLED", True)
+    monkeypatch.setattr(app_module, "CATCH_UP_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "COLLECTOR_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "LEGACY_REFRESH_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "DAILY_RECOVERY_ENABLED", False)
+    monkeypatch.setattr(app_module, "BACKGROUND_CACHE_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "DATA_QUALITY_SCHEDULER_ENABLED", False)
+    monkeypatch.setattr(app_module, "_run_startup_db_init", lambda: init_calls.append("_run_startup_db_init"))
+    monkeypatch.setattr(
+        app_module,
+        "init_operations_tables",
+        lambda: init_calls.append("init_operations_tables") or {"cloud": "skipped", "sqlite": "ok"},
+    )
+    monkeypatch.setattr(app_module, "catch_up_missing_issues", lambda: (_ for _ in ()).throw(AssertionError("catch-up called")))
+    monkeypatch.setattr(app_module, "collect_pilio_today", lambda: (_ for _ in ()).throw(AssertionError("pilio called")))
+    monkeypatch.setattr(app_module, "collect_kuaishou_snapshot", lambda: (_ for _ in ()).throw(AssertionError("kuaishou called")))
+    monkeypatch.setattr(app_module, "collect_official_today", lambda: (_ for _ in ()).throw(AssertionError("official called")))
+    monkeypatch.setattr(app_module, "refresh_data", lambda: (_ for _ in ()).throw(AssertionError("legacy refresh called")))
+    monkeypatch.setattr(app_module, "run_daily_recovery", lambda: (_ for _ in ()).throw(AssertionError("daily recovery called")))
+    monkeypatch.setattr(app_module, "update_collector_runtime", lambda **kwargs: None)
+
+    app_module.startup_event()
+
+    output = capsys.readouterr().out
+    assert init_calls == ["init_operations_tables"]
+    assert "operations_db_init_completed cloud=skipped sqlite=ok" in output
+    assert scheduler.calls == []
+    assert scheduler.running is False

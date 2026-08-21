@@ -115,6 +115,7 @@ CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED"
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
 LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
 STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
+OPERATIONS_DB_INIT_ENABLED = _env_bool("OPERATIONS_DB_INIT_ENABLED", False)
 BACKGROUND_CACHE_SCHEDULER_ENABLED = _env_bool("BACKGROUND_CACHE_SCHEDULER_ENABLED", False)
 DATA_QUALITY_SCHEDULER_ENABLED = _env_bool("DATA_QUALITY_SCHEDULER_ENABLED", False)
 
@@ -419,6 +420,20 @@ def _run_startup_db_init() -> None:
     init_prediction_tracker_tables()
 
 
+def _run_operations_db_init() -> None:
+    if not OPERATIONS_DB_INIT_ENABLED:
+        print("operations_db_init_disabled")
+        return
+    try:
+        result = init_operations_tables()
+        print(
+            "operations_db_init_completed "
+            f"cloud={result.get('cloud')} sqlite={result.get('sqlite')}"
+        )
+    except Exception as exc:
+        print(f"operations_db_init_failed error_type={type(exc).__name__}")
+
+
 def _schedule_background_cache_jobs() -> None:
     if not BACKGROUND_CACHE_SCHEDULER_ENABLED:
         print("background_cache_scheduler_disabled startup_job_registered=false interval_job_registered=false")
@@ -566,6 +581,7 @@ def startup_event() -> None:
                 print(f"Health cache warm-up failed: {exc}")
         else:
             print("startup_db_init_disabled database_initialization=false health_cache_warmup=false")
+            _run_operations_db_init()
         _schedule_background_cache_jobs()
         _schedule_production_catch_up_jobs()
         _schedule_collector_jobs()
