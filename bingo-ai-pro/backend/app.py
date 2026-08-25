@@ -49,6 +49,7 @@ from api.recommendation_center import router as recommendation_center_router
 from api.recovery import router as recovery_router
 from api.releases import router as releases_router
 from api.runtime_diagnostics import router as runtime_diagnostics_router
+from api.rule_snapshots import router as rule_snapshots_router
 from api.simulation import router as simulation_router
 from api.simulation_evaluation import router as simulation_evaluation_router
 from api.strategy_evolution import router as strategy_evolution_router
@@ -73,6 +74,7 @@ from database.production_scope_store import init_production_scope_tables
 from database.recommendation_center_store import init_recommendation_center_tables
 from database.recovery_store import init_recovery_tables
 from database.release_store import init_release_tables
+from database.rule_snapshot_store import init_rule_snapshot_tables
 from database.simulation_evaluation_store import init_simulation_evaluation_tables
 from database.simulation_store import init_simulation_tables
 from database.strategy_evolution_store import init_strategy_evolution_tables
@@ -146,6 +148,7 @@ app.include_router(recommendation_center_router)
 app.include_router(recovery_router)
 app.include_router(releases_router)
 app.include_router(runtime_diagnostics_router)
+app.include_router(rule_snapshots_router)
 app.include_router(simulation_router)
 app.include_router(simulation_evaluation_router)
 app.include_router(strategy_evolution_router)
@@ -346,6 +349,16 @@ def _schedule_collector_jobs() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
+        collect_official_today,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=5),
+        id="collector_official_today_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    scheduler.add_job(
         collect_kuaishou_snapshot,
         "interval",
         minutes=5,
@@ -416,6 +429,7 @@ def _run_startup_db_init() -> None:
     init_recommendation_center_tables()
     init_recovery_tables()
     init_release_tables()
+    init_rule_snapshot_tables()
     init_laowanjia_feature_tables()
     init_prediction_tracker_tables()
 

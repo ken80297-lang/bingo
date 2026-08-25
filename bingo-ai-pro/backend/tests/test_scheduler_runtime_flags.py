@@ -121,6 +121,7 @@ def test_enabled_schedulers_register_expected_job_ids(monkeypatch):
     assert "collector_official_catch_up_startup" in job_ids
     assert "collector_official_catch_up" in job_ids
     assert "collector_pilio_startup" in job_ids
+    assert "collector_official_today_startup" in job_ids
     assert "collector_kuaishou_snapshot" in job_ids
     assert "collector_pilio_today" in job_ids
     assert "collector_official_today" in job_ids
