@@ -32,8 +32,8 @@ def test_runtime_diagnostics_returns_process_local_metadata(monkeypatch):
         "instance_id": "inst-test",
     }
     assert payload["scheduler_flags"] == {
-        "catch_up_scheduler_enabled": False,
-        "collector_scheduler_enabled": False,
+        "catch_up_scheduler_enabled": True,
+        "collector_scheduler_enabled": True,
         "legacy_refresh_scheduler_enabled": False,
         "daily_recovery_enabled": False,
         "historical_catchup_enabled": True,
@@ -82,6 +82,19 @@ def test_runtime_diagnostics_uses_scheduler_flag_defaults(monkeypatch):
         "daily_recovery_enabled": False,
         "historical_catchup_enabled": False,
     }
+
+
+def test_runtime_diagnostics_can_disable_required_official_schedulers(monkeypatch):
+    from config.runtime_flags import get_scheduler_runtime_flags
+
+    monkeypatch.setenv("DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS", "true")
+    monkeypatch.setenv("CATCH_UP_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("COLLECTOR_SCHEDULER_ENABLED", "false")
+
+    flags = get_scheduler_runtime_flags()
+
+    assert flags["catch_up_scheduler_enabled"] is False
+    assert flags["collector_scheduler_enabled"] is False
 
 
 def test_runtime_diagnostics_bool_parser_matches_scheduler_semantics(monkeypatch):
