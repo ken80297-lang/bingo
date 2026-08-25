@@ -76,8 +76,8 @@ def test_runtime_diagnostics_uses_scheduler_flag_defaults(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
     assert get_scheduler_runtime_flags() == {
-        "catch_up_scheduler_enabled": False,
-        "collector_scheduler_enabled": False,
+        "catch_up_scheduler_enabled": True,
+        "collector_scheduler_enabled": True,
         "legacy_refresh_scheduler_enabled": False,
         "daily_recovery_enabled": False,
         "historical_catchup_enabled": False,
