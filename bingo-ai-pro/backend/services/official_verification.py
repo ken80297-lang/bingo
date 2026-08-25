@@ -18,6 +18,7 @@ from database.official_draw_store import (
     get_official_draw_history,
     get_official_draw_summary_history,
     get_official_statistics_counts,
+    init_official_draw_tables,
     get_verification_history,
     save_draw_verification,
     save_draw_verifications,
@@ -30,6 +31,45 @@ logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 COLLECTOR_JOB_TIME_BUDGET_SECONDS = 45
+
+
+def _ensure_official_collection_tables() -> dict[str, object]:
+    results: dict[str, object] = {}
+    initializers = [
+        ("official_draw", init_official_draw_tables),
+    ]
+    try:
+        from database.analysis_store import init_analysis_tables
+
+        initializers.append(("analysis", init_analysis_tables))
+    except Exception as exc:
+        results["analysis_import_error"] = type(exc).__name__
+    try:
+        from database.prediction_history_store import init_prediction_history_tables
+
+        initializers.append(("prediction_history", init_prediction_history_tables))
+    except Exception as exc:
+        results["prediction_history_import_error"] = type(exc).__name__
+    try:
+        from database.learning_store import init_learning_tables
+
+        initializers.append(("learning", init_learning_tables))
+    except Exception as exc:
+        results["learning_import_error"] = type(exc).__name__
+    try:
+        from database.operations_store import init_operations_tables
+
+        initializers.append(("operations", init_operations_tables))
+    except Exception as exc:
+        results["operations_import_error"] = type(exc).__name__
+
+    for name, initializer in initializers:
+        try:
+            results[name] = initializer()
+        except Exception as exc:
+            logger.exception("official collection table init failed name=%s", name)
+            results[name] = {"status": "error", "error": str(exc)}
+    return results
 
 
 def _collector_deadline_exceeded(start: float) -> bool:
@@ -411,7 +451,9 @@ def collect_official_today() -> dict:
             }
             _log_collector_finished(result)
             return result
+        schema_init = _ensure_official_collection_tables()
         result = _collect_official_today_locked(start)
+        result["schema_init"] = schema_init
         _log_collector_finished(result)
         return result
 

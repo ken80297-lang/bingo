@@ -80,3 +80,31 @@ def test_pending_prediction_official_draws_includes_incomplete_verified(monkeypa
     draws = official_verification._pending_prediction_official_draws()
 
     assert [item["issue"] for item in draws] == ["115000104"]
+
+
+def test_collect_official_today_initializes_required_tables(monkeypatch):
+    called = []
+
+    class Lock:
+        def __enter__(self):
+            return True, {}
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(official_verification, "official_collection_lock", lambda owner: Lock())
+    monkeypatch.setattr(
+        official_verification,
+        "_ensure_official_collection_tables",
+        lambda: called.append("schema") or {"official_draw": {"sqlite": "available"}},
+    )
+    monkeypatch.setattr(
+        official_verification,
+        "_collect_official_today_locked",
+        lambda start: {"status": "ok", "count": 1, "elapsed_seconds": 0, "exit_reason": "completed"},
+    )
+
+    result = official_verification.collect_official_today()
+
+    assert called == ["schema"]
+    assert result["schema_init"] == {"official_draw": {"sqlite": "available"}}
