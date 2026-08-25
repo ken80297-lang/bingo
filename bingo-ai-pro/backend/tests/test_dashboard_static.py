@@ -589,8 +589,12 @@ def test_dashboard_traffic_1_1_polling_intervals_and_hidden_zero_polling():
 def test_dashboard_traffic_1_1_initial_load_leader_and_overlap_guards():
     script = _script()
 
+    assert 'const fastApiKeys = ["playerSummary", "system", "wakeStatus"]' in script
     assert 'loadApiGroup(initial ? fastApiKeys : ["playerSummary", "system"])' in script
     assert "scheduleSlowApiStagger({ immediate: false })" in script
+    assert "function isUsableSyncPayload(payload)" in script
+    assert "const latestSync = isUsableSyncPayload(data.latestSync) ? data.latestSync : {}" in script
+    assert "renderSync(syncForDisplay, currentDraw, counts, data.collectorStatus || {})" in script
     assert "slowTimeouts: []" in script
     assert "function clearSlowApiTimeouts()" in script
     assert "clearSlowApiTimeouts();" in script

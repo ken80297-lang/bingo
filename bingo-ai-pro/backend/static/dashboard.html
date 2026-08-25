@@ -795,7 +795,7 @@
       analysisLatest: "/api/analysis/latest"
     };
 
-    const fastApiKeys = ["playerSummary", "system", "latestSync", "wakeStatus"];
+    const fastApiKeys = ["playerSummary", "system", "wakeStatus"];
     const slowApiKeys = Object.keys(apis).filter((key) => !fastApiKeys.includes(key));
     const pollState = {
       latest: {},
@@ -1695,6 +1695,8 @@
       const currentDraw = player ? (player.current_draw || {}) : {};
       const counts = player ? (player.data_counts || {}) : {};
       const sync = player ? (player.sync || {}) : (data.system || {});
+      const latestSync = isUsableSyncPayload(data.latestSync) ? data.latestSync : {};
+      const syncForDisplay = Object.keys(latestSync).length ? latestSync : sync;
       const cardTwo = normalizeCardTwo(data);
       const cardThree = normalizeCardThree(data);
 
@@ -1711,8 +1713,8 @@
       renderCardThree(cardThree, previousVerification);
       renderAlerts(alerts, data.analysisLatest || {});
       renderHistory(history, previousVerification, counts, player ? (player.prediction_history || []) : []);
-      renderSync(data.latestSync || sync, currentDraw, counts, data.collectorStatus || {});
-      renderWake(data.wakeStatus || {}, data.latestSync || {});
+      renderSync(syncForDisplay, currentDraw, counts, data.collectorStatus || {});
+      renderWake(data.wakeStatus || {}, syncForDisplay || {});
       renderContinuity(data.collectorGaps || {});
       renderPipeline(data.health || {}, data.collectorStatus || {});
       renderOfficial(data.official || {});
@@ -1728,6 +1730,17 @@
         official: data.official,
         operations_status: data.operations && data.operations.status
       }, null, 2);
+    }
+
+    function isUsableSyncPayload(payload) {
+      if (!payload || payload.unavailable || payload.__skipped) return false;
+      return Boolean(
+        payload.database_latest_issue ||
+        payload.official_detected_issue ||
+        payload.source_issue ||
+        payload.latest_saved_at ||
+        payload.dashboard_latest_issue
+      );
     }
 
     function toggleSection(id, button) {
