@@ -123,7 +123,7 @@ console.log(JSON.stringify({{
   hasVerified: second.includes('🟢 官方已驗證'),
   hasPendingStatus: second.includes('尚未確認'),
   hasBasedOnIssue: second.includes('依據期號'),
-  hasOfficialTime: second.includes('2026/07/30') && second.includes('開獎時間'),
+  hasOfficialTime: second.includes('開獎時間：12:00') && !second.includes('開獎時間：2026/07/30'),
   hasBasedOnTime: second.includes('依據時間') && second.includes('2026/07/30'),
   hasGeneratedAt: second.includes('推薦建立時間') && second.includes('12:01'),
   hasRuleSnapshotHidden: second.includes('id="card1RuleSnapshotBody" hidden'),
@@ -139,6 +139,128 @@ console.log(JSON.stringify({{
   officialSuperLabels,
   predictionSuperLabels,
   hasCardHtml: second.trim().length > 0
+}}));
+"""
+    return subprocess.check_output(
+        ["node", "-e", script],
+        cwd=ROOT.parent,
+        text=True,
+        encoding="utf-8",
+    ).strip()
+
+
+def _run_card2_cache_vm_scenario(scenario: str) -> str:
+    script = rf"""
+const fs = require('fs');
+const vm = require('vm');
+const html = fs.readFileSync('backend/static/dashboard.html', 'utf8');
+const code = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const elements = new Map();
+function el(id) {{
+  if (!elements.has(id)) {{
+    elements.set(id, {{
+      id, innerHTML: '', textContent: '', hidden: false, style: {{}}, attrs: {{}},
+      addEventListener() {{}},
+      getAttribute(name) {{ return this.attrs[name] || 'false'; }},
+      setAttribute(name, value) {{ this.attrs[name] = String(value); }},
+      querySelector() {{ return {{ textContent: '' }}; }},
+      querySelectorAll() {{ return []; }}
+    }});
+  }}
+  return elements.get(id);
+}}
+['refreshButton','refreshState','errorBox','cardNext','cardTwo','cardReasons','cardAlerts','cardHistory','cardSync','cardWake','cardContinuity','cardPipeline','cardOfficial','cardOperations','cardEvolution','developerInfo'].forEach(el);
+const cachedCardTwo = {{
+  available: true,
+  title: 'Cached Card Two',
+  status_text: '最終分析',
+  issue: '115040777',
+  prediction_numbers: Array.from({{ length: 20 }}, (_, i) => i + 1),
+  matched_numbers: [1, 2, 3],
+  prediction_count: 20,
+  hit_count: 3,
+  rules: []
+}};
+const context = {{
+  console, window: {{}}, setInterval: () => 1, clearInterval() {{}}, setTimeout: () => 1,
+  fetch: async () => ({{ ok: true, json: async () => ({{}}) }}),
+  localStorage: {{
+    setItem() {{}},
+    getItem() {{ return JSON.stringify({{ saved_at: Date.now(), payload: cachedCardTwo }}); }}
+  }},
+  document: {{ visibilityState: 'hidden', addEventListener() {{}}, getElementById: el }},
+  Intl, Date, JSON, Number, String, Array, Boolean, Math, RegExp
+}};
+vm.createContext(context);
+vm.runInContext(code, context);
+const officialNumbers = Array.from({{ length: 20 }}, (_, i) => i + 1);
+const predictionNumbers = Array.from({{ length: 20 }}, (_, i) => i + 21);
+const data = {{
+  playerSummary: {{
+    status: 'ok',
+    latest_official_draw: {{ issue: '115040904', draw_time: '2026-07-30T12:00:00+08:00', numbers: officialNumbers, super_number: 5, verification_status: 'verified' }},
+    next_prediction: {{
+      prediction_issue: '115040905',
+      based_on_issue: '115040904',
+      candidates: predictionNumbers,
+      recommend_numbers: predictionNumbers,
+      high_probability_numbers: predictionNumbers.slice(0, 5),
+      size_prediction: {{ label: 'balanced', small_count: 10, large_count: 10 }},
+      odd_even_prediction: {{ label: 'balanced', odd_count: 10, even_count: 10 }},
+      confidence_percent: 88,
+      rule_library: {{ rules: [] }}
+    }},
+    card_two: {{
+      available: false,
+      issue: '115040904',
+      requested_issue: '115040904',
+      status_text: '尚無已完成的最終分析報告',
+      fallback_text: 'AI 正在等待足夠的正式開獎與驗證資料。',
+      prediction_numbers: [],
+      matched_numbers: [],
+      rules: []
+    }},
+    card_three: {{ sections: {{}}, learning: {{}}, data_quality: {{}}, system: {{}}, collector: {{}}, ai_model: {{}} }},
+    history: {{}},
+    previous_verification: {{}},
+    current_draw: {{}},
+    data_counts: {{}},
+    sync: {{}},
+    prediction_history: []
+  }}
+}};
+const mode = '{scenario}';
+if (mode === 'available_missing_distribution') {{
+  data.playerSummary.card_two = {{
+    available: true,
+    title: '📖 AI 驗證與分析報告',
+    issue: '115040904',
+    requested_issue: '115040904',
+    status_text: '最終分析',
+    prediction_numbers: predictionNumbers,
+    official_numbers: officialNumbers,
+    matched_numbers: [],
+    prediction_count: 20,
+    hit_count: 0,
+    super_number: null,
+    super_number_hit: null,
+    super_number_status_text: '資料不足',
+    size_result: {{ status_text: '資料不足' }},
+    odd_even_result: {{ status_text: '資料不足' }},
+    actual_consecutive_groups: {{}},
+    rules: []
+  }};
+}}
+context.render(mode === 'missing_player_summary' ? {{}} : data, []);
+const cardTwo = el('cardTwo').innerHTML;
+console.log(JSON.stringify({{
+  hasRequestedIssue: cardTwo.includes('115040904'),
+  hasCachedIssue: cardTwo.includes('115040777'),
+  hasUnavailableText: cardTwo.includes('尚無已完成的最終分析報告'),
+  hasUpdateHint: cardTwo.includes('資料更新中'),
+  hasCachedTitle: cardTwo.includes('Cached Card Two'),
+  unknownCount: (cardTwo.match(/status-unknown/g) || []).length,
+  warningCount: (cardTwo.match(/status-warning/g) || []).length
 }}));
 """
     return subprocess.check_output(
@@ -225,10 +347,10 @@ def test_dashboard_collapsible_sections_default_closed():
     html = _html()
 
     assert 'aria-controls="ruleLibraryBody"' in html
-    assert 'aria-controls="reasonsBody"' in html
+    assert 'aria-controls="cardTwoReportBody"' in html
     assert 'aria-controls="card1RuleSnapshotBody"' in html
     assert '<div id="ruleLibraryBody" hidden>' in html
-    assert '<div id="reasonsBody" hidden>' in html
+    assert '<div id="cardTwoReportBody" hidden>' in html
     assert '<div id="card1RuleSnapshotBody" hidden>' in html
 
 
@@ -245,6 +367,8 @@ def test_dashboard_formats_twenty_number_history_and_production_only():
     assert "命中" in html
     assert "/ 20" in html
     assert "尚無資料" in html
+    assert "撠" not in html
+    assert "�" not in html
 
 
 def test_card_one_renders_fast_path_placeholders_without_blocking():
@@ -316,6 +440,33 @@ def test_card_one_failure_is_isolated_from_later_cards():
     assert "renderNext(next, officialDraw);" in render_body
     assert 'console.warn("[dashboard] card one render failed", error);' in render_body
     assert render_body.index("renderCardTwo(cardTwo);") > render_body.index("catch (error)")
+
+
+def test_card_two_unavailable_api_payload_does_not_use_stale_browser_cache():
+    result = json.loads(_run_card2_cache_vm_scenario("api_unavailable"))
+
+    assert result["hasRequestedIssue"] is True
+    assert result["hasUnavailableText"] is True
+    assert result["hasCachedIssue"] is False
+    assert result["hasCachedTitle"] is False
+    assert result["hasUpdateHint"] is False
+
+
+def test_card_two_uses_browser_cache_only_when_player_summary_is_missing():
+    result = json.loads(_run_card2_cache_vm_scenario("missing_player_summary"))
+
+    assert result["hasCachedIssue"] is True
+    assert result["hasCachedTitle"] is True
+    assert result["hasUpdateHint"] is True
+    assert result["hasRequestedIssue"] is False
+
+
+def test_card_two_distribution_data_insufficient_is_not_warning():
+    result = json.loads(_run_card2_cache_vm_scenario("available_missing_distribution"))
+
+    assert result["hasRequestedIssue"] is True
+    assert result["unknownCount"] >= 2
+    assert result["warningCount"] == 0
 
 
 def test_card_one_updates_when_size_prediction_is_missing():
@@ -440,6 +591,10 @@ def test_dashboard_traffic_1_1_initial_load_leader_and_overlap_guards():
 
     assert 'loadApiGroup(initial ? fastApiKeys : ["playerSummary", "system"])' in script
     assert "scheduleSlowApiStagger({ immediate: false })" in script
+    assert "slowTimeouts: []" in script
+    assert "function clearSlowApiTimeouts()" in script
+    assert "clearSlowApiTimeouts();" in script
+    assert "pollState.slowTimeouts.push(timer)" in script
     assert "if (pollState.inFlight[key])" in script
     assert 'reason: "request_in_flight"' in script
     assert "pollState.inFlight[key] = false" in script
@@ -449,3 +604,10 @@ def test_dashboard_traffic_1_1_initial_load_leader_and_overlap_guards():
     assert "new BroadcastChannel" in script
     assert 'localStorage.setItem("bingo-ai-dashboard-snapshot"' in script
     assert "startVisiblePolling({ initial: true })" in script
+
+
+def test_dashboard_renderers_are_not_shadowed_by_duplicate_function_names():
+    script = _script()
+
+    assert script.count("function renderSync(") == 1
+    assert "function renderReasons(" not in script

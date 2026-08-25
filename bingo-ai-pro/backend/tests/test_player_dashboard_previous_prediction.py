@@ -132,18 +132,21 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [previous_prediction])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", official_by_issue)
     monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: previous_prediction if str(issue) == "115040801" else None)
+    monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue", lambda issue: {"issue": issue})
+    monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
 
     payload = player_dashboard.build_player_dashboard_summary()
     next_payload = payload["next_prediction"]
     latest_official = payload["latest_official_draw"]
     previous = payload["previous_verification"]
+    card_two = payload["card_two"]
 
     assert latest_official["issue"] == "115040801"
     assert latest_official["draw_time"] == "2026-07-17T15:35:08+08:00"
@@ -168,6 +171,10 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
     assert previous["prediction_status"] == "verified"
     assert previous["verification_status"] == "verified"
     assert previous["learning_used"] is True
+    assert card_two["available"] is True
+    assert card_two["issue"] == "115040801"
+    assert card_two["requested_issue"] == "115040801"
+    assert card_two["hit_count"] == 10
 
 
 def test_dashboard_uses_official_draw_saved_event_time_fallback(monkeypatch):
@@ -191,7 +198,7 @@ def test_dashboard_uses_official_draw_saved_event_time_fallback(monkeypatch):
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [fallback_prediction])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
@@ -269,7 +276,9 @@ def test_dashboard_previous_prediction_falls_back_to_latest_available_verified(m
     monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
     monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: fallback_prediction)
 
-    previous = player_dashboard.build_player_dashboard_summary()["previous_verification"]
+    payload = player_dashboard.build_player_dashboard_summary()
+    previous = payload["previous_verification"]
+    card_two = payload["card_two"]
 
     assert previous["previous_result_mode"] == "latest_available_verified"
     assert previous["requested_target_issue"] == "115040841"
@@ -278,6 +287,9 @@ def test_dashboard_previous_prediction_falls_back_to_latest_available_verified(m
     assert len(previous["official_numbers"]) == 20
     assert previous["verification_status"] == "verified"
     assert previous["learning_used"] is True
+    assert card_two["available"] is False
+    assert card_two["issue"] == "115040841"
+    assert card_two["requested_issue"] == "115040841"
 
 
 def test_dashboard_marks_prediction_stale_when_database_lags_detected_source(monkeypatch):

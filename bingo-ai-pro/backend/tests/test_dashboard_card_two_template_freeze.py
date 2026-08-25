@@ -29,11 +29,14 @@ def test_card_two_template_freeze():
     assert html.count('id="cardTwo"') == 1
     assert 'id="cardLaowanjia"' not in html
     assert "📖 AI 驗證與分析報告" in html
-    assert "驗證期號：" in html
+    assert "上一期期號：" in html
     assert "最終分析" in html
-    assert "AI 命中" in html
+    assert "實際命中" in html
+    assert "AI 命中" not in html
     assert "超級獎" in html
-    assert "當期 AI 推薦" in html
+    assert "大小" in html
+    assert "單雙" in html
+    assert "推薦 20 碼" in html
     assert "查看詳細分析" in html
     assert "收合詳細分析" in html
     assert 'aria-controls="cardTwoReportBody"' in html
@@ -41,6 +44,9 @@ def test_card_two_template_freeze():
     assert "尚無已完成的最終分析報告" in html
     assert "AI 正在等待足夠的正式開獎與驗證資料。" in html
     assert "詳細規則分析" in html
+    assert "實際開獎 20 碼" in html
+    assert "三星至六星連號" in html
+    assert "Timeout 步驟" not in html
     assert "預測號碼：" in html
     assert "實際開出：" in html
     assert "規則結果：" in html
@@ -77,8 +83,12 @@ def test_card_two_frontend_states_and_card_one_boundary():
     assert "card-two-number-super" in html
     assert "saveCardTwoBrowserCache" in html
     assert "loadCardTwoBrowserCache" in html
+    assert "if (raw) return raw;" in html
+    assert "if (player) {" in html
     assert "escapeHtml" in html
-    assert "cardTwoText(rule.summary" in html
+    assert "const summary = rule.summary || rule.detail || rule.description" in html
+    assert "rule.title" in html
+    assert "rule.detail" in html
     assert "None" not in card1
     assert "null" not in card1
     assert "cardTwo" not in card1
@@ -86,5 +96,7 @@ def test_card_two_frontend_states_and_card_one_boundary():
     assert "Card 1 template is UI-frozen." not in card1
     assert "預測期號" in card1
     assert "依據期號" not in card1
+    assert "formatTimeOnly((officialDraw || {}).draw_time)" in card1
+    assert "formatDateTime((officialDraw || {}).draw_time)" not in card1
     assert "renderCardOneSignals(next)" in card1
     assert "Prediction 狀態" not in card1
