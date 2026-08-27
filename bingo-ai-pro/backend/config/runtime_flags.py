@@ -3,16 +3,11 @@ from __future__ import annotations
 import os
 
 SCHEDULER_FLAG_DEFAULTS = {
-    "CATCH_UP_SCHEDULER_ENABLED": True,
-    "COLLECTOR_SCHEDULER_ENABLED": True,
+    "CATCH_UP_SCHEDULER_ENABLED": False,
+    "COLLECTOR_SCHEDULER_ENABLED": False,
     "LEGACY_REFRESH_SCHEDULER_ENABLED": False,
     "DAILY_RECOVERY_ENABLED": False,
     "HISTORICAL_CATCHUP_ENABLED": False,
-}
-
-PRODUCTION_REQUIRED_SCHEDULER_FLAGS = {
-    "CATCH_UP_SCHEDULER_ENABLED",
-    "COLLECTOR_SCHEDULER_ENABLED",
 }
 
 SCHEDULER_FLAG_RESPONSE_FIELDS = {
@@ -37,8 +32,6 @@ def env_raw(name: str) -> str:
 
 
 def scheduler_flag_enabled(name: str) -> bool:
-    if name in PRODUCTION_REQUIRED_SCHEDULER_FLAGS and not env_bool("DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS", False):
-        return True
     return env_bool(name, SCHEDULER_FLAG_DEFAULTS[name])
 
 

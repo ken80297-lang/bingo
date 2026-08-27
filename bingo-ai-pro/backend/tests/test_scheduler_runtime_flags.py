@@ -207,6 +207,7 @@ def test_startup_with_disabled_schedulers_registers_no_outbound_jobs(monkeypatch
     assert "collector_official_catch_up_startup" not in job_ids
     assert "collector_official_catch_up" not in job_ids
     assert "collector_pilio_startup" not in job_ids
+    assert "collector_official_today_startup" not in job_ids
     assert "collector_kuaishou_snapshot" not in job_ids
     assert "collector_pilio_today" not in job_ids
     assert "collector_official_today" not in job_ids

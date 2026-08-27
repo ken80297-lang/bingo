@@ -14,6 +14,7 @@ def test_runtime_diagnostics_returns_process_local_metadata(monkeypatch):
     monkeypatch.setenv("RENDER_SERVICE_ID", "srv-test")
     monkeypatch.setenv("RENDER_SERVICE_NAME", "bingo-ai-pro")
     monkeypatch.setenv("RENDER_INSTANCE_ID", "inst-test")
+    monkeypatch.delenv("DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS", raising=False)
     monkeypatch.setenv("CATCH_UP_SCHEDULER_ENABLED", "false")
     monkeypatch.setenv("COLLECTOR_SCHEDULER_ENABLED", "0")
     monkeypatch.setenv("LEGACY_REFRESH_SCHEDULER_ENABLED", "off")
@@ -32,8 +33,8 @@ def test_runtime_diagnostics_returns_process_local_metadata(monkeypatch):
         "instance_id": "inst-test",
     }
     assert payload["scheduler_flags"] == {
-        "catch_up_scheduler_enabled": True,
-        "collector_scheduler_enabled": True,
+        "catch_up_scheduler_enabled": False,
+        "collector_scheduler_enabled": False,
         "legacy_refresh_scheduler_enabled": False,
         "daily_recovery_enabled": False,
         "historical_catchup_enabled": True,
@@ -72,22 +73,50 @@ def test_runtime_diagnostics_uses_scheduler_flag_defaults(monkeypatch):
         "LEGACY_REFRESH_SCHEDULER_ENABLED",
         "DAILY_RECOVERY_ENABLED",
         "HISTORICAL_CATCHUP_ENABLED",
+        "DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS",
     ):
         monkeypatch.delenv(name, raising=False)
 
     assert get_scheduler_runtime_flags() == {
-        "catch_up_scheduler_enabled": True,
-        "collector_scheduler_enabled": True,
+        "catch_up_scheduler_enabled": False,
+        "collector_scheduler_enabled": False,
         "legacy_refresh_scheduler_enabled": False,
         "daily_recovery_enabled": False,
         "historical_catchup_enabled": False,
     }
 
 
-def test_runtime_diagnostics_can_disable_required_official_schedulers(monkeypatch):
+def test_runtime_diagnostics_scheduler_flags_are_explicit_opt_in(monkeypatch):
     from config.runtime_flags import get_scheduler_runtime_flags
 
-    monkeypatch.setenv("DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS", "true")
+    cases = (
+        ({}, False, False),
+        ({"CATCH_UP_SCHEDULER_ENABLED": "false", "COLLECTOR_SCHEDULER_ENABLED": "false"}, False, False),
+        ({"CATCH_UP_SCHEDULER_ENABLED": "true", "COLLECTOR_SCHEDULER_ENABLED": "true"}, True, True),
+        ({"CATCH_UP_SCHEDULER_ENABLED": "true", "COLLECTOR_SCHEDULER_ENABLED": "false"}, True, False),
+        ({"CATCH_UP_SCHEDULER_ENABLED": "false", "COLLECTOR_SCHEDULER_ENABLED": "true"}, False, True),
+    )
+
+    for env, expected_catch_up, expected_collector in cases:
+        for name in (
+            "CATCH_UP_SCHEDULER_ENABLED",
+            "COLLECTOR_SCHEDULER_ENABLED",
+            "DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+
+        flags = get_scheduler_runtime_flags()
+
+        assert flags["catch_up_scheduler_enabled"] is expected_catch_up
+        assert flags["collector_scheduler_enabled"] is expected_collector
+
+
+def test_runtime_diagnostics_env_false_is_not_overridden_by_disable_flag(monkeypatch):
+    from config.runtime_flags import get_scheduler_runtime_flags
+
+    monkeypatch.setenv("DISABLE_PRODUCTION_OFFICIAL_SCHEDULERS", "false")
     monkeypatch.setenv("CATCH_UP_SCHEDULER_ENABLED", "false")
     monkeypatch.setenv("COLLECTOR_SCHEDULER_ENABLED", "false")
 
