@@ -82,6 +82,7 @@ def test_collector_false_registers_no_startup_or_interval_job(monkeypatch):
     app_module._schedule_collector_jobs()
 
     assert scheduler.calls == []
+    assert scheduler.running is False
     assert runtime_updates[-1] == {
         "collector_scheduler_enabled": False,
         "collector_startup_job_registered": False,
