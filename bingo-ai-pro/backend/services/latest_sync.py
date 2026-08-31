@@ -6,7 +6,7 @@ import atexit
 import sys
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_futures
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -32,12 +32,27 @@ HISTORICAL_CATCHUP_ENABLED = scheduler_flag_enabled("HISTORICAL_CATCHUP_ENABLED"
 LATEST_ISSUE_PRIORITY = os.getenv("LATEST_ISSUE_PRIORITY", "true").lower() not in {"0", "false", "no", "off"}
 LATEST_SYNC_STALE_SECONDS = 12 * 60
 
+
+def _shutdown_drain_timeout_default() -> float:
+    try:
+        value = float(os.getenv("LATEST_SYNC_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "5"))
+    except (TypeError, ValueError):
+        return 5.0
+    return value if value >= 0 else 5.0
+
+
+LATEST_SYNC_SHUTDOWN_DRAIN_TIMEOUT_SECONDS = _shutdown_drain_timeout_default()
+
 _STATE_LOCK = threading.RLock()
 _RECONCILE_LOCK = threading.RLock()
 _RECONCILE_EXECUTOR: ThreadPoolExecutor | None = None
 _RECONCILE_EXECUTOR_LOCK = threading.Lock()
 _RECONCILE_ACCEPTING = True
+_LATEST_SYNC_QUIESCING = False
+_LATEST_SYNC_ACTIVE_READS = 0
+_LATEST_SYNC_ACTIVE_CONDITION = threading.Condition(threading.RLock())
 _RECONCILE_IN_FLIGHT: set[str] = set()
+_RECONCILE_FUTURES: set[Future] = set()
 _RECONCILE_QUEUED_STALE_SECONDS = 8
 _RECONCILE_MAX_QUEUED_ATTEMPTS = 3
 _LATEST_SYNC_CACHE_TTL_SECONDS = 10
@@ -69,7 +84,51 @@ _LATEST_SYNC_STATE: dict[str, Any] = {
 
 
 def _reconcile_accepting() -> bool:
-    return bool(_RECONCILE_ACCEPTING and not sys.is_finalizing())
+    return bool(_RECONCILE_ACCEPTING and not _LATEST_SYNC_QUIESCING and not sys.is_finalizing())
+
+
+def _latest_sync_quiescing() -> bool:
+    return bool(_LATEST_SYNC_QUIESCING or sys.is_finalizing())
+
+
+def _memory_snapshot(*, reason: str) -> dict[str, Any]:
+    with _STATE_LOCK:
+        snapshot = deepcopy(_LATEST_SYNC_STATE)
+        cached = deepcopy(_LATEST_SYNC_CACHE.get("snapshot"))
+    if isinstance(cached, dict) and cached.get("sync_status") == "synced":
+        snapshot.update(cached)
+    snapshot["read_model"] = "memory"
+    snapshot["quiescing"] = True
+    snapshot["quiesce_reason"] = reason
+    snapshot["timings_ms"] = {"total_ms": 0.0}
+    return snapshot
+
+
+def _begin_latest_sync_read() -> bool:
+    global _LATEST_SYNC_ACTIVE_READS
+    with _LATEST_SYNC_ACTIVE_CONDITION:
+        if _latest_sync_quiescing():
+            return False
+        _LATEST_SYNC_ACTIVE_READS += 1
+        return True
+
+
+def _end_latest_sync_read() -> None:
+    global _LATEST_SYNC_ACTIVE_READS
+    with _LATEST_SYNC_ACTIVE_CONDITION:
+        _LATEST_SYNC_ACTIVE_READS = max(0, _LATEST_SYNC_ACTIVE_READS - 1)
+        _LATEST_SYNC_ACTIVE_CONDITION.notify_all()
+
+
+def _wait_for_latest_sync_reads(timeout_seconds: float) -> int:
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    with _LATEST_SYNC_ACTIVE_CONDITION:
+        while _LATEST_SYNC_ACTIVE_READS > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _LATEST_SYNC_ACTIVE_CONDITION.wait(timeout=remaining)
+        return _LATEST_SYNC_ACTIVE_READS
 
 
 def _get_reconcile_executor() -> ThreadPoolExecutor | None:
@@ -90,7 +149,7 @@ def _submit_reconcile_background(fn, *args) -> Future | None:
     if executor is None or not _reconcile_accepting():
         return None
     try:
-        return executor.submit(fn, *args)
+        future = executor.submit(fn, *args)
     except RuntimeError as exc:
         if "shutdown" not in str(exc).lower():
             raise
@@ -98,28 +157,85 @@ def _submit_reconcile_background(fn, *args) -> Future | None:
             if _RECONCILE_EXECUTOR is executor:
                 _RECONCILE_EXECUTOR = None
         return None
+    if isinstance(future, Future):
+        with _RECONCILE_LOCK:
+            _RECONCILE_FUTURES.add(future)
+        future.add_done_callback(_discard_reconcile_future)
+    return future
 
 
-def shutdown_latest_sync_background_tasks(*, wait: bool = False) -> dict:
+def _discard_reconcile_future(future: Future) -> None:
+    with _RECONCILE_LOCK:
+        _RECONCILE_FUTURES.discard(future)
+
+
+def _tracked_reconcile_futures() -> list[Future]:
+    with _RECONCILE_LOCK:
+        return list(_RECONCILE_FUTURES)
+
+
+def shutdown_latest_sync_background_tasks(*, wait: bool = False, timeout_seconds: float | None = None) -> dict:
     global _RECONCILE_EXECUTOR
     global _RECONCILE_ACCEPTING
+    global _LATEST_SYNC_QUIESCING
 
     _RECONCILE_ACCEPTING = False
+    _LATEST_SYNC_QUIESCING = True
     with _RECONCILE_EXECUTOR_LOCK:
         executor = _RECONCILE_EXECUTOR
         _RECONCILE_EXECUTOR = None
+    tracked = _tracked_reconcile_futures()
+    cancelled = 0
+    for future in tracked:
+        if not future.running() and not future.done() and future.cancel():
+            cancelled += 1
+    drain_timeout = LATEST_SYNC_SHUTDOWN_DRAIN_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
+    active_reads_pending = _wait_for_latest_sync_reads(drain_timeout)
+    pending_after_drain: list[Future] = []
+    drained = 0
+    if wait or drain_timeout > 0:
+        not_done = [future for future in tracked if not future.done()]
+        if not_done:
+            done, pending = wait_futures(not_done, timeout=drain_timeout)
+            drained = len(done)
+            pending_after_drain = list(pending)
     if executor is not None:
-        executor.shutdown(wait=wait, cancel_futures=True)
+        executor.shutdown(wait=False, cancel_futures=True)
     with _RECONCILE_LOCK:
-        _RECONCILE_IN_FLIGHT.clear()
-    return {"status": "stopped", "accepting": False, "executor_shutdown": executor is not None}
+        _RECONCILE_FUTURES.difference_update(future for future in tracked if future.done() or future.cancelled())
+        if not pending_after_drain:
+            _RECONCILE_IN_FLIGHT.clear()
+    if pending_after_drain:
+        logger.warning(
+            "latest sync shutdown drain timed out pending=%s timeout_seconds=%s",
+            len(pending_after_drain),
+            drain_timeout,
+        )
+    return {
+        "status": "stopped",
+        "accepting": False,
+        "quiescing": True,
+        "executor_shutdown": executor is not None,
+        "tracked_futures": len(tracked),
+        "cancelled_futures": cancelled,
+        "drained_futures": drained,
+        "pending_futures": len(pending_after_drain),
+        "active_reads_pending": active_reads_pending,
+        "timeout_seconds": drain_timeout,
+    }
 
 
 def reset_latest_sync_background_tasks_for_tests() -> dict:
     global _RECONCILE_ACCEPTING
+    global _LATEST_SYNC_QUIESCING
+    global _LATEST_SYNC_ACTIVE_READS
     _RECONCILE_ACCEPTING = True
+    _LATEST_SYNC_QUIESCING = False
+    with _LATEST_SYNC_ACTIVE_CONDITION:
+        _LATEST_SYNC_ACTIVE_READS = 0
     with _RECONCILE_LOCK:
         _RECONCILE_IN_FLIGHT.clear()
+        _RECONCILE_FUTURES.clear()
     return {"status": "running", "accepting": True}
 
 
@@ -684,7 +800,7 @@ def _queue_latest_downstream_reconcile(
     }
 
 
-def get_latest_sync_snapshot(*, allow_reconcile: bool = True) -> dict[str, Any]:
+def _build_latest_sync_snapshot(*, allow_reconcile: bool = True) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, float] = {}
     with _STATE_LOCK:
@@ -806,6 +922,17 @@ def get_latest_sync_snapshot(*, allow_reconcile: bool = True) -> dict[str, Any]:
             _LATEST_SYNC_CACHE["snapshot"] = deepcopy(snapshot)
             _LATEST_SYNC_CACHE["expires_at"] = time.perf_counter() + _LATEST_SYNC_CACHE_TTL_SECONDS
     return snapshot
+
+
+def get_latest_sync_snapshot(*, allow_reconcile: bool = True) -> dict[str, Any]:
+    if not _begin_latest_sync_read():
+        return _memory_snapshot(reason="shutdown_quiescing")
+    try:
+        if _latest_sync_quiescing():
+            return _memory_snapshot(reason="shutdown_quiescing")
+        return _build_latest_sync_snapshot(allow_reconcile=allow_reconcile)
+    finally:
+        _end_latest_sync_read()
 
 
 def _failure(source_issue: str | None, stage: str, reason: str, detected_at: str | None, attempt_count: int) -> dict[str, Any]:

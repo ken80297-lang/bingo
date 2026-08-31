@@ -634,8 +634,6 @@ def startup_event() -> None:
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
     try:
         from services.latest_sync import shutdown_latest_sync_background_tasks
         from services.prediction_service import shutdown_prediction_background_tasks
@@ -644,6 +642,8 @@ def shutdown_event() -> None:
         shutdown_prediction_background_tasks()
     except Exception as exc:
         print(f"background task shutdown failed: {exc}")
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
     print("WAKE_MONITOR shutting_down")
     print(
         f"last_health_request_at={app.state.last_health_request_at} "
