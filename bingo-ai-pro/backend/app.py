@@ -98,7 +98,7 @@ from services.catch_up_service import catch_up_missing_issues
 from services.collector_runtime import mark_scheduler_event, refresh_system_status_cache, update_collector_runtime
 from config.runtime_flags import env_bool as _env_bool, env_raw as _env_raw, scheduler_flag_enabled
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
-from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY, get_latest_sync_snapshot
+from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY
 from services.official_verification import collect_official_today
 from services.traffic_observability import normalize_traffic_endpoint, record_traffic_request
 from services.daily_recovery import (
@@ -644,13 +644,12 @@ def shutdown_event() -> None:
         shutdown_prediction_background_tasks()
     except Exception as exc:
         print(f"background task shutdown failed: {exc}")
-    latest_sync = get_latest_sync_snapshot(allow_reconcile=False)
     print("WAKE_MONITOR shutting_down")
     print(
         f"last_health_request_at={app.state.last_health_request_at} "
         f"request_count={app.state.health_request_count_since_start} "
-        f"last_collector_success_at={latest_sync.get('latest_saved_at')} "
-        f"database_latest_issue={latest_sync.get('database_latest_issue')}"
+        f"last_health_request_method={app.state.last_health_request_method} "
+        f"wake_source={app.state.wake_source}"
     )
 
 
