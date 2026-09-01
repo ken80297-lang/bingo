@@ -453,14 +453,25 @@ def get_kuaishou_summary_history(limit: int = 20) -> list[dict]:
 
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     try:
-        return _query_cloud(sql, params)
-    except Exception:
-        logger.exception("cloud collector query failed")
+        rows = _query_cloud(sql, params)
+        logger.info("collector_store_query backend=postgres result=success")
+        return rows
+    except Exception as exc:
+        logger.warning(
+            "collector_store_query backend=postgres result=failed error_type=%s",
+            type(exc).__name__,
+        )
 
     try:
-        return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
-    except Exception:
-        logger.exception("sqlite collector query failed")
+        logger.info("collector_store_query backend=sqlite result=fallback")
+        rows = _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
+        logger.info("collector_store_query backend=sqlite result=success")
+        return rows
+    except Exception as exc:
+        logger.warning(
+            "collector_store_query backend=sqlite result=failed error_type=%s",
+            type(exc).__name__,
+        )
         return []
 
 
