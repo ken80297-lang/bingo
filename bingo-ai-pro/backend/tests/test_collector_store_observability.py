@@ -9,8 +9,26 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from database import collector_store
 
 
+def setup_function():
+    collector_store._record_db_path_status(
+        backend=None,
+        result=None,
+        fallback_occurred=False,
+        error_type=None,
+    )
+
+
 def _messages(caplog):
     return [record.getMessage() for record in caplog.records if record.name == "database.collector_store"]
+
+
+def test_collector_db_path_status_initial_state_is_empty():
+    assert collector_store.get_collector_db_path_status() == {
+        "backend": None,
+        "result": None,
+        "fallback_occurred": False,
+        "error_type": None,
+    }
 
 
 def test_query_with_fallback_logs_postgres_success_without_sqlite(monkeypatch, caplog):
@@ -29,6 +47,12 @@ def test_query_with_fallback_logs_postgres_success_without_sqlite(monkeypatch, c
     assert "collector_store_query backend=postgres result=success" in messages
     assert "collector_store_query backend=sqlite result=fallback" not in messages
     assert "secret-param" not in "\n".join(messages)
+    assert collector_store.get_collector_db_path_status() == {
+        "backend": "postgres",
+        "result": "success",
+        "fallback_occurred": False,
+        "error_type": None,
+    }
 
 
 def test_query_with_fallback_logs_postgres_failure_and_sqlite_success(monkeypatch, caplog):
@@ -50,6 +74,12 @@ def test_query_with_fallback_logs_postgres_failure_and_sqlite_success(monkeypatc
     assert "collector_store_query backend=sqlite result=success" in messages
     assert "sensitive host details" not in "\n".join(messages)
     assert "secret-param" not in "\n".join(messages)
+    assert collector_store.get_collector_db_path_status() == {
+        "backend": "sqlite",
+        "result": "success",
+        "fallback_occurred": True,
+        "error_type": "ConnectionError",
+    }
 
 
 def test_query_with_fallback_logs_both_failures_and_preserves_empty_return(monkeypatch, caplog):
@@ -74,3 +104,9 @@ def test_query_with_fallback_logs_both_failures_and_preserves_empty_return(monke
     assert "sensitive postgres timeout" not in joined
     assert "sensitive sqlite path" not in joined
     assert "secret-param" not in joined
+    assert collector_store.get_collector_db_path_status() == {
+        "backend": "sqlite",
+        "result": "failed",
+        "fallback_occurred": True,
+        "error_type": "RuntimeError",
+    }

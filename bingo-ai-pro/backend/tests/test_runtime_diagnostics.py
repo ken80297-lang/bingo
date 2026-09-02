@@ -166,6 +166,45 @@ def test_runtime_diagnostics_does_not_expose_raw_env_or_secrets(monkeypatch):
     assert "<unset>" not in text
 
 
+def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkeypatch):
+    import database
+    from api import runtime_diagnostics
+    from app import app
+    from database import collector_store
+    from services import latest_sync
+
+    def fail(name):
+        def _raise(*args, **kwargs):
+            raise AssertionError(f"{name} should not run from runtime diagnostics")
+
+        return _raise
+
+    collector_store._record_db_path_status(
+        backend="postgres",
+        result="success",
+        fallback_occurred=False,
+        error_type=None,
+    )
+    monkeypatch.setattr(database, "get_connection", fail("database.get_connection"))
+    monkeypatch.setattr(collector_store, "_cloud_connection", fail("collector_store._cloud_connection"))
+    monkeypatch.setattr(collector_store, "_sqlite_connection", fail("collector_store._sqlite_connection"))
+    monkeypatch.setattr(collector_store, "_query_cloud", fail("collector_store._query_cloud"))
+    monkeypatch.setattr(collector_store, "_query_sqlite", fail("collector_store._query_sqlite"))
+    monkeypatch.setattr(collector_store, "init_collector_tables", fail("collector_store.init_collector_tables"))
+    monkeypatch.setattr(collector_store, "save_kuaishou_snapshot", fail("collector_store.save_kuaishou_snapshot"))
+    monkeypatch.setattr(latest_sync, "get_latest_sync_snapshot", fail("latest_sync.get_latest_sync_snapshot"))
+
+    request = type("Request", (), {"app": app})()
+    payload = runtime_diagnostics.api_runtime_diagnostics(request)
+
+    assert payload["collector_db_path"] == {
+        "backend": "postgres",
+        "result": "success",
+        "fallback_occurred": False,
+        "error_type": None,
+    }
+
+
 def test_runtime_diagnostics_endpoint_registered():
     from app import app
 

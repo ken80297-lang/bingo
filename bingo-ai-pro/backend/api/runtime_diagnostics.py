@@ -5,6 +5,7 @@ import os
 from fastapi import APIRouter, Request
 
 from config.runtime_flags import get_scheduler_runtime_flags
+from database.collector_store import get_collector_db_path_status
 
 router = APIRouter(prefix="/api", tags=["Runtime Diagnostics"])
 
@@ -25,4 +26,5 @@ def api_runtime_diagnostics(request: Request) -> dict:
         "instance_started_at": getattr(request.app.state, "instance_started_at", None),
         "render": _render_metadata(),
         "scheduler_flags": get_scheduler_runtime_flags(),
+        "collector_db_path": get_collector_db_path_status(),
     }

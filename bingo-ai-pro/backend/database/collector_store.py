@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,36 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+_DB_PATH_STATUS_LOCK = threading.Lock()
+_DB_PATH_STATUS: dict[str, Any] = {
+    "backend": None,
+    "result": None,
+    "fallback_occurred": False,
+    "error_type": None,
+}
+
+
+def _record_db_path_status(
+    *,
+    backend: str | None,
+    result: str | None,
+    fallback_occurred: bool,
+    error_type: str | None = None,
+) -> None:
+    with _DB_PATH_STATUS_LOCK:
+        _DB_PATH_STATUS.update(
+            {
+                "backend": backend,
+                "result": result,
+                "fallback_occurred": fallback_occurred,
+                "error_type": error_type,
+            }
+        )
+
+
+def get_collector_db_path_status() -> dict[str, Any]:
+    with _DB_PATH_STATUS_LOCK:
+        return dict(_DB_PATH_STATUS)
 
 
 def _now() -> str:
@@ -454,23 +485,49 @@ def get_kuaishou_summary_history(limit: int = 20) -> list[dict]:
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     try:
         rows = _query_cloud(sql, params)
+        _record_db_path_status(
+            backend="postgres",
+            result="success",
+            fallback_occurred=False,
+            error_type=None,
+        )
         logger.info("collector_store_query backend=postgres result=success")
         return rows
     except Exception as exc:
+        cloud_error_type = type(exc).__name__
+        _record_db_path_status(
+            backend="postgres",
+            result="failed",
+            fallback_occurred=False,
+            error_type=cloud_error_type,
+        )
         logger.warning(
             "collector_store_query backend=postgres result=failed error_type=%s",
-            type(exc).__name__,
+            cloud_error_type,
         )
 
     try:
         logger.info("collector_store_query backend=sqlite result=fallback")
         rows = _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
+        _record_db_path_status(
+            backend="sqlite",
+            result="success",
+            fallback_occurred=True,
+            error_type=cloud_error_type,
+        )
         logger.info("collector_store_query backend=sqlite result=success")
         return rows
     except Exception as exc:
+        sqlite_error_type = type(exc).__name__
+        _record_db_path_status(
+            backend="sqlite",
+            result="failed",
+            fallback_occurred=True,
+            error_type=sqlite_error_type,
+        )
         logger.warning(
             "collector_store_query backend=sqlite result=failed error_type=%s",
-            type(exc).__name__,
+            sqlite_error_type,
         )
         return []
 
