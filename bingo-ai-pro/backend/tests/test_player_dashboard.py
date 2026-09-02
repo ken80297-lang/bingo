@@ -57,13 +57,24 @@ def _prediction() -> dict:
     }
 
 
-def test_player_summary_fast_path_skips_slow_history_and_aggregates(monkeypatch):
+def test_player_dashboard_component_timeout_defaults():
+    assert player_dashboard.PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS == 2.0
+    assert player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS == 1.0
+    assert player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS == 4.5
+
+
+def test_player_summary_fast_path_builds_from_isolated_dependencies(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", _official_draw)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: _prediction())
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: (_ for _ in ()).throw(AssertionError("history should be stale")))
-    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: (_ for _ in ()).throw(AssertionError("aggregates should be stale")))
-    monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: (_ for _ in ()).throw(AssertionError("learning should be stale")), raising=False)
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
+    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
 
     start = time.perf_counter()
     payload = player_dashboard.build_player_dashboard_summary()
@@ -71,13 +82,13 @@ def test_player_summary_fast_path_skips_slow_history_and_aggregates(monkeypatch)
 
     assert elapsed_ms < 5000
     assert payload["status"] == "ok"
-    assert payload["partial"] is True
+    assert payload["partial"] is False
     assert payload["current_draw"]["issue"] == "115040900"
     assert payload["latest_official_draw"]["draw_time"] is None
     assert payload["latest_official_draw"]["verification_status"] == "unknown"
     assert payload["next_prediction"]["prediction_issue"] == "115040901"
     assert len(payload["next_prediction"]["recommend_numbers"]) == 20
-    assert "aggregates" in payload["stale_steps"]
+    assert payload["stale_steps"] == []
 
 
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
