@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from database import collector_store, official_draw_store
+from database import collector_store, learning_store, official_draw_store, prediction_history_store
 from services import player_dashboard
 
 
@@ -186,6 +186,99 @@ def test_dashboard_component_timeout_fallback_behavior_unchanged():
     assert warnings == ["kuaishou fallback cache"]
     assert timings[0]["result"] == "timeout"
     assert blocked.cancelled() is False
+
+
+def test_dashboard_component_stage_latency_preserves_result(caplog):
+    with caplog.at_level(logging.WARNING, logger="services.player_dashboard"):
+        result = player_dashboard._timed_component_stage("card_two", "analysis_lookup", lambda: {"status": "ok"})
+
+    assert result == {"status": "ok"}
+    joined = "\n".join(_messages(caplog, "services.player_dashboard"))
+    assert "component_stage_latency component=card_two stage=analysis_lookup" in joined
+    assert "duration_ms=" in joined
+    assert "result=success" in joined
+
+
+def test_dashboard_component_stage_latency_preserves_exception(caplog):
+    with caplog.at_level(logging.WARNING, logger="services.player_dashboard"):
+        with pytest.raises(RuntimeError):
+            player_dashboard._timed_component_stage(
+                "previous_verification",
+                "prediction_target_lookup",
+                lambda: (_ for _ in ()).throw(RuntimeError("raw details")),
+            )
+
+    joined = "\n".join(_messages(caplog, "services.player_dashboard"))
+    assert "component_stage_latency component=previous_verification stage=prediction_target_lookup" in joined
+    assert "result=failed" in joined
+    assert "error_type=RuntimeError" in joined
+    assert "raw details" not in joined
+
+
+def test_prediction_history_summary_stage_adds_no_extra_query(monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        calls.append((sql, params, sqlite_sql))
+        return []
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    with caplog.at_level(logging.WARNING, logger="database.prediction_history_store"):
+        result = prediction_history_store.get_prediction_history_summary_records(
+            100,
+            diagnostic_component="card_two_history",
+        )
+
+    assert result == []
+    assert len(calls) == 1
+    joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
+    assert "component_stage_latency component=card_two_history stage=prediction_history_summary_query" in joined
+    assert "result=success" in joined
+
+
+def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(learning_store, "get_learned_live_target_count", lambda: 7)
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        calls.append((sql, params, sqlite_sql))
+        return [(10, 9, 1, 8, 6, 6, 5)]
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    with caplog.at_level(logging.WARNING, logger="database.prediction_history_store"):
+        result = prediction_history_store.get_prediction_lifecycle_aggregates(
+            diagnostic_component="prediction_aggregates",
+        )
+
+    assert result["total_prediction_count"] == 10
+    assert result["learned_distinct_target_count"] == 7
+    assert len(calls) == 2
+    joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
+    assert "component_stage_latency component=prediction_aggregates stage=learned_live_target_count" in joined
+    assert "component_stage_latency component=prediction_aggregates stage=prediction_history_aggregate_query" in joined
+    assert "component_stage_latency component=prediction_aggregates stage=official_result_join_count" in joined
+
+
+def test_prediction_history_stage_logging_is_dashboard_opt_in(monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        calls.append((sql, params, sqlite_sql))
+        return []
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    with caplog.at_level(logging.WARNING, logger="database.prediction_history_store"):
+        result = prediction_history_store.get_prediction_history_summary_records(100)
+
+    assert result == []
+    assert len(calls) == 1
+    joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
+    assert "component_stage_latency" not in joined
 
 
 def _completed_future(value):

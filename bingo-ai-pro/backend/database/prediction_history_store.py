@@ -599,6 +599,36 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
         return []
 
 
+def _log_dashboard_stage(component: str, stage: str, started: float, result: str = "success", **extra: Any) -> None:
+    fields = " ".join(f"{key}={value}" for key, value in extra.items() if value is not None)
+    suffix = f" {fields}" if fields else ""
+    logger.warning(
+        "component_stage_latency component=%s stage=%s duration_ms=%s result=%s%s",
+        component,
+        stage,
+        round((time.perf_counter() - started) * 1000, 2),
+        result,
+        suffix,
+    )
+
+
+def _timed_dashboard_stage(component: str, stage: str, fn):
+    started = time.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        _log_dashboard_stage(component, stage, started, "failed", error_type=type(exc).__name__)
+        raise
+    _log_dashboard_stage(component, stage, started, "success")
+    return result
+
+
+def _maybe_timed_dashboard_stage(component: str | None, stage: str, fn):
+    if component:
+        return _timed_dashboard_stage(component, stage, fn)
+    return fn()
+
+
 def _row_to_prediction(row: Any) -> dict:
     recommend_numbers = _normalize_numbers(_json_loads(row[6]) or [])
     winning_numbers = _normalize_numbers(_json_loads(row[17]) or [])
@@ -1000,61 +1030,65 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
     return records
 
 
-def get_prediction_history_summary_records(limit: int = 100) -> list[dict]:
+def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_component: str | None = None) -> list[dict]:
     _ensure_initialized()
     limit = max(1, min(int(limit or 100), 500))
-    rows = _query_with_fallback(
-        """
-        select {columns}
-        from prediction_history p
-        left join official_draw_history o on o.issue = p.prediction_issue
-        where p.issue is not null
-          and p.prediction_issue is not null
-          and p.issue ~ '^[0-9]+$'
-          and p.prediction_issue ~ '^[0-9]+$'
-          and length(p.issue) >= {min_issue_length}
-          and length(p.prediction_issue) >= {min_issue_length}
-          and p.issue not like '99%%'
-          and p.prediction_issue not like '99%%'
-          and upper(p.issue) not like 'TEST%%'
-          and upper(p.prediction_issue) not like 'TEST%%'
-          and p.prediction_issue::bigint = p.issue::bigint + 1
-          and jsonb_typeof(p.recommend_numbers) = 'array'
-          and jsonb_array_length(p.recommend_numbers) > 0
-          and coalesce(lower(p.strategy), '') not like '%%preview%%'
-          and coalesce(lower(p.strategy), '') not like '%%simulation%%'
-          and coalesce(lower(p.strategy), '') not like '%%test%%'
-          and coalesce(lower(p.strategy), '') not like '%%fixture%%'
-          and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
-        order by p.prediction_issue::bigint desc, p.created_at desc, p.id desc
-        limit %s
-        """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
-        (limit,),
-        sqlite_sql="""
-        select {columns}
-        from prediction_history p
-        left join official_draw_history o on o.issue = p.prediction_issue
-        where p.issue is not null
-          and p.prediction_issue is not null
-          and p.issue not glob '*[^0-9]*'
-          and p.prediction_issue not glob '*[^0-9]*'
-          and length(p.issue) >= {min_issue_length}
-          and length(p.prediction_issue) >= {min_issue_length}
-          and p.issue not like '99%'
-          and p.prediction_issue not like '99%'
-          and upper(p.issue) not like 'TEST%'
-          and upper(p.prediction_issue) not like 'TEST%'
-          and cast(p.prediction_issue as integer) = cast(p.issue as integer) + 1
-          and p.recommend_numbers is not null
-          and p.recommend_numbers not in ('', '[]')
-          and coalesce(lower(p.strategy), '') not like '%preview%'
-          and coalesce(lower(p.strategy), '') not like '%simulation%'
-          and coalesce(lower(p.strategy), '') not like '%test%'
-          and coalesce(lower(p.strategy), '') not like '%fixture%'
-          and coalesce(lower(p.strategy), '') not like '%synthetic%'
-        order by cast(p.prediction_issue as integer) desc, p.created_at desc, p.id desc
-        limit ?
-        """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+    rows = _maybe_timed_dashboard_stage(
+        diagnostic_component,
+        "prediction_history_summary_query",
+        lambda: _query_with_fallback(
+            """
+            select {columns}
+            from prediction_history p
+            left join official_draw_history o on o.issue = p.prediction_issue
+            where p.issue is not null
+              and p.prediction_issue is not null
+              and p.issue ~ '^[0-9]+$'
+              and p.prediction_issue ~ '^[0-9]+$'
+              and length(p.issue) >= {min_issue_length}
+              and length(p.prediction_issue) >= {min_issue_length}
+              and p.issue not like '99%%'
+              and p.prediction_issue not like '99%%'
+              and upper(p.issue) not like 'TEST%%'
+              and upper(p.prediction_issue) not like 'TEST%%'
+              and p.prediction_issue::bigint = p.issue::bigint + 1
+              and jsonb_typeof(p.recommend_numbers) = 'array'
+              and jsonb_array_length(p.recommend_numbers) > 0
+              and coalesce(lower(p.strategy), '') not like '%%preview%%'
+              and coalesce(lower(p.strategy), '') not like '%%simulation%%'
+              and coalesce(lower(p.strategy), '') not like '%%test%%'
+              and coalesce(lower(p.strategy), '') not like '%%fixture%%'
+              and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
+            order by p.prediction_issue::bigint desc, p.created_at desc, p.id desc
+            limit %s
+            """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+            (limit,),
+            sqlite_sql="""
+            select {columns}
+            from prediction_history p
+            left join official_draw_history o on o.issue = p.prediction_issue
+            where p.issue is not null
+              and p.prediction_issue is not null
+              and p.issue not glob '*[^0-9]*'
+              and p.prediction_issue not glob '*[^0-9]*'
+              and length(p.issue) >= {min_issue_length}
+              and length(p.prediction_issue) >= {min_issue_length}
+              and p.issue not like '99%'
+              and p.prediction_issue not like '99%'
+              and upper(p.issue) not like 'TEST%'
+              and upper(p.prediction_issue) not like 'TEST%'
+              and cast(p.prediction_issue as integer) = cast(p.issue as integer) + 1
+              and p.recommend_numbers is not null
+              and p.recommend_numbers not in ('', '[]')
+              and coalesce(lower(p.strategy), '') not like '%preview%'
+              and coalesce(lower(p.strategy), '') not like '%simulation%'
+              and coalesce(lower(p.strategy), '') not like '%test%'
+              and coalesce(lower(p.strategy), '') not like '%fixture%'
+              and coalesce(lower(p.strategy), '') not like '%synthetic%'
+            order by cast(p.prediction_issue as integer) desc, p.created_at desc, p.id desc
+            limit ?
+            """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+        ),
     )
     records = []
     for row in rows:
@@ -1082,93 +1116,105 @@ def get_prediction_history_count() -> int:
         return 0
 
 
-def get_prediction_lifecycle_aggregates() -> dict:
+def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = None) -> dict:
     learned_count = 0
     try:
         from database.learning_store import get_learned_live_target_count
 
-        learned_count = get_learned_live_target_count()
+        learned_count = _maybe_timed_dashboard_stage(
+            diagnostic_component,
+            "learned_live_target_count",
+            get_learned_live_target_count,
+        )
     except Exception:
         logger.exception("learned live target count failed")
 
-    rows = _query_with_fallback(
-        """
-        select
-            count(*) as total_prediction_count,
-            sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
-            sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
-            sum(case when prediction_issue is not null
-                      and jsonb_typeof(recommend_numbers) = 'array'
-                      and jsonb_array_length(recommend_numbers) > 0
-                     then 1 else 0 end) as valid_prediction_count,
-            sum(case when prediction_status = 'verified'
-                      and verified_at is not null
-                      and jsonb_typeof(winning_numbers) = 'array'
-                      and jsonb_array_length(winning_numbers) = 20
-                      and jsonb_typeof(matched_numbers) = 'array'
-                      and jsonb_typeof(missed_numbers) = 'array'
-                     then 1 else 0 end) as completed_verified_count,
-            sum(case when jsonb_typeof(winning_numbers) = 'array'
-                      and jsonb_array_length(winning_numbers) = 20
-                     then 1 else 0 end) as stored_official_result_count,
-            sum(case when prediction_issue is not null
-                      and prediction_status = 'verified'
-                      and verified_at is not null
-                      and jsonb_typeof(winning_numbers) = 'array'
-                      and jsonb_array_length(winning_numbers) = 20
-                      and jsonb_typeof(recommend_numbers) = 'array'
-                      and jsonb_array_length(recommend_numbers) > 0
-                     then 1 else 0 end) as valid_sample_count
-        from prediction_history
-        """,
-        sqlite_sql="""
-        select
-            count(*) as total_prediction_count,
-            sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
-            sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
-            sum(case when prediction_issue is not null
-                      and recommend_numbers is not null
-                      and recommend_numbers not in ('', '[]')
-                     then 1 else 0 end) as valid_prediction_count,
-            sum(case when prediction_status = 'verified'
-                      and verified_at is not null
-                      and winning_numbers is not null
-                      and winning_numbers not in ('', '[]')
-                      and matched_numbers is not null
-                      and missed_numbers is not null
-                     then 1 else 0 end) as completed_verified_count,
-            sum(case when winning_numbers is not null
-                      and winning_numbers not in ('', '[]')
-                     then 1 else 0 end) as stored_official_result_count,
-            sum(case when prediction_issue is not null
-                      and prediction_status = 'verified'
-                      and verified_at is not null
-                      and winning_numbers is not null
-                      and winning_numbers not in ('', '[]')
-                      and recommend_numbers is not null
-                      and recommend_numbers not in ('', '[]')
-                     then 1 else 0 end) as valid_sample_count
-        from prediction_history
-        """,
+    rows = _maybe_timed_dashboard_stage(
+        diagnostic_component,
+        "prediction_history_aggregate_query",
+        lambda: _query_with_fallback(
+            """
+            select
+                count(*) as total_prediction_count,
+                sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
+                sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
+                sum(case when prediction_issue is not null
+                          and jsonb_typeof(recommend_numbers) = 'array'
+                          and jsonb_array_length(recommend_numbers) > 0
+                         then 1 else 0 end) as valid_prediction_count,
+                sum(case when prediction_status = 'verified'
+                          and verified_at is not null
+                          and jsonb_typeof(winning_numbers) = 'array'
+                          and jsonb_array_length(winning_numbers) = 20
+                          and jsonb_typeof(matched_numbers) = 'array'
+                          and jsonb_typeof(missed_numbers) = 'array'
+                         then 1 else 0 end) as completed_verified_count,
+                sum(case when jsonb_typeof(winning_numbers) = 'array'
+                          and jsonb_array_length(winning_numbers) = 20
+                         then 1 else 0 end) as stored_official_result_count,
+                sum(case when prediction_issue is not null
+                          and prediction_status = 'verified'
+                          and verified_at is not null
+                          and jsonb_typeof(winning_numbers) = 'array'
+                          and jsonb_array_length(winning_numbers) = 20
+                          and jsonb_typeof(recommend_numbers) = 'array'
+                          and jsonb_array_length(recommend_numbers) > 0
+                         then 1 else 0 end) as valid_sample_count
+            from prediction_history
+            """,
+            sqlite_sql="""
+            select
+                count(*) as total_prediction_count,
+                sum(case when prediction_issue is not null then 1 else 0 end) as valid_target_count,
+                sum(case when prediction_issue is null then 1 else 0 end) as null_target_count,
+                sum(case when prediction_issue is not null
+                          and recommend_numbers is not null
+                          and recommend_numbers not in ('', '[]')
+                         then 1 else 0 end) as valid_prediction_count,
+                sum(case when prediction_status = 'verified'
+                          and verified_at is not null
+                          and winning_numbers is not null
+                          and winning_numbers not in ('', '[]')
+                          and matched_numbers is not null
+                          and missed_numbers is not null
+                         then 1 else 0 end) as completed_verified_count,
+                sum(case when winning_numbers is not null
+                          and winning_numbers not in ('', '[]')
+                         then 1 else 0 end) as stored_official_result_count,
+                sum(case when prediction_issue is not null
+                          and prediction_status = 'verified'
+                          and verified_at is not null
+                          and winning_numbers is not null
+                          and winning_numbers not in ('', '[]')
+                          and recommend_numbers is not null
+                          and recommend_numbers not in ('', '[]')
+                         then 1 else 0 end) as valid_sample_count
+            from prediction_history
+            """,
+        ),
     )
     row = rows[0] if rows else [0] * 7
-    official_rows = _query_with_fallback(
-        """
-        select count(distinct p.prediction_issue)
-        from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
-        where p.prediction_issue is not null
-          and jsonb_typeof(o.numbers) = 'array'
-          and jsonb_array_length(o.numbers) = 20
-        """,
-        sqlite_sql="""
-        select count(distinct p.prediction_issue)
-        from prediction_history p
-        join official_draw_history o on o.issue = p.prediction_issue
-        where p.prediction_issue is not null
-          and o.numbers is not null
-          and o.numbers not in ('', '[]')
-        """,
+    official_rows = _maybe_timed_dashboard_stage(
+        diagnostic_component,
+        "official_result_join_count",
+        lambda: _query_with_fallback(
+            """
+            select count(distinct p.prediction_issue)
+            from prediction_history p
+            join official_draw_history o on o.issue = p.prediction_issue
+            where p.prediction_issue is not null
+              and jsonb_typeof(o.numbers) = 'array'
+              and jsonb_array_length(o.numbers) = 20
+            """,
+            sqlite_sql="""
+            select count(distinct p.prediction_issue)
+            from prediction_history p
+            join official_draw_history o on o.issue = p.prediction_issue
+            where p.prediction_issue is not null
+              and o.numbers is not null
+              and o.numbers not in ('', '[]')
+            """,
+        ),
     )
     return {
         "total_prediction_count": int(row[0] or 0),

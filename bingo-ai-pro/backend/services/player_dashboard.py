@@ -316,6 +316,30 @@ def _timed_default(name: str, started: float, result: str, source: str | None = 
     return payload
 
 
+def _log_component_stage(component: str, stage: str, started: float, result: str = "success", **extra: Any) -> None:
+    fields = " ".join(f"{key}={value}" for key, value in extra.items() if value is not None)
+    suffix = f" {fields}" if fields else ""
+    logger.warning(
+        "component_stage_latency component=%s stage=%s duration_ms=%s result=%s%s",
+        component,
+        stage,
+        round((time.perf_counter() - started) * 1000, 2),
+        result,
+        suffix,
+    )
+
+
+def _timed_component_stage(component: str, stage: str, fn):
+    started = time.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        _log_component_stage(component, stage, started, "failed", error_type=type(exc).__name__)
+        raise
+    _log_component_stage(component, stage, started, "success")
+    return result
+
+
 def _public_step_name(name: str) -> str:
     return {
         "prediction_history": "history",
@@ -1042,10 +1066,22 @@ def _official_super_in_numbers(draw: dict | None, numbers: list[int]) -> int | N
 
 
 def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
-    exact = _prediction_by_target_issue(target_issue)
+    exact = _timed_component_stage(
+        "previous_verification",
+        "prediction_target_lookup",
+        lambda: _prediction_by_target_issue(target_issue),
+    )
     if exact:
         return exact, "exact_previous"
-    fallback = get_latest_verified_prediction_at_or_before(str(target_issue)) if target_issue else None
+    fallback = (
+        _timed_component_stage(
+            "previous_verification",
+            "latest_verified_fallback_lookup",
+            lambda: get_latest_verified_prediction_at_or_before(str(target_issue)),
+        )
+        if target_issue
+        else None
+    )
     if fallback:
         return fallback, "latest_available_verified"
     return None, "unavailable"
@@ -1567,7 +1603,11 @@ def _card_two_from_record(
     official_draw = None
     if issue and (len(official_numbers) != 20 or official_super is None):
         try:
-            official_draw = get_official_draw_by_issue(issue)
+            official_draw = _timed_component_stage(
+                "card_two",
+                "official_draw_lookup",
+                lambda: get_official_draw_by_issue(issue),
+            )
         except Exception:
             logger.exception("dashboard card two official draw lookup failed")
             official_draw = None
@@ -1590,7 +1630,11 @@ def _card_two_from_record(
     size_result = _card_two_distribution_result(record.get("big_small"), actual_big_small)
     odd_even_result = _card_two_distribution_result(record.get("odd_even"), actual_odd_even)
     consecutive_groups = _card_two_actual_consecutive_groups(official_numbers)
-    analysis = _card_two_analysis_by_issue(record.get("issue"))
+    analysis = _timed_component_stage(
+        "card_two",
+        "analysis_lookup",
+        lambda: _card_two_analysis_by_issue(record.get("issue")),
+    )
     rules = _card_two_rules(analysis, record, official_numbers)
     return {
         "title": CARD_TWO_TITLE,
@@ -1940,10 +1984,18 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
     next_prediction = None
     if current:
         def build_next_snapshot():
-            record = _current_prediction_for_draw(current)
+            record = _timed_component_stage(
+                "next_prediction_snapshot",
+                "current_prediction_lookup",
+                lambda: _current_prediction_for_draw(current),
+            )
             if record:
                 _store_component_cache("latest_prediction", record)
-            return _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=False)
+            return _timed_component_stage(
+                "next_prediction_snapshot",
+                "prediction_from_history",
+                lambda: _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=False),
+            )
 
         prediction_future, _ = _submit_component("next_prediction_snapshot", build_next_snapshot)
         next_prediction = _component_result(
@@ -1988,9 +2040,21 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
 
 
 def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
-    verified_record, previous_result_mode = _previous_result_for_based_on(previous_target_issue)
+    verified_record, previous_result_mode = _timed_component_stage(
+        "previous_verification",
+        "previous_result_lookup",
+        lambda: _previous_result_for_based_on(previous_target_issue),
+    )
     displayed_target_issue = (verified_record or {}).get("prediction_issue")
-    verification_draw = get_official_draw_by_issue(displayed_target_issue) if displayed_target_issue else None
+    verification_draw = (
+        _timed_component_stage(
+            "previous_verification",
+            "official_draw_lookup",
+            lambda: get_official_draw_by_issue(displayed_target_issue),
+        )
+        if displayed_target_issue
+        else None
+    )
     previous_verification = _verification(verified_record, verification_draw) if verified_record else _unavailable_previous_result(previous_target_issue)
     previous_verification["previous_result_mode"] = previous_result_mode
     previous_verification["requested_target_issue"] = previous_target_issue
@@ -2157,9 +2221,20 @@ def _build_player_dashboard_summary_uncached() -> dict:
 
     card_two_history_future, _ = _submit_component(
         "card_two_history",
-        lambda: get_prediction_history_records(100),
+        lambda: _timed_component_stage(
+            "card_two_history",
+            "prediction_history_summary_records",
+            lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+        ),
     )
-    aggregates_future, _ = _submit_component("prediction_aggregates", get_prediction_lifecycle_aggregates)
+    aggregates_future, _ = _submit_component(
+        "prediction_aggregates",
+        lambda: _timed_component_stage(
+            "prediction_aggregates",
+            "prediction_lifecycle_aggregates",
+            lambda: get_prediction_lifecycle_aggregates(diagnostic_component="prediction_aggregates"),
+        ),
+    )
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
     release_future, _ = _submit_component("active_release", get_current_release)
 
@@ -2250,7 +2325,11 @@ def _build_player_dashboard_summary_uncached() -> dict:
     card_two_future, _ = _submit_component(
         "card_two",
         lambda: _card_two_from_record(
-            get_latest_finalized_analysis_report(card_two_history, current, previous_target_issue),
+            _timed_component_stage(
+                "card_two",
+                "finalized_analysis_report",
+                lambda: get_latest_finalized_analysis_report(card_two_history, current, previous_target_issue),
+            ),
             current,
             previous_target_issue,
         ),
