@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -387,11 +388,45 @@ def _row_to_snapshot_summary(row: Any) -> dict:
     }
 
 
-def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
-    with _cloud_connection() as conn:
+def _query_cloud(sql: str, params: tuple = (), *, operation: str | None = None) -> list[Any]:
+    connect_start = time.perf_counter()
+    try:
+        conn = _cloud_connection()
+    except Exception as exc:
+        if operation:
+            logger.warning(
+                "postgres_latency operation=%s connect_ms=%s result=failed error_type=%s",
+                operation,
+                round((time.perf_counter() - connect_start) * 1000, 2),
+                type(exc).__name__,
+            )
+        raise
+
+    connect_ms = round((time.perf_counter() - connect_start) * 1000, 2)
+    with conn:
+        query_start = time.perf_counter()
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.fetchall()
+            try:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            except Exception as exc:
+                if operation:
+                    logger.warning(
+                        "postgres_latency operation=%s connect_ms=%s query_ms=%s result=failed error_type=%s",
+                        operation,
+                        connect_ms,
+                        round((time.perf_counter() - query_start) * 1000, 2),
+                        type(exc).__name__,
+                    )
+                raise
+            if operation:
+                logger.info(
+                    "postgres_latency operation=%s connect_ms=%s query_ms=%s result=success",
+                    operation,
+                    connect_ms,
+                    round((time.perf_counter() - query_start) * 1000, 2),
+                )
+            return rows
 
 
 def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
@@ -447,6 +482,7 @@ def get_latest_kuaishou_summary() -> dict | None:
         select id, issue, draw_time, source, created_at, updated_at
         from kuaishou_snapshots order by updated_at desc, id desc limit 1
         """,
+        operation="kuaishou_latest",
     )
     return _row_to_snapshot_summary(rows[0]) if rows else None
 
@@ -482,9 +518,15 @@ def get_kuaishou_summary_history(limit: int = 20) -> list[dict]:
     return [_row_to_snapshot_summary(row) for row in rows]
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    operation: str | None = None,
+) -> list[Any]:
     try:
-        rows = _query_cloud(sql, params)
+        rows = _query_cloud(sql, params, operation=operation) if operation else _query_cloud(sql, params)
         _record_db_path_status(
             backend="postgres",
             result="success",

@@ -52,7 +52,7 @@ def test_official_draw_summary_queries_omit_raw_json(monkeypatch):
     monkeypatch.setattr(
         official_draw_store,
         "_query_with_fallback",
-        lambda sql, params=(), sqlite_sql=None: captured.setdefault("sql", sql) and [],
+        lambda sql, params=(), sqlite_sql=None, **kwargs: captured.setdefault("sql", sql) and [],
     )
 
     assert official_draw_store.get_latest_official_draw_summary() is None
@@ -66,7 +66,7 @@ def test_kuaishou_summary_query_omits_raw_payloads(monkeypatch):
     monkeypatch.setattr(
         collector_store,
         "_query_with_fallback",
-        lambda sql, params=(), sqlite_sql=None: captured.setdefault("sql", sql) and [],
+        lambda sql, params=(), sqlite_sql=None, **kwargs: captured.setdefault("sql", sql) and [],
     )
 
     assert collector_store.get_latest_kuaishou_summary() is None

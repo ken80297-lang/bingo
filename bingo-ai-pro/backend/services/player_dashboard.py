@@ -326,13 +326,36 @@ def _public_step_name(name: str) -> str:
 
 
 def _submit_component(name: str, fn):
+    submitted_at = time.perf_counter()
+
+    def timed_fn():
+        started_at = time.perf_counter()
+        try:
+            result = fn()
+        except Exception as exc:
+            logger.warning(
+                "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=failed error_type=%s",
+                name,
+                round((started_at - submitted_at) * 1000, 2),
+                round((time.perf_counter() - started_at) * 1000, 2),
+                type(exc).__name__,
+            )
+            raise
+        logger.info(
+            "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=success",
+            name,
+            round((started_at - submitted_at) * 1000, 2),
+            round((time.perf_counter() - started_at) * 1000, 2),
+        )
+        return result
+
     with _PLAYER_IN_FLIGHT_LOCK:
         existing = _PLAYER_COMPONENT_IN_FLIGHT.get(name)
         if existing is not None and not existing.done():
             _PLAYER_RUNTIME_METRICS["skipped_busy_count"] += 1
             return None, "busy"
         generation = _PLAYER_CACHE_GENERATION
-        future = _PLAYER_EXECUTOR.submit(fn)
+        future = _PLAYER_EXECUTOR.submit(timed_fn)
         _PLAYER_COMPONENT_IN_FLIGHT[name] = future
         _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
     future.add_done_callback(

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -322,11 +323,45 @@ def save_official_draws(draws: list[dict]) -> dict:
         return {"status": "error", "saved": 0, "storage": None, "error": str(exc)}
 
 
-def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
-    with _cloud_connection() as conn:
+def _query_cloud(sql: str, params: tuple = (), *, operation: str | None = None) -> list[Any]:
+    connect_start = time.perf_counter()
+    try:
+        conn = _cloud_connection()
+    except Exception as exc:
+        if operation:
+            logger.warning(
+                "postgres_latency operation=%s connect_ms=%s result=failed error_type=%s",
+                operation,
+                round((time.perf_counter() - connect_start) * 1000, 2),
+                type(exc).__name__,
+            )
+        raise
+
+    connect_ms = round((time.perf_counter() - connect_start) * 1000, 2)
+    with conn:
+        query_start = time.perf_counter()
         with conn.cursor() as cur:
-            cur.execute(sql, params, prepare=False)
-            return cur.fetchall()
+            try:
+                cur.execute(sql, params, prepare=False)
+                rows = cur.fetchall()
+            except Exception as exc:
+                if operation:
+                    logger.warning(
+                        "postgres_latency operation=%s connect_ms=%s query_ms=%s result=failed error_type=%s",
+                        operation,
+                        connect_ms,
+                        round((time.perf_counter() - query_start) * 1000, 2),
+                        type(exc).__name__,
+                    )
+                raise
+            if operation:
+                logger.info(
+                    "postgres_latency operation=%s connect_ms=%s query_ms=%s result=success",
+                    operation,
+                    connect_ms,
+                    round((time.perf_counter() - query_start) * 1000, 2),
+                )
+            return rows
 
 
 def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
@@ -334,16 +369,22 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    operation: str | None = None,
+) -> list[Any]:
     if _cloud_enabled():
         try:
-            return _query_cloud(sql, params)
+            return _query_cloud(sql, params, operation=operation) if operation else _query_cloud(sql, params)
         except Exception as exc:
             logger.exception("cloud official query failed")
             if "verification_status" in str(exc) or "fetched_at" in str(exc):
                 try:
                     init_official_draw_tables()
-                    return _query_cloud(sql, params)
+                    return _query_cloud(sql, params, operation=operation) if operation else _query_cloud(sql, params)
                 except Exception:
                     logger.exception("cloud official query retry after init failed")
 
@@ -526,6 +567,7 @@ def get_latest_official_draw_summary() -> dict | None:
         order by cast(issue as integer) desc
         limit 1
         """,
+        operation="official_draw_latest",
     )
     return _row_to_official_summary(rows[0]) if rows else None
 
