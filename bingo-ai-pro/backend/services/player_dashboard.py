@@ -341,7 +341,7 @@ def _submit_component(name: str, fn):
                 type(exc).__name__,
             )
             raise
-        logger.info(
+        logger.warning(
             "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=success",
             name,
             round((started_at - submitted_at) * 1000, 2),

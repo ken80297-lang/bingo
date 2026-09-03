@@ -355,7 +355,7 @@ def _query_cloud(sql: str, params: tuple = (), *, operation: str | None = None) 
                     )
                 raise
             if operation:
-                logger.info(
+                logger.warning(
                     "postgres_latency operation=%s connect_ms=%s query_ms=%s result=success",
                     operation,
                     connect_ms,
