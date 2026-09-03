@@ -73,6 +73,7 @@ class FakeConnectionContext:
 
 class FakePool:
     instances = []
+    next_cursors = []
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -94,7 +95,8 @@ class FakePool:
 
     def connection(self, timeout=None):
         self.connection_timeouts.append(timeout)
-        connection = FakeConnection(FakeCursor(rows=[]), name=f"conn-{len(self.created_connections) + 1}")
+        cursor = FakePool.next_cursors.pop(0) if FakePool.next_cursors else FakeCursor(rows=[])
+        connection = FakeConnection(cursor, name=f"conn-{len(self.created_connections) + 1}")
         self.created_connections.append(connection)
         return FakeConnectionContext(self, connection)
 
@@ -103,9 +105,11 @@ class FakePool:
 def reset_pool():
     postgres.close_dashboard_read_pool()
     FakePool.instances.clear()
+    FakePool.next_cursors.clear()
     yield
     postgres.close_dashboard_read_pool()
     FakePool.instances.clear()
+    FakePool.next_cursors.clear()
 
 
 def test_dashboard_read_pool_is_lazy_and_bounded(monkeypatch):
@@ -212,6 +216,42 @@ def test_only_official_draw_latest_operation_uses_dashboard_pool(monkeypatch):
     assert regular.cursor_obj.execute_count == 1
 
 
+def test_official_draw_latest_uses_actual_connection_from_pool_context(monkeypatch):
+    fake_module = types.SimpleNamespace(ConnectionPool=FakePool)
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_module)
+    monkeypatch.setattr(postgres, "DATABASE_URL", "postgres://example")
+    cursor = FakeCursor(
+        rows=[
+            (
+                1,
+                "115040900",
+                "2026-07-30",
+                "2026-07-30T12:00:00+08:00",
+                "[1, 2, 3]",
+                "[1, 2, 3]",
+                3,
+                False,
+                "official",
+                "verified",
+                None,
+                True,
+                "created",
+                "updated",
+            )
+        ]
+    )
+    FakePool.next_cursors.append(cursor)
+    monkeypatch.setattr(official_draw_store, "_query_sqlite", lambda *args, **kwargs: pytest.fail("sqlite fallback should not run"))
+
+    result = official_draw_store.get_latest_official_draw_summary()
+
+    assert result["issue"] == "115040900"
+    assert cursor.execute_count == 1
+    pool = FakePool.instances[0]
+    assert pool.returned[0][0].cursor_obj is cursor
+    assert pool.returned[0][1] is None
+
+
 def test_only_kuaishou_latest_operation_uses_dashboard_pool(monkeypatch):
     calls = []
     pooled = FakeConnection(FakeCursor(rows=[]), name="pooled")
@@ -225,6 +265,23 @@ def test_only_kuaishou_latest_operation_uses_dashboard_pool(monkeypatch):
     assert calls == ["pool", "regular"]
     assert pooled.cursor_obj.execute_count == 1
     assert regular.cursor_obj.execute_count == 1
+
+
+def test_kuaishou_latest_uses_actual_connection_from_pool_context(monkeypatch):
+    fake_module = types.SimpleNamespace(ConnectionPool=FakePool)
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_module)
+    monkeypatch.setattr(postgres, "DATABASE_URL", "postgres://example")
+    cursor = FakeCursor(rows=[(1, "115040900", "2026-07-30T12:00:00+08:00", "kuaishou", "created", "updated")])
+    FakePool.next_cursors.append(cursor)
+    monkeypatch.setattr(collector_store, "_query_sqlite", lambda *args, **kwargs: pytest.fail("sqlite fallback should not run"))
+
+    result = collector_store.get_latest_kuaishou_summary()
+
+    assert result["issue"] == "115040900"
+    assert cursor.execute_count == 1
+    pool = FakePool.instances[0]
+    assert pool.returned[0][0].cursor_obj is cursor
+    assert pool.returned[0][1] is None
 
 
 def test_pool_acquire_failure_preserves_collector_sqlite_fallback(monkeypatch):
@@ -270,6 +327,21 @@ def test_pool_query_failure_preserves_official_sqlite_fallback(monkeypatch):
     result = official_draw_store.get_latest_official_draw_summary()
 
     assert result["issue"] == "115040900"
+
+
+def test_pool_context_releases_connection_after_query_exception(monkeypatch):
+    fake_module = types.SimpleNamespace(ConnectionPool=FakePool)
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_module)
+    monkeypatch.setattr(postgres, "DATABASE_URL", "postgres://example")
+    cursor = FakeCursor(error=RuntimeError("query failed"))
+    FakePool.next_cursors.append(cursor)
+    monkeypatch.setattr(collector_store, "_query_sqlite", lambda sql, params=(): [])
+
+    assert collector_store.get_latest_kuaishou_summary() is None
+
+    pool = FakePool.instances[0]
+    assert pool.returned[0][0].cursor_obj is cursor
+    assert pool.returned[0][1] is RuntimeError
 
 
 def test_app_startup_does_not_create_dashboard_read_pool(monkeypatch):

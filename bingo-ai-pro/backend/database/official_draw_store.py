@@ -331,43 +331,45 @@ def save_official_draws(draws: list[dict]) -> dict:
 
 def _query_cloud(sql: str, params: tuple = (), *, operation: str | None = None) -> list[Any]:
     connect_start = time.perf_counter()
+    acquired = False
     try:
-        conn = _dashboard_read_connection() if operation == "official_draw_latest" else _cloud_connection()
-    except Exception as exc:
-        if operation:
-            logger.warning(
-                "postgres_latency operation=%s connect_ms=%s result=failed error_type=%s",
-                operation,
-                round((time.perf_counter() - connect_start) * 1000, 2),
-                type(exc).__name__,
-            )
-        raise
-
-    connect_ms = round((time.perf_counter() - connect_start) * 1000, 2)
-    with conn:
-        query_start = time.perf_counter()
-        with conn.cursor() as cur:
-            try:
-                cur.execute(sql, params, prepare=False)
-                rows = cur.fetchall()
-            except Exception as exc:
+        conn_context = _dashboard_read_connection() if operation == "official_draw_latest" else _cloud_connection()
+        with conn_context as conn:
+            acquired = True
+            connect_ms = round((time.perf_counter() - connect_start) * 1000, 2)
+            query_start = time.perf_counter()
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(sql, params, prepare=False)
+                    rows = cur.fetchall()
+                except Exception as exc:
+                    if operation:
+                        logger.warning(
+                            "postgres_latency operation=%s connect_ms=%s query_ms=%s result=failed error_type=%s",
+                            operation,
+                            connect_ms,
+                            round((time.perf_counter() - query_start) * 1000, 2),
+                            type(exc).__name__,
+                        )
+                    raise
                 if operation:
                     logger.warning(
-                        "postgres_latency operation=%s connect_ms=%s query_ms=%s result=failed error_type=%s",
+                        "postgres_latency operation=%s connect_ms=%s query_ms=%s result=success",
                         operation,
                         connect_ms,
                         round((time.perf_counter() - query_start) * 1000, 2),
-                        type(exc).__name__,
                     )
-                raise
-            if operation:
+                return rows
+    except Exception as exc:
+        if operation:
+            if not acquired:
                 logger.warning(
-                    "postgres_latency operation=%s connect_ms=%s query_ms=%s result=success",
+                    "postgres_latency operation=%s connect_ms=%s result=failed error_type=%s",
                     operation,
-                    connect_ms,
-                    round((time.perf_counter() - query_start) * 1000, 2),
+                    round((time.perf_counter() - connect_start) * 1000, 2),
+                    type(exc).__name__,
                 )
-            return rows
+        raise
 
 
 def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
