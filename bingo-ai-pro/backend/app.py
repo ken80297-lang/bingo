@@ -637,9 +637,11 @@ def shutdown_event() -> None:
     try:
         from services.latest_sync import shutdown_latest_sync_background_tasks
         from services.prediction_service import shutdown_prediction_background_tasks
+        from database.postgres import close_dashboard_read_pool
 
         shutdown_latest_sync_background_tasks()
         shutdown_prediction_background_tasks()
+        close_dashboard_read_pool()
     except Exception as exc:
         print(f"background task shutdown failed: {exc}")
     if scheduler.running:

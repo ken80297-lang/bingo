@@ -97,7 +97,7 @@ def test_official_draw_latest_summary_logs_postgres_latency_once(monkeypatch, ca
     conn = FakeConnection(cursor)
 
     monkeypatch.setenv("DATABASE_URL", "postgres://secret")
-    monkeypatch.setattr(official_draw_store, "_cloud_connection", lambda: conn)
+    monkeypatch.setattr(official_draw_store, "_dashboard_read_connection", lambda: conn)
     monkeypatch.setattr(official_draw_store, "_query_sqlite", lambda *args, **kwargs: pytest.fail("sqlite fallback should not run"))
 
     with caplog.at_level(logging.INFO, logger="database.official_draw_store"):
@@ -118,7 +118,7 @@ def test_kuaishou_latest_summary_logs_postgres_latency_once(monkeypatch, caplog)
     cursor = FakeCursor(rows=[(1, "115040900", "2026-07-30T12:00:00+08:00", "kuaishou", "created", "updated")])
     conn = FakeConnection(cursor)
 
-    monkeypatch.setattr(collector_store, "_cloud_connection", lambda: conn)
+    monkeypatch.setattr(collector_store, "_dashboard_read_connection", lambda: conn)
     monkeypatch.setattr(collector_store, "_query_sqlite", lambda *args, **kwargs: pytest.fail("sqlite fallback should not run"))
 
     with caplog.at_level(logging.INFO, logger="database.collector_store"):
@@ -138,7 +138,7 @@ def test_postgres_latency_connection_failure_hides_raw_error(monkeypatch, caplog
     def fail_connect():
         raise ConnectionError("secret host and credential details")
 
-    monkeypatch.setattr(collector_store, "_cloud_connection", fail_connect)
+    monkeypatch.setattr(collector_store, "_dashboard_read_connection", fail_connect)
     monkeypatch.setattr(collector_store, "_query_sqlite", lambda sql, params=(): [])
 
     with caplog.at_level(logging.INFO, logger="database.collector_store"):

@@ -70,6 +70,12 @@ def _cloud_connection():
     return get_connection()
 
 
+def _dashboard_read_connection():
+    from database.postgres import dashboard_read_connection
+
+    return dashboard_read_connection()
+
+
 def _sqlite_connection() -> sqlite3.Connection:
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(SQLITE_PATH, check_same_thread=False)
@@ -391,7 +397,7 @@ def _row_to_snapshot_summary(row: Any) -> dict:
 def _query_cloud(sql: str, params: tuple = (), *, operation: str | None = None) -> list[Any]:
     connect_start = time.perf_counter()
     try:
-        conn = _cloud_connection()
+        conn = _dashboard_read_connection() if operation == "kuaishou_latest" else _cloud_connection()
     except Exception as exc:
         if operation:
             logger.warning(
