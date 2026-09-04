@@ -593,6 +593,72 @@ def test_prediction_history_bulk_metadata_cloud_uses_set_based_equal_priority_qu
     assert len(params) == 300
 
 
+def test_card_two_history_records_db_timing_breakdown(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(3)]
+    metadata_rows = [
+        _indexed_operation_event_row(0, "115040900", "115040901", source="cloud_source", trigger="cloud"),
+    ]
+    cursors = [FakeCursor(rows=main_rows), FakeCursor(rows=metadata_rows)]
+    connections = []
+
+    def fake_cloud_connection():
+        conn = FakeConnection(cursors[len(connections)])
+        connections.append(conn)
+        return conn
+
+    prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fake_cloud_connection)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        lambda *args, **kwargs: pytest.fail("sqlite fallback should not run"),
+    )
+
+    result = prediction_history_store.get_prediction_history_summary_records(
+        3,
+        diagnostic_component="card_two_history",
+    )
+
+    assert len(result) == 3
+    assert len(connections) == 2
+    status = prediction_history_store.get_card_two_history_timing_status()
+    stages = {
+        item["stage"]: item
+        for item in status["recent"]
+        if item.get("type") == "stage"
+    }
+    for stage, expected_rows in (("main_query", 3), ("metadata_bulk", 1)):
+        db_timing = stages[stage]["db_timing"]
+        assert db_timing["backend"] == "postgres"
+        assert db_timing["result"] == "success"
+        assert db_timing["row_count"] == expected_rows
+        assert set(db_timing) >= {"connect_ms", "execute_ms", "fetch_ms", "total_ms"}
+    assert status["latest"]["metadata_queries"] == 1
+
+
+def test_card_two_query_timing_records_cloud_failure(monkeypatch):
+    timing = {}
+
+    def fail_cloud_connection():
+        raise ConnectionError("secret host details")
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fail_cloud_connection)
+
+    with pytest.raises(ConnectionError):
+        prediction_history_store._with_card_two_query_timing(
+            timing,
+            lambda: prediction_history_store._query_cloud("select 1"),
+        )
+
+    assert timing["backend"] == "postgres"
+    assert timing["result"] == "failed"
+    assert timing["error_type"] == "ConnectionError"
+    assert "total_ms" in timing
+    assert "secret host" not in str(timing)
+
+
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):
     rows = [
         _prediction_summary_row(0),

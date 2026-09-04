@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ _NON_PRODUCTION_TEXT_MARKERS = ("preview", "simulation", "test", "fixture", "syn
 _CARD_TWO_HISTORY_TIMING_LIMIT = 20
 _CARD_TWO_HISTORY_TIMING_LOCK = threading.Lock()
 _CARD_TWO_HISTORY_TIMINGS: list[dict[str, Any]] = []
+_CARD_TWO_QUERY_TIMING: ContextVar[dict[str, Any] | None] = ContextVar("card_two_query_timing", default=None)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -577,10 +579,35 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
 
 
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
-    with _cloud_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params, prepare=False)
-            return cur.fetchall()
+    timing = _CARD_TWO_QUERY_TIMING.get()
+    total_started = time.perf_counter() if timing is not None else None
+    try:
+        connect_started = time.perf_counter()
+        conn_context = _cloud_connection()
+        if timing is not None:
+            timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+        with conn_context as conn:
+            with conn.cursor() as cur:
+                execute_started = time.perf_counter()
+                cur.execute(sql, params, prepare=False)
+                if timing is not None:
+                    timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+                fetch_started = time.perf_counter()
+                rows = cur.fetchall()
+                if timing is not None:
+                    timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
+                    timing["row_count"] = len(rows)
+                return rows
+    except Exception as exc:
+        if timing is not None:
+            timing["result"] = "failed"
+            timing["error_type"] = type(exc).__name__
+        raise
+    finally:
+        if timing is not None and total_started is not None:
+            timing.setdefault("backend", "postgres")
+            timing.setdefault("result", "success")
+            timing["total_ms"] = round((time.perf_counter() - total_started) * 1000, 2)
 
 
 def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
@@ -631,6 +658,16 @@ def _maybe_timed_dashboard_stage(component: str | None, stage: str, fn):
     if component:
         return _timed_dashboard_stage(component, stage, fn)
     return fn()
+
+
+def _with_card_two_query_timing(timing: dict[str, Any] | None, fn):
+    if timing is None:
+        return fn()
+    token = _CARD_TWO_QUERY_TIMING.set(timing)
+    try:
+        return fn()
+    finally:
+        _CARD_TWO_QUERY_TIMING.reset(token)
 
 
 def _record_card_two_history_timing(payload: dict[str, Any]) -> None:
@@ -1223,10 +1260,13 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
     _ensure_initialized()
     limit = max(1, min(int(limit or 100), 500))
     main_query_started = time.perf_counter()
+    main_query_timing: dict[str, Any] = {}
     rows = _maybe_timed_dashboard_stage(
         diagnostic_component,
         "prediction_history_summary_query",
-        lambda: _query_with_fallback(
+        lambda: _with_card_two_query_timing(
+            main_query_timing if diagnostics_enabled else None,
+            lambda: _query_with_fallback(
             """
             select {columns}
             from prediction_history p
@@ -1278,10 +1318,11 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
             order by cast(p.prediction_issue as integer) desc, p.created_at desc, p.id desc
             limit ?
             """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
+            ),
         ),
     )
     if diagnostics_enabled:
-        _log_card_two_history_stage("main_query", main_query_started)
+        _log_card_two_history_stage("main_query", main_query_started, db_timing=main_query_timing or None)
     def transform_rows() -> list[dict]:
         transformed = []
         for row in rows:
@@ -1298,16 +1339,25 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
         return transformed
 
     records = _maybe_timed_card_two_history_stage(diagnostics_enabled, "transform", transform_rows)
+    metadata_query_timing: dict[str, Any] = {}
     metadata_by_record, metadata_queries = _maybe_timed_card_two_history_stage(
         diagnostics_enabled,
         "metadata_bulk",
-        lambda: _prediction_event_metadata_bulk(records),
+        lambda: _with_card_two_query_timing(
+            metadata_query_timing if diagnostics_enabled else None,
+            lambda: _prediction_event_metadata_bulk(records),
+        ),
     )
     enriched = [
         _enrich_prediction_metadata_from_map(record, metadata_by_record.get(id(record)))
         for record in records
     ]
     if diagnostics_enabled:
+        if metadata_query_timing:
+            for event in reversed(_CARD_TWO_HISTORY_TIMINGS):
+                if event.get("type") == "stage" and event.get("stage") == "metadata_bulk":
+                    event["db_timing"] = dict(metadata_query_timing)
+                    break
         total_ms = round((time.perf_counter() - total_started) * 1000, 2)
         _record_card_two_history_timing(
             {
