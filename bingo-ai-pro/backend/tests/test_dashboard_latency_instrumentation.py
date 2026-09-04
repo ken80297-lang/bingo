@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import sqlite3
 import sys
 import time
 from concurrent.futures import Future
@@ -480,6 +481,116 @@ def test_prediction_history_bulk_metadata_matches_single_record_precedence(monke
     assert enriched[1]["source"] == single[1].get("source", "production_history")
     assert enriched[2]["source"] == single[2]["source"] == "message_match"
     assert enriched[2]["trigger"] == single[2]["trigger"] == "message_trigger"
+
+
+def test_prediction_history_bulk_metadata_preserves_equal_priority_semantics(monkeypatch, tmp_path):
+    db_path = tmp_path / "metadata_equal_priority.db"
+    records = [
+        {"issue": "115040901", "prediction_issue": "115040902"},
+        {"issue": "115040903", "prediction_issue": "115040904"},
+        {"issue": "115040905", "prediction_issue": "115040906"},
+        {"issue": "115040907", "prediction_issue": "115040908"},
+        {"issue": "115040909", "prediction_issue": "115040910"},
+        {"issue": "115040911", "prediction_issue": "115040912"},
+        {"issue": "115040913", "prediction_issue": "115040914"},
+    ]
+
+    def connect():
+        return sqlite3.connect(db_path)
+
+    with connect() as conn:
+        conn.execute(
+            """
+            create table operation_events (
+                id integer primary key,
+                issue text,
+                event_type text,
+                message text,
+                created_at text
+            )
+            """
+        )
+        events = [
+            (1, "115040901", "prediction_created", _operation_event_message("115040901", "other", source="issue_only", trigger="issue"), "2026-07-30T10:00:00"),
+            (2, "other", "prediction_created", _operation_event_message("other", "115040904", source="message_only", trigger="message"), "2026-07-30T10:01:00"),
+            (3, "115040905", "prediction_created", _operation_event_message("115040905", "old", source="issue_older", trigger="issue"), "2026-07-30T10:02:00"),
+            (4, "other", "prediction_created", _operation_event_message("other", "115040906", source="message_newer", trigger="message"), "2026-07-30T10:03:00"),
+            (5, "other", "prediction_created", _operation_event_message("other", "115040908", source="message_older", trigger="message"), "2026-07-30T10:04:00"),
+            (6, "115040907", "prediction_created", _operation_event_message("115040907", "old", source="issue_newer", trigger="issue"), "2026-07-30T10:05:00"),
+            (7, "115040909", "prediction_created", _operation_event_message("115040909", "115040910", source="same_event", trigger="both"), "2026-07-30T10:06:00"),
+            (8, "115040911", "prediction_created", _operation_event_message("115040911", "old", source="same_time_lower_id", trigger="issue"), "2026-07-30T10:07:00"),
+            (9, "other", "prediction_created", _operation_event_message("other", "115040912", source="same_time_higher_id", trigger="message"), "2026-07-30T10:07:00"),
+            (10, "115040901", "other_event", _operation_event_message("115040901", "115040902", source="wrong_type", trigger="ignored"), "2026-07-30T10:08:00"),
+        ]
+        conn.executemany(
+            "insert into operation_events (id, issue, event_type, message, created_at) values (?, ?, ?, ?, ?)",
+            events,
+        )
+
+    sqlite_calls = []
+    original_query_sqlite = prediction_history_store._query_sqlite
+
+    def counting_query_sqlite(sql, params=()):
+        sqlite_calls.append((sql, params))
+        return original_query_sqlite(sql, params)
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: False)
+    monkeypatch.setattr(prediction_history_store, "_sqlite_connection", connect)
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", counting_query_sqlite)
+
+    metadata, queries = prediction_history_store._prediction_event_metadata_bulk(records)
+
+    assert queries == 1
+    assert len(sqlite_calls) == 1
+    assert "left join lateral" not in sqlite_calls[0][0].lower()
+    assert "union all" in sqlite_calls[0][0].lower()
+    enriched = [
+        prediction_history_store._enrich_prediction_metadata_from_map(record.copy(), metadata.get(id(record)))
+        for record in records
+    ]
+    assert [item.get("source") for item in enriched] == [
+        "issue_only",
+        "message_only",
+        "message_newer",
+        "issue_newer",
+        "same_event",
+        "same_time_higher_id",
+        "production_history",
+    ]
+
+
+def test_prediction_history_bulk_metadata_cloud_uses_set_based_equal_priority_query(monkeypatch):
+    records = [
+        prediction_history_store._row_to_prediction_summary(_prediction_summary_row(index))
+        for index in range(100)
+    ]
+    cloud_calls = []
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+
+    def fake_cloud(sql, params=()):
+        cloud_calls.append((sql, params))
+        return [_indexed_operation_event_row(0, "115040900", "115040901", source="cloud_source", trigger="cloud")]
+
+    monkeypatch.setattr(prediction_history_store, "_query_cloud", fake_cloud)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        lambda *args, **kwargs: pytest.fail("sqlite metadata fallback should not run"),
+    )
+
+    metadata, queries = prediction_history_store._prediction_event_metadata_bulk(records)
+
+    assert queries == 1
+    assert metadata[id(records[0])]["source"] == "cloud_source"
+    assert len(cloud_calls) == 1
+    sql, params = cloud_calls[0]
+    lowered = sql.lower()
+    assert "left join lateral" not in lowered
+    assert "union all" in lowered
+    assert "row_number() over" in lowered
+    assert "order by created_at desc, id desc" in lowered
+    assert len(params) == 300
 
 
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):

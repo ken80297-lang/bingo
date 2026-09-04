@@ -818,45 +818,75 @@ def _prediction_event_metadata_bulk(records: list[dict]) -> tuple[dict[int, dict
     cloud_sql = f"""
         with lookup(idx, based_on, target) as (
             values {', '.join(cloud_values)}
+        ),
+        candidates as (
+            select lookup.idx, event.message, event.created_at, event.id
+            from lookup
+            join operation_events event
+              on lookup.based_on <> ''
+             and event.issue = lookup.based_on
+            where event.event_type = 'prediction_created'
+            union all
+            select lookup.idx, event.message, event.created_at, event.id
+            from lookup
+            join operation_events event
+              on lookup.target <> ''
+             and event.message like ('%%' || lookup.target || '%%')
+            where event.event_type = 'prediction_created'
+        ),
+        ranked as (
+            select idx, message,
+                   row_number() over (
+                       partition by idx
+                       order by created_at desc, id desc
+                   ) as rn
+            from candidates
         )
-        select lookup.idx, event.message
+        select lookup.idx, ranked.message
         from lookup
-        left join lateral (
-            select message
-            from operation_events
-            where event_type = 'prediction_created'
-              and (
-                (lookup.based_on <> '' and issue = lookup.based_on)
-                or (lookup.target <> '' and message like ('%%' || lookup.target || '%%'))
-              )
-            order by created_at desc, id desc
-            limit 1
-        ) event on true
-        where event.message is not null
+        left join ranked on ranked.idx = lookup.idx and ranked.rn = 1
+        where ranked.message is not null
         order by lookup.idx
         """
 
     sqlite_params: list[Any] = []
-    sqlite_parts = []
+    sqlite_values = []
     for index, _, based_on, target in lookup_records:
-        sqlite_parts.append(
-            """
-            select ?, message
-            from (
-                select message
-                from operation_events
-                where event_type = 'prediction_created'
-                  and (
-                    (? <> '' and issue = ?)
-                    or (? <> '' and message like '%' || ? || '%')
-                  )
-                order by created_at desc, id desc
-                limit 1
-            )
-            """
+        sqlite_values.append("(?, ?, ?)")
+        sqlite_params.extend((index, based_on, target))
+    sqlite_sql = f"""
+        with lookup(idx, based_on, target) as (
+            values {', '.join(sqlite_values)}
+        ),
+        candidates as (
+            select lookup.idx, event.message, event.created_at, event.id
+            from lookup
+            join operation_events event
+              on lookup.based_on <> ''
+             and event.issue = lookup.based_on
+            where event.event_type = 'prediction_created'
+            union all
+            select lookup.idx, event.message, event.created_at, event.id
+            from lookup
+            join operation_events event
+              on lookup.target <> ''
+             and event.message like '%' || lookup.target || '%'
+            where event.event_type = 'prediction_created'
+        ),
+        ranked as (
+            select idx, message,
+                   row_number() over (
+                       partition by idx
+                       order by created_at desc, id desc
+                   ) as rn
+            from candidates
         )
-        sqlite_params.extend((index, based_on, based_on, target, target))
-    sqlite_sql = "\nunion all\n".join(sqlite_parts)
+        select lookup.idx, ranked.message
+        from lookup
+        left join ranked on ranked.idx = lookup.idx and ranked.rn = 1
+        where ranked.message is not null
+        order by lookup.idx
+        """
 
     if _cloud_enabled():
         queries += 1
