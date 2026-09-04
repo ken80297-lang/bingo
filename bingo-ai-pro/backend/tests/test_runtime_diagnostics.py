@@ -170,7 +170,7 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
     import database
     from api import runtime_diagnostics
     from app import app
-    from database import collector_store
+    from database import collector_store, prediction_history_store
     from services import latest_sync
 
     def fail(name):
@@ -185,6 +185,15 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
         fallback_occurred=False,
         error_type=None,
     )
+    prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
+    prediction_history_store._record_card_two_history_timing(
+        {
+            "type": "summary",
+            "total_ms": 123.45,
+            "rows": 12,
+            "metadata_queries": 1,
+        }
+    )
     monkeypatch.setattr(database, "get_connection", fail("database.get_connection"))
     monkeypatch.setattr(collector_store, "_cloud_connection", fail("collector_store._cloud_connection"))
     monkeypatch.setattr(collector_store, "_sqlite_connection", fail("collector_store._sqlite_connection"))
@@ -192,6 +201,26 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
     monkeypatch.setattr(collector_store, "_query_sqlite", fail("collector_store._query_sqlite"))
     monkeypatch.setattr(collector_store, "init_collector_tables", fail("collector_store.init_collector_tables"))
     monkeypatch.setattr(collector_store, "save_kuaishou_snapshot", fail("collector_store.save_kuaishou_snapshot"))
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_with_fallback",
+        fail("prediction_history_store._query_with_fallback"),
+    )
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_cloud",
+        fail("prediction_history_store._query_cloud"),
+    )
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        fail("prediction_history_store._query_sqlite"),
+    )
+    monkeypatch.setattr(
+        prediction_history_store,
+        "init_prediction_history_tables",
+        fail("prediction_history_store.init_prediction_history_tables"),
+    )
     monkeypatch.setattr(latest_sync, "get_latest_sync_snapshot", fail("latest_sync.get_latest_sync_snapshot"))
 
     request = type("Request", (), {"app": app})()
@@ -203,6 +232,14 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
         "fallback_occurred": False,
         "error_type": None,
     }
+    assert payload["card_two_history_timing"]["latest"] == {
+        "type": "summary",
+        "total_ms": 123.45,
+        "rows": 12,
+        "metadata_queries": 1,
+        "recorded_at": payload["card_two_history_timing"]["latest"]["recorded_at"],
+    }
+    assert payload["card_two_history_timing"]["limit"] == 20
 
 
 def test_runtime_diagnostics_endpoint_registered():

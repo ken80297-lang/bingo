@@ -343,6 +343,7 @@ def test_prediction_history_summary_uses_one_cloud_metadata_bulk_query(monkeypat
     main_rows = [_prediction_summary_row(index) for index in range(100)]
     metadata_calls = []
 
+    prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
     monkeypatch.setattr(
@@ -388,6 +389,15 @@ def test_prediction_history_summary_uses_one_cloud_metadata_bulk_query(monkeypat
     assert "card_two_history_summary_latency" in joined
     assert "rows=100" in joined
     assert "metadata_queries=1" in joined
+    status = prediction_history_store.get_card_two_history_timing_status()
+    assert status["latest"]["type"] == "summary"
+    assert status["latest"]["rows"] == 100
+    assert status["latest"]["metadata_queries"] == 1
+    assert {item.get("stage") for item in status["recent"] if item.get("type") == "stage"} == {
+        "main_query",
+        "transform",
+        "metadata_bulk",
+    }
 
 
 def test_prediction_history_summary_metadata_bulk_falls_back_once(monkeypatch):
@@ -496,6 +506,30 @@ def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monk
     assert result[0]["read_layer"]["query_name"] == "production_prediction_history_summary_v1"
     assert "recommend_numbers" in result[0]
     assert "operation_event" not in result[0]
+
+
+def test_card_two_history_timing_status_is_bounded_process_memory():
+    prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
+
+    for index in range(prediction_history_store._CARD_TWO_HISTORY_TIMING_LIMIT + 5):
+        prediction_history_store._record_card_two_history_timing(
+            {
+                "type": "stage",
+                "stage": f"stage_{index}",
+                "duration_ms": index,
+                "result": "success",
+            }
+        )
+
+    status = prediction_history_store.get_card_two_history_timing_status()
+
+    assert status["limit"] == prediction_history_store._CARD_TWO_HISTORY_TIMING_LIMIT
+    assert len(status["recent"]) == prediction_history_store._CARD_TWO_HISTORY_TIMING_LIMIT
+    assert status["latest"]["stage"] == f"stage_{prediction_history_store._CARD_TWO_HISTORY_TIMING_LIMIT + 4}"
+    status["recent"].append({"stage": "mutated"})
+    assert len(prediction_history_store.get_card_two_history_timing_status()["recent"]) == (
+        prediction_history_store._CARD_TWO_HISTORY_TIMING_LIMIT
+    )
 
 
 def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):

@@ -4,9 +4,10 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,9 @@ PREDICTION_STATS_TTL_SECONDS = 60
 MIN_PRODUCTION_ISSUE_LENGTH = 6
 PRODUCTION_PREDICTION_QUERY_NAME = "production_latest_prediction_v2"
 _NON_PRODUCTION_TEXT_MARKERS = ("preview", "simulation", "test", "fixture", "synthetic")
+_CARD_TWO_HISTORY_TIMING_LIMIT = 20
+_CARD_TWO_HISTORY_TIMING_LOCK = threading.Lock()
+_CARD_TWO_HISTORY_TIMINGS: list[dict[str, Any]] = []
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -629,13 +633,41 @@ def _maybe_timed_dashboard_stage(component: str | None, stage: str, fn):
     return fn()
 
 
+def _record_card_two_history_timing(payload: dict[str, Any]) -> None:
+    event = dict(payload)
+    event.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+    with _CARD_TWO_HISTORY_TIMING_LOCK:
+        _CARD_TWO_HISTORY_TIMINGS.append(event)
+        del _CARD_TWO_HISTORY_TIMINGS[:-_CARD_TWO_HISTORY_TIMING_LIMIT]
+
+
+def get_card_two_history_timing_status() -> dict[str, Any]:
+    with _CARD_TWO_HISTORY_TIMING_LOCK:
+        recent = deepcopy(_CARD_TWO_HISTORY_TIMINGS)
+    return {
+        "latest": recent[-1] if recent else None,
+        "recent": recent,
+        "limit": _CARD_TWO_HISTORY_TIMING_LIMIT,
+    }
+
+
 def _log_card_two_history_stage(stage: str, started: float, result: str = "success", **extra: Any) -> None:
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    _record_card_two_history_timing(
+        {
+            "type": "stage",
+            "stage": stage,
+            "duration_ms": duration_ms,
+            "result": result,
+            **{key: value for key, value in extra.items() if value is not None},
+        }
+    )
     fields = " ".join(f"{key}={value}" for key, value in extra.items() if value is not None)
     suffix = f" {fields}" if fields else ""
     logger.warning(
         "card_two_history_stage_latency stage=%s duration_ms=%s result=%s%s",
         stage,
-        round((time.perf_counter() - started) * 1000, 2),
+        duration_ms,
         result,
         suffix,
     )
@@ -1246,9 +1278,18 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
         for record in records
     ]
     if diagnostics_enabled:
+        total_ms = round((time.perf_counter() - total_started) * 1000, 2)
+        _record_card_two_history_timing(
+            {
+                "type": "summary",
+                "total_ms": total_ms,
+                "rows": len(enriched),
+                "metadata_queries": metadata_queries,
+            }
+        )
         logger.warning(
             "card_two_history_summary_latency total_ms=%s rows=%s metadata_queries=%s",
-            round((time.perf_counter() - total_started) * 1000, 2),
+            total_ms,
             len(enriched),
             metadata_queries,
         )
