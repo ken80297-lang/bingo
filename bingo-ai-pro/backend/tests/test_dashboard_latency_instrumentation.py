@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 import sys
@@ -71,6 +72,105 @@ class FakeConnection:
 
 def _messages(caplog, logger_name: str) -> list[str]:
     return [record.getMessage() for record in caplog.records if record.name == logger_name]
+
+
+def _prediction_summary_row(index: int = 0, *, issue: str | None = None, strategy: str = "production") -> tuple:
+    source_issue = issue or str(115040900 + index)
+    target_issue = str(int(source_issue) + 1)
+    return (
+        index + 1,
+        source_issue,
+        target_issue,
+        "2026-07-30T12:00:00+08:00",
+        strategy,
+        0.75,
+        json.dumps([1, 2, 3, 4, 5]),
+        6,
+        json.dumps([1, 2, 3]),
+        json.dumps([1, 2, 3, 4]),
+        json.dumps([]),
+        json.dumps([]),
+        json.dumps([]),
+        json.dumps([]),
+        "small",
+        "odd",
+        json.dumps([1, 2, 3]),
+        3,
+        False,
+        False,
+        False,
+        0.6,
+        "created",
+        "updated",
+        "model",
+        "verified",
+        target_issue,
+        "verified",
+        json.dumps([1, 2, 3]),
+        json.dumps([4, 5]),
+        5,
+        0.6,
+        False,
+        False,
+        0.8,
+        2,
+        True,
+        "test-release",
+    )
+
+
+def _operation_event_message(issue: str, target: str, *, source: str, trigger: str, recommended_count: int = 5) -> str:
+    return json.dumps(
+        {
+            "source": source,
+            "trigger": trigger,
+            "event_type": "prediction_created",
+            "based_on_issue": issue,
+            "target_issue": target,
+            "recommended_count": recommended_count,
+        }
+    )
+
+
+def _operation_event_row(
+    issue: str,
+    target: str,
+    *,
+    source: str,
+    trigger: str,
+    recommended_count: int = 5,
+) -> tuple:
+    return (
+        issue,
+        _operation_event_message(
+            issue,
+            target,
+            source=source,
+            trigger=trigger,
+            recommended_count=recommended_count,
+        ),
+    )
+
+
+def _indexed_operation_event_row(
+    index: int,
+    issue: str,
+    target: str,
+    *,
+    source: str,
+    trigger: str,
+    recommended_count: int = 5,
+) -> tuple:
+    return (
+        index,
+        _operation_event_message(
+            issue,
+            target,
+            source=source,
+            trigger=trigger,
+            recommended_count=recommended_count,
+        ),
+    )
 
 
 def test_official_draw_latest_summary_logs_postgres_latency_once(monkeypatch, caplog):
@@ -218,6 +318,7 @@ def test_dashboard_component_stage_latency_preserves_exception(caplog):
 def test_prediction_history_summary_stage_adds_no_extra_query(monkeypatch, caplog):
     calls = []
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_prediction_event_metadata_bulk", lambda records: ({}, 0))
 
     def fake_query(sql, params=(), sqlite_sql=None):
         calls.append((sql, params, sqlite_sql))
@@ -236,6 +337,165 @@ def test_prediction_history_summary_stage_adds_no_extra_query(monkeypatch, caplo
     joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
     assert "component_stage_latency component=card_two_history stage=prediction_history_summary_query" in joined
     assert "result=success" in joined
+
+
+def test_prediction_history_summary_uses_one_cloud_metadata_bulk_query(monkeypatch, caplog):
+    main_rows = [_prediction_summary_row(index) for index in range(100)]
+    metadata_calls = []
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_with_fallback",
+        lambda sql, params=(), sqlite_sql=None: main_rows,
+    )
+
+    def fake_cloud(sql, params=()):
+        metadata_calls.append((sql, params))
+        return [
+            _indexed_operation_event_row(
+                0,
+                "115040900",
+                "115040901",
+                source="cloud_source",
+                trigger="cloud_trigger",
+            )
+        ]
+
+    monkeypatch.setattr(prediction_history_store, "_query_cloud", fake_cloud)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        lambda *args, **kwargs: pytest.fail("sqlite metadata fallback should not run"),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="database.prediction_history_store"):
+        result = prediction_history_store.get_prediction_history_summary_records(
+            100,
+            diagnostic_component="card_two_history",
+        )
+
+    assert len(result) == 100
+    assert result[0]["source"] == "cloud_source"
+    assert result[0]["trigger"] == "cloud_trigger"
+    assert result[1]["source"] == "production_history"
+    assert len(metadata_calls) == 1
+    joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
+    assert "card_two_history_stage_latency stage=main_query" in joined
+    assert "card_two_history_stage_latency stage=transform" in joined
+    assert "card_two_history_stage_latency stage=metadata_bulk" in joined
+    assert "card_two_history_summary_latency" in joined
+    assert "rows=100" in joined
+    assert "metadata_queries=1" in joined
+
+
+def test_prediction_history_summary_metadata_bulk_falls_back_once(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(100)]
+    cloud_calls = []
+    sqlite_calls = []
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_with_fallback",
+        lambda sql, params=(), sqlite_sql=None: main_rows,
+    )
+
+    def fail_cloud(sql, params=()):
+        cloud_calls.append((sql, params))
+        raise ConnectionError("hidden credentials")
+
+    def fake_sqlite(sql, params=()):
+        sqlite_calls.append((sql, params))
+        return [
+            _indexed_operation_event_row(
+                0,
+                "115040900",
+                "115040901",
+                source="sqlite_source",
+                trigger="sqlite_trigger",
+            )
+        ]
+
+    monkeypatch.setattr(prediction_history_store, "_query_cloud", fail_cloud)
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", fake_sqlite)
+
+    result = prediction_history_store.get_prediction_history_summary_records(100)
+
+    assert len(result) == 100
+    assert result[0]["source"] == "sqlite_source"
+    assert result[0]["trigger"] == "sqlite_trigger"
+    assert len(cloud_calls) == 1
+    assert len(sqlite_calls) == 1
+
+
+def test_prediction_history_bulk_metadata_matches_single_record_precedence(monkeypatch):
+    records = [
+        prediction_history_store._row_to_prediction_summary(_prediction_summary_row(0)),
+        prediction_history_store._row_to_prediction_summary(_prediction_summary_row(1)),
+        prediction_history_store._row_to_prediction_summary(_prediction_summary_row(2)),
+    ]
+    rows = [
+        _operation_event_row("115040900", "115040901", source="newer", trigger="newer_trigger"),
+        _operation_event_row("115040900", "115040901", source="older", trigger="older_trigger"),
+        _operation_event_row("other", "115040903", source="message_match", trigger="message_trigger"),
+    ]
+
+    def fake_single_query(sql, params=(), sqlite_sql=None):
+        based_on, pattern = params
+        target = pattern.strip("%")
+        for row in rows:
+            if row[0] == based_on or target in row[1]:
+                return [(row[1],)]
+        return []
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_single_query)
+    single = [prediction_history_store._prediction_event_metadata(record) for record in records]
+
+    indexed_rows = [
+        (0, rows[0][1]),
+        (1, None),
+        (2, rows[2][1]),
+    ]
+    bulk = prediction_history_store._metadata_map_from_indexed_rows(records, indexed_rows)
+    enriched = [
+        prediction_history_store._enrich_prediction_metadata_from_map(record.copy(), bulk.get(id(record)))
+        for record in records
+    ]
+
+    assert enriched[0]["source"] == single[0]["source"] == "newer"
+    assert enriched[0]["trigger"] == single[0]["trigger"] == "newer_trigger"
+    assert enriched[1]["source"] == single[1].get("source", "production_history")
+    assert enriched[2]["source"] == single[2]["source"] == "message_match"
+    assert enriched[2]["trigger"] == single[2]["trigger"] == "message_trigger"
+
+
+def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):
+    rows = [
+        _prediction_summary_row(0),
+        _prediction_summary_row(1, strategy="test"),
+        _prediction_summary_row(2),
+    ]
+    captured = {}
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        captured["params"] = params
+        return rows
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+    monkeypatch.setattr(prediction_history_store, "_prediction_event_metadata_bulk", lambda records: ({}, 0))
+
+    result = prediction_history_store.get_prediction_history_summary_records(100)
+
+    assert captured["params"] == (100,)
+    assert [item["issue"] for item in result] == ["115040900", "115040902"]
+    assert result[0]["read_layer"]["query_name"] == "production_prediction_history_summary_v1"
+    assert "recommend_numbers" in result[0]
+    assert "operation_event" not in result[0]
 
 
 def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):

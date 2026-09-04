@@ -629,6 +629,31 @@ def _maybe_timed_dashboard_stage(component: str | None, stage: str, fn):
     return fn()
 
 
+def _log_card_two_history_stage(stage: str, started: float, result: str = "success", **extra: Any) -> None:
+    fields = " ".join(f"{key}={value}" for key, value in extra.items() if value is not None)
+    suffix = f" {fields}" if fields else ""
+    logger.warning(
+        "card_two_history_stage_latency stage=%s duration_ms=%s result=%s%s",
+        stage,
+        round((time.perf_counter() - started) * 1000, 2),
+        result,
+        suffix,
+    )
+
+
+def _maybe_timed_card_two_history_stage(enabled: bool, stage: str, fn):
+    if not enabled:
+        return fn()
+    started = time.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        _log_card_two_history_stage(stage, started, "failed", error_type=type(exc).__name__)
+        raise
+    _log_card_two_history_stage(stage, started, "success")
+    return result
+
+
 def _row_to_prediction(row: Any) -> dict:
     recommend_numbers = _normalize_numbers(_json_loads(row[6]) or [])
     winning_numbers = _normalize_numbers(_json_loads(row[17]) or [])
@@ -722,7 +747,11 @@ def _prediction_event_metadata(record: dict) -> dict:
     )
     if not rows:
         return {}
-    payload = _json_loads(rows[0][0])
+    return _prediction_event_metadata_from_message(rows[0][0])
+
+
+def _prediction_event_metadata_from_message(message: Any) -> dict:
+    payload = _json_loads(message)
     if not isinstance(payload, dict):
         return {}
     return {
@@ -737,8 +766,104 @@ def _prediction_event_metadata(record: dict) -> dict:
     }
 
 
+def _prediction_event_metadata_bulk(records: list[dict]) -> tuple[dict[int, dict], int]:
+    lookup_records = []
+    for index, record in enumerate(records):
+        based_on = str(record.get("issue") or "")
+        target = str(record.get("prediction_issue") or "")
+        if based_on or target:
+            lookup_records.append((index, record, based_on, target))
+    if not lookup_records:
+        return {}, 0
+
+    queries = 0
+    rows: list[Any] = []
+    cloud_params: list[Any] = []
+    cloud_values = []
+    for index, _, based_on, target in lookup_records:
+        cloud_values.append("(%s, %s, %s)")
+        cloud_params.extend((index, based_on, target))
+    cloud_sql = f"""
+        with lookup(idx, based_on, target) as (
+            values {', '.join(cloud_values)}
+        )
+        select lookup.idx, event.message
+        from lookup
+        left join lateral (
+            select message
+            from operation_events
+            where event_type = 'prediction_created'
+              and (
+                (lookup.based_on <> '' and issue = lookup.based_on)
+                or (lookup.target <> '' and message like ('%%' || lookup.target || '%%'))
+              )
+            order by created_at desc, id desc
+            limit 1
+        ) event on true
+        where event.message is not null
+        order by lookup.idx
+        """
+
+    sqlite_params: list[Any] = []
+    sqlite_parts = []
+    for index, _, based_on, target in lookup_records:
+        sqlite_parts.append(
+            """
+            select ?, message
+            from (
+                select message
+                from operation_events
+                where event_type = 'prediction_created'
+                  and (
+                    (? <> '' and issue = ?)
+                    or (? <> '' and message like '%' || ? || '%')
+                  )
+                order by created_at desc, id desc
+                limit 1
+            )
+            """
+        )
+        sqlite_params.extend((index, based_on, based_on, target, target))
+    sqlite_sql = "\nunion all\n".join(sqlite_parts)
+
+    if _cloud_enabled():
+        queries += 1
+        try:
+            rows = _query_cloud(cloud_sql, tuple(cloud_params))
+        except Exception:
+            logger.exception("cloud prediction_history metadata query failed")
+        if rows:
+            return _metadata_map_from_indexed_rows(records, rows), queries
+
+    queries += 1
+    try:
+        rows = _query_sqlite(sqlite_sql, tuple(sqlite_params))
+    except Exception:
+        logger.exception("sqlite prediction_history metadata query failed")
+        return {}, queries
+    return _metadata_map_from_indexed_rows(records, rows), queries
+
+
+def _metadata_map_from_indexed_rows(records: list[dict], rows: list[Any]) -> dict[int, dict]:
+    metadata_by_record: dict[int, dict] = {}
+    for row in rows:
+        try:
+            record = records[int(row[0])]
+        except Exception:
+            continue
+        metadata = _prediction_event_metadata_from_message(row[1] if len(row) > 1 else None)
+        if metadata:
+            metadata_by_record[id(record)] = metadata
+    return metadata_by_record
+
+
 def _enrich_prediction_metadata(record: dict) -> dict:
     metadata = _prediction_event_metadata(record)
+    return _enrich_prediction_metadata_from_map(record, metadata)
+
+
+def _enrich_prediction_metadata_from_map(record: dict, metadata: dict | None) -> dict:
+    metadata = metadata or {}
     record["source"] = metadata.get("source") or "production_history"
     record["trigger"] = metadata.get("trigger") or "production_read_layer"
     if metadata.get("operation_event"):
@@ -1031,8 +1156,11 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
 
 
 def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_component: str | None = None) -> list[dict]:
+    total_started = time.perf_counter()
+    diagnostics_enabled = diagnostic_component == "card_two_history"
     _ensure_initialized()
     limit = max(1, min(int(limit or 100), 500))
+    main_query_started = time.perf_counter()
     rows = _maybe_timed_dashboard_stage(
         diagnostic_component,
         "prediction_history_summary_query",
@@ -1090,19 +1218,41 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
             """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH),
         ),
     )
-    records = []
-    for row in rows:
-        record = _row_to_prediction_summary(row)
-        if not is_production_prediction(record):
-            continue
-        record["read_layer"] = {
-            "data_source": "database",
-            "table_name": "prediction_history",
-            "query_name": "production_prediction_history_summary_v1",
-            "production_filtered": True,
-        }
-        records.append(_enrich_prediction_metadata(record))
-    return records
+    if diagnostics_enabled:
+        _log_card_two_history_stage("main_query", main_query_started)
+    def transform_rows() -> list[dict]:
+        transformed = []
+        for row in rows:
+            record = _row_to_prediction_summary(row)
+            if not is_production_prediction(record):
+                continue
+            record["read_layer"] = {
+                "data_source": "database",
+                "table_name": "prediction_history",
+                "query_name": "production_prediction_history_summary_v1",
+                "production_filtered": True,
+            }
+            transformed.append(record)
+        return transformed
+
+    records = _maybe_timed_card_two_history_stage(diagnostics_enabled, "transform", transform_rows)
+    metadata_by_record, metadata_queries = _maybe_timed_card_two_history_stage(
+        diagnostics_enabled,
+        "metadata_bulk",
+        lambda: _prediction_event_metadata_bulk(records),
+    )
+    enriched = [
+        _enrich_prediction_metadata_from_map(record, metadata_by_record.get(id(record)))
+        for record in records
+    ]
+    if diagnostics_enabled:
+        logger.warning(
+            "card_two_history_summary_latency total_ms=%s rows=%s metadata_queries=%s",
+            round((time.perf_counter() - total_started) * 1000, 2),
+            len(enriched),
+            metadata_queries,
+        )
+    return enriched
 
 
 def get_prediction_history_count() -> int:
