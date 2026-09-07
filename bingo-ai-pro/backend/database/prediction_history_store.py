@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -35,6 +36,11 @@ _CARD_TWO_HISTORY_TIMING_LIMIT = 20
 _CARD_TWO_HISTORY_TIMING_LOCK = threading.Lock()
 _CARD_TWO_HISTORY_TIMINGS: list[dict[str, Any]] = []
 _CARD_TWO_QUERY_TIMING: ContextVar[dict[str, Any] | None] = ContextVar("card_two_query_timing", default=None)
+_CARD_TWO_DASHBOARD_CONNECTION: ContextVar[Any | None] = ContextVar("card_two_dashboard_connection", default=None)
+_CARD_TWO_DASHBOARD_CONNECTION_STATE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "card_two_dashboard_connection_state",
+    default=None,
+)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -243,6 +249,12 @@ def _cloud_connection():
     from database import get_connection
 
     return get_connection()
+
+
+def _dashboard_read_connection():
+    from database.postgres import dashboard_read_connection
+
+    return dashboard_read_connection()
 
 
 def _sqlite_connection() -> sqlite3.Connection:
@@ -578,27 +590,56 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
         return {"status": "error", "storage": None, "error": str(exc)}
 
 
+def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, Any] | None = None) -> list[Any]:
+    with conn.cursor() as cur:
+        execute_started = time.perf_counter()
+        cur.execute(sql, params, prepare=False)
+        if timing is not None:
+            timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+        fetch_started = time.perf_counter()
+        rows = cur.fetchall()
+        if timing is not None:
+            timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
+            timing["row_count"] = len(rows)
+        return rows
+
+
+def _record_shared_connection_acquire_timing(timing: dict[str, Any] | None, state: dict[str, Any] | None) -> None:
+    if timing is None:
+        return
+    if not state:
+        timing["connect_ms"] = 0.0
+        return
+    if state.get("connect_reported"):
+        timing["connect_ms"] = 0.0
+        timing["connection_reused"] = True
+        return
+    timing["connect_ms"] = state.get("connect_ms", 0.0)
+    state["connect_reported"] = True
+
+
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
     timing = _CARD_TWO_QUERY_TIMING.get()
     total_started = time.perf_counter() if timing is not None else None
     try:
+        shared_state = _CARD_TWO_DASHBOARD_CONNECTION_STATE.get()
+        shared_conn = _CARD_TWO_DASHBOARD_CONNECTION.get()
+        if shared_state is not None:
+            if not shared_state.get("cloud_available", True) or shared_conn is None:
+                raise RuntimeError("dashboard read connection unavailable")
+            _record_shared_connection_acquire_timing(timing, shared_state)
+            return _execute_cloud_query(shared_conn, sql, params, timing)
+
         connect_started = time.perf_counter()
         conn_context = _cloud_connection()
         if timing is not None:
             timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
         with conn_context as conn:
-            with conn.cursor() as cur:
-                execute_started = time.perf_counter()
-                cur.execute(sql, params, prepare=False)
-                if timing is not None:
-                    timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
-                fetch_started = time.perf_counter()
-                rows = cur.fetchall()
-                if timing is not None:
-                    timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
-                    timing["row_count"] = len(rows)
-                return rows
+            return _execute_cloud_query(conn, sql, params, timing)
     except Exception as exc:
+        shared_state = _CARD_TWO_DASHBOARD_CONNECTION_STATE.get()
+        if shared_state is not None:
+            shared_state["cloud_available"] = False
         if timing is not None:
             timing["result"] = "failed"
             timing["error_type"] = type(exc).__name__
@@ -668,6 +709,44 @@ def _with_card_two_query_timing(timing: dict[str, Any] | None, fn):
         return fn()
     finally:
         _CARD_TWO_QUERY_TIMING.reset(token)
+
+
+@contextmanager
+def _card_two_dashboard_connection_scope(enabled: bool):
+    if not enabled or not _cloud_enabled():
+        yield
+        return
+
+    state: dict[str, Any] = {"cloud_available": True, "connect_ms": 0.0, "connect_reported": False}
+    acquired = False
+    try:
+        acquire_started = time.perf_counter()
+        with _dashboard_read_connection() as conn:
+            acquired = True
+            state["connect_ms"] = round((time.perf_counter() - acquire_started) * 1000, 2)
+            conn_token = _CARD_TWO_DASHBOARD_CONNECTION.set(conn)
+            state_token = _CARD_TWO_DASHBOARD_CONNECTION_STATE.set(state)
+            try:
+                yield
+            finally:
+                _CARD_TWO_DASHBOARD_CONNECTION.reset(conn_token)
+                _CARD_TWO_DASHBOARD_CONNECTION_STATE.reset(state_token)
+    except Exception as exc:
+        if acquired:
+            raise
+        logger.warning(
+            "cloud prediction_history dashboard read connection failed error_type=%s",
+            type(exc).__name__,
+        )
+        state["cloud_available"] = False
+        state["error_type"] = type(exc).__name__
+        conn_token = _CARD_TWO_DASHBOARD_CONNECTION.set(None)
+        state_token = _CARD_TWO_DASHBOARD_CONNECTION_STATE.set(state)
+        try:
+            yield
+        finally:
+            _CARD_TWO_DASHBOARD_CONNECTION.reset(conn_token)
+            _CARD_TWO_DASHBOARD_CONNECTION_STATE.reset(state_token)
 
 
 def _record_card_two_history_timing(payload: dict[str, Any]) -> None:
@@ -1259,6 +1338,22 @@ def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_compo
     diagnostics_enabled = diagnostic_component == "card_two_history"
     _ensure_initialized()
     limit = max(1, min(int(limit or 100), 500))
+    with _card_two_dashboard_connection_scope(diagnostics_enabled):
+        return _get_prediction_history_summary_records_loaded(
+            limit,
+            diagnostic_component=diagnostic_component,
+            diagnostics_enabled=diagnostics_enabled,
+            total_started=total_started,
+        )
+
+
+def _get_prediction_history_summary_records_loaded(
+    limit: int,
+    *,
+    diagnostic_component: str | None,
+    diagnostics_enabled: bool,
+    total_started: float,
+) -> list[dict]:
     main_query_started = time.perf_counter()
     main_query_timing: dict[str, Any] = {}
     rows = _maybe_timed_dashboard_stage(

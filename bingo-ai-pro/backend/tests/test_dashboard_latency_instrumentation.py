@@ -71,6 +71,29 @@ class FakeConnection:
         return self.cursor_obj
 
 
+class SequentialFakeConnection:
+    def __init__(self, cursors: list[FakeCursor]):
+        self.cursors = list(cursors)
+        self.cursor_history: list[FakeCursor] = []
+        self.closed = False
+        self.enter_count = 0
+        self.exit_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exit_count += 1
+        self.closed = True
+        return False
+
+    def cursor(self):
+        cursor = self.cursors.pop(0)
+        self.cursor_history.append(cursor)
+        return cursor
+
+
 def _messages(caplog, logger_name: str) -> list[str]:
     return [record.getMessage() for record in caplog.records if record.name == logger_name]
 
@@ -598,18 +621,22 @@ def test_card_two_history_records_db_timing_breakdown(monkeypatch):
     metadata_rows = [
         _indexed_operation_event_row(0, "115040900", "115040901", source="cloud_source", trigger="cloud"),
     ]
-    cursors = [FakeCursor(rows=main_rows), FakeCursor(rows=metadata_rows)]
-    connections = []
-
-    def fake_cloud_connection():
-        conn = FakeConnection(cursors[len(connections)])
-        connections.append(conn)
-        return conn
+    connection = SequentialFakeConnection([FakeCursor(rows=main_rows), FakeCursor(rows=metadata_rows)])
+    acquisitions = []
 
     prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
-    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fake_cloud_connection)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_dashboard_read_connection",
+        lambda: acquisitions.append(connection) or connection,
+    )
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_cloud_connection",
+        lambda: pytest.fail("regular cloud connection should not be used"),
+    )
     monkeypatch.setattr(
         prediction_history_store,
         "_query_sqlite",
@@ -622,7 +649,11 @@ def test_card_two_history_records_db_timing_breakdown(monkeypatch):
     )
 
     assert len(result) == 3
-    assert len(connections) == 2
+    assert acquisitions == [connection]
+    assert len(connection.cursor_history) == 2
+    assert connection.enter_count == 1
+    assert connection.exit_count == 1
+    assert connection.closed is True
     status = prediction_history_store.get_card_two_history_timing_status()
     stages = {
         item["stage"]: item
@@ -635,7 +666,134 @@ def test_card_two_history_records_db_timing_breakdown(monkeypatch):
         assert db_timing["result"] == "success"
         assert db_timing["row_count"] == expected_rows
         assert set(db_timing) >= {"connect_ms", "execute_ms", "fetch_ms", "total_ms"}
+    assert stages["metadata_bulk"]["db_timing"]["connection_reused"] is True
     assert status["latest"]["metadata_queries"] == 1
+
+
+def test_regular_prediction_history_summary_does_not_use_dashboard_pool(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(3)]
+    connections = [
+        FakeConnection(FakeCursor(rows=main_rows)),
+        FakeConnection(FakeCursor(rows=[])),
+    ]
+    cloud_calls = []
+
+    def fake_cloud_connection():
+        cloud_calls.append("regular")
+        return connections[len(cloud_calls) - 1]
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fake_cloud_connection)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_dashboard_read_connection",
+        lambda: pytest.fail("dashboard pool should be Card Two diagnostic-only"),
+    )
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", lambda sql, params=(): [])
+
+    result = prediction_history_store.get_prediction_history_summary_records(100)
+
+    assert len(result) == 3
+    assert cloud_calls == ["regular", "regular"]
+
+
+def test_card_two_dashboard_pool_acquire_failure_preserves_sqlite_fallback(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(3)]
+    metadata_rows = [
+        _indexed_operation_event_row(0, "115040900", "115040901", source="sqlite_source", trigger="sqlite"),
+    ]
+    sqlite_calls = []
+
+    def fake_sqlite(sql, params=()):
+        sqlite_calls.append((sql, params))
+        return main_rows if len(sqlite_calls) == 1 else metadata_rows
+
+    def fail_pool():
+        raise TimeoutError("sensitive pool details")
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fail_pool)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_cloud_connection",
+        lambda: pytest.fail("regular cloud connection should not be used after pool acquire failure"),
+    )
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", fake_sqlite)
+
+    result = prediction_history_store.get_prediction_history_summary_records(
+        3,
+        diagnostic_component="card_two_history",
+    )
+
+    assert len(result) == 3
+    assert result[0]["source"] == "sqlite_source"
+    assert result[0]["trigger"] == "sqlite"
+    assert len(sqlite_calls) == 2
+
+
+def test_card_two_main_query_failure_skips_metadata_on_poisoned_connection(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(3)]
+    metadata_rows = [
+        _indexed_operation_event_row(0, "115040900", "115040901", source="sqlite_source", trigger="sqlite"),
+    ]
+    connection = SequentialFakeConnection([FakeCursor(error=ConnectionError("secret host details"))])
+    sqlite_calls = []
+
+    def fake_sqlite(sql, params=()):
+        sqlite_calls.append((sql, params))
+        return main_rows if len(sqlite_calls) == 1 else metadata_rows
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", lambda: connection)
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", fake_sqlite)
+
+    result = prediction_history_store.get_prediction_history_summary_records(
+        3,
+        diagnostic_component="card_two_history",
+    )
+
+    assert len(result) == 3
+    assert len(connection.cursor_history) == 1
+    assert len(sqlite_calls) == 2
+    assert result[0]["source"] == "sqlite_source"
+    assert result[0]["trigger"] == "sqlite"
+
+
+def test_card_two_metadata_failure_preserves_sqlite_metadata_fallback(monkeypatch):
+    main_rows = [_prediction_summary_row(index) for index in range(3)]
+    metadata_rows = [
+        _indexed_operation_event_row(0, "115040900", "115040901", source="sqlite_source", trigger="sqlite"),
+    ]
+    connection = SequentialFakeConnection(
+        [
+            FakeCursor(rows=main_rows),
+            FakeCursor(error=RuntimeError("secret query details")),
+        ]
+    )
+    sqlite_calls = []
+
+    def fake_sqlite(sql, params=()):
+        sqlite_calls.append((sql, params))
+        return metadata_rows
+
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", lambda: connection)
+    monkeypatch.setattr(prediction_history_store, "_query_sqlite", fake_sqlite)
+
+    result = prediction_history_store.get_prediction_history_summary_records(
+        3,
+        diagnostic_component="card_two_history",
+    )
+
+    assert len(result) == 3
+    assert len(connection.cursor_history) == 2
+    assert sqlite_calls
+    assert result[0]["source"] == "sqlite_source"
+    assert result[0]["trigger"] == "sqlite"
 
 
 def test_card_two_query_timing_records_cloud_failure(monkeypatch):
