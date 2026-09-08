@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from config.runtime_flags import get_scheduler_runtime_flags
 from database.collector_store import get_collector_db_path_status
 from database.prediction_history_store import get_card_two_history_timing_status
+from database.prediction_history_store import run_card_two_autocommit_roundtrip_diagnostic
 from database.prediction_history_store import run_card_two_roundtrip_diagnostic
 
 router = APIRouter(prefix="/api", tags=["Runtime Diagnostics"])
@@ -36,3 +37,8 @@ def api_runtime_diagnostics(request: Request) -> dict:
 @router.post("/runtime-diagnostics/card-two-roundtrip")
 def api_card_two_roundtrip_diagnostic() -> dict:
     return run_card_two_roundtrip_diagnostic()
+
+
+@router.post("/runtime-diagnostics/card-two-autocommit-roundtrip")
+def api_card_two_autocommit_roundtrip_diagnostic() -> dict:
+    return run_card_two_autocommit_roundtrip_diagnostic()

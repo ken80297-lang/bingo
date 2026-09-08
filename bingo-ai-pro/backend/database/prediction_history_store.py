@@ -729,6 +729,15 @@ def _prediction_history_summary_cloud_sql() -> str:
             """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH)
 
 
+def _diagnostic_card_two_signature(rows: list[Any]) -> dict[str, Any]:
+    ids = [row[0] for row in rows]
+    payload = _json_dumps([[str(value) for value in row] for row in rows])
+    return {
+        "row_ids": ids,
+        "row_signature": sha256(payload.encode("utf-8")).hexdigest()[:16],
+    }
+
+
 def _diagnostic_statement(conn: Any, name: str, sql: str, params: tuple = ()) -> dict[str, Any]:
     before = _transaction_status(conn)
     with conn.cursor() as cur:
@@ -739,7 +748,7 @@ def _diagnostic_statement(conn: Any, name: str, sql: str, params: tuple = ()) ->
         fetch_started = time.perf_counter()
         rows = cur.fetchall()
         fetch_ms = round((time.perf_counter() - fetch_started) * 1000, 2)
-    return {
+    result = {
         "statement": name,
         "execute_ms": execute_ms,
         "fetch_ms": fetch_ms,
@@ -747,11 +756,40 @@ def _diagnostic_statement(conn: Any, name: str, sql: str, params: tuple = ()) ->
         "transaction_status_before": before,
         "transaction_status_after": after,
     }
+    if name == "card_two":
+        result.update(_diagnostic_card_two_signature(rows))
+    return result
 
 
-def _run_card_two_roundtrip_sequence(statements: list[tuple[str, str, tuple]]) -> dict[str, Any]:
+@contextmanager
+def _diagnostic_autocommit_read_connection():
+    from database import postgres
+    from psycopg_pool import ConnectionPool
+
+    pool = ConnectionPool(
+        conninfo=postgres.DATABASE_URL or "",
+        kwargs={
+            "connect_timeout": postgres._connect_timeout_seconds(),
+            "autocommit": True,
+        },
+        min_size=0,
+        max_size=1,
+        open=False,
+        timeout=postgres.DASHBOARD_READ_POOL_ACQUIRE_TIMEOUT_SECONDS,
+        name="card-two-autocommit-diagnostic",
+    )
+    pool.open(wait=False)
+    try:
+        with pool.connection(timeout=postgres.DASHBOARD_READ_POOL_ACQUIRE_TIMEOUT_SECONDS) as conn:
+            yield conn
+    finally:
+        pool.close(timeout=1.0)
+
+
+def _run_card_two_roundtrip_sequence(statements: list[tuple[str, str, tuple]], connection_factory=None) -> dict[str, Any]:
+    connection_factory = connection_factory or _dashboard_read_connection
     acquire_started = time.perf_counter()
-    with _dashboard_read_connection() as conn:
+    with connection_factory() as conn:
         pool_acquire_ms = round((time.perf_counter() - acquire_started) * 1000, 2)
         result = {
             "checkout_status": _transaction_status(conn),
@@ -782,6 +820,34 @@ def run_card_two_roundtrip_diagnostic(repetitions: int = 5) -> dict[str, Any]:
         "status": "ok",
         "sequence_a": [_run_card_two_roundtrip_sequence(sequence_a) for _ in range(repetitions)],
         "sequence_b": [_run_card_two_roundtrip_sequence(sequence_b) for _ in range(repetitions)],
+    }
+
+
+def run_card_two_autocommit_roundtrip_diagnostic(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    card_two = ("card_two", _prediction_history_summary_cloud_sql(), (100,))
+    select1 = ("select1", "select 1", ())
+    sequence = [select1, select1, card_two, select1]
+    control = [_run_card_two_roundtrip_sequence(sequence) for _ in range(repetitions)]
+    autocommit = [
+        _run_card_two_roundtrip_sequence(sequence, _diagnostic_autocommit_read_connection)
+        for _ in range(repetitions)
+    ]
+    control_card_two = [item["statements"][2] for item in control]
+    autocommit_card_two = [item["statements"][2] for item in autocommit]
+    semantic_equivalence = all(
+        left.get("row_count") == right.get("row_count")
+        and left.get("row_ids") == right.get("row_ids")
+        and left.get("row_signature") == right.get("row_signature")
+        for left, right in zip(control_card_two, autocommit_card_two)
+    )
+    return {
+        "status": "ok",
+        "control_autocommit": False,
+        "autocommit_test_mode": True,
+        "control": control,
+        "autocommit": autocommit,
+        "semantic_equivalence": semantic_equivalence,
     }
 
 

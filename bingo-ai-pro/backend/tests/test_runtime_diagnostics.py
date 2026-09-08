@@ -273,3 +273,4 @@ def test_runtime_diagnostics_endpoint_registered():
             routes.update(getattr(child, "path", None) for child in original_router.routes)
     assert "/api/runtime-diagnostics" in routes
     assert "/api/runtime-diagnostics/card-two-roundtrip" in routes
+    assert "/api/runtime-diagnostics/card-two-autocommit-roundtrip" in routes

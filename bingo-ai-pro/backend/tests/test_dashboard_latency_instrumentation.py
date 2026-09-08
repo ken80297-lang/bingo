@@ -904,6 +904,67 @@ def test_card_two_roundtrip_diagnostic_uses_dashboard_pool_without_writes(monkey
     assert result["sequence_a"][0]["connection_hash"]
 
 
+def test_card_two_autocommit_roundtrip_diagnostic_is_isolated_and_read_only(monkeypatch):
+    summary_row = _prediction_summary_row(0)
+    control = SequentialFakeConnection(
+        [
+            FakeCursor(rows=[(1,)]),
+            FakeCursor(rows=[(1,)]),
+            FakeCursor(rows=[summary_row]),
+            FakeCursor(rows=[(1,)]),
+        ]
+    )
+    autocommit = SequentialFakeConnection(
+        [
+            FakeCursor(rows=[(1,)]),
+            FakeCursor(rows=[(1,)]),
+            FakeCursor(rows=[summary_row]),
+            FakeCursor(rows=[(1,)]),
+        ]
+    )
+
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", lambda: control)
+    monkeypatch.setattr(prediction_history_store, "_diagnostic_autocommit_read_connection", lambda: autocommit)
+
+    result = prediction_history_store.run_card_two_autocommit_roundtrip_diagnostic(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert result["control_autocommit"] is False
+    assert result["autocommit_test_mode"] is True
+    assert result["semantic_equivalence"] is True
+    assert [item["statement"] for item in result["control"][0]["statements"]] == [
+        "select1",
+        "select1",
+        "card_two",
+        "select1",
+    ]
+    assert [item["statement"] for item in result["autocommit"][0]["statements"]] == [
+        "select1",
+        "select1",
+        "card_two",
+        "select1",
+    ]
+    assert control.rollback_count == 1
+    assert autocommit.rollback_count == 1
+    card_two_control = result["control"][0]["statements"][2]
+    card_two_autocommit = result["autocommit"][0]["statements"][2]
+    assert card_two_control["row_ids"] == card_two_autocommit["row_ids"]
+    assert card_two_control["row_signature"] == card_two_autocommit["row_signature"]
+
+    all_sql = "\n".join(
+        sql
+        for connection in (control, autocommit)
+        for cursor in connection.cursor_history
+        for sql in cursor.sql_history
+    )
+    assert "select 1" in all_sql
+    assert "from prediction_history p" in all_sql
+    assert "insert " not in all_sql.lower()
+    assert "update " not in all_sql.lower()
+    assert "delete " not in all_sql.lower()
+    assert "create " not in all_sql.lower()
+
+
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):
     rows = [
         _prediction_summary_row(0),
