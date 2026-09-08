@@ -701,6 +701,90 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
+def _prediction_history_summary_cloud_sql() -> str:
+    return """
+            select {columns}
+            from prediction_history p
+            left join official_draw_history o on o.issue = p.prediction_issue
+            where p.issue is not null
+              and p.prediction_issue is not null
+              and p.issue ~ '^[0-9]+$'
+              and p.prediction_issue ~ '^[0-9]+$'
+              and length(p.issue) >= {min_issue_length}
+              and length(p.prediction_issue) >= {min_issue_length}
+              and p.issue not like '99%%'
+              and p.prediction_issue not like '99%%'
+              and upper(p.issue) not like 'TEST%%'
+              and upper(p.prediction_issue) not like 'TEST%%'
+              and p.prediction_issue::bigint = p.issue::bigint + 1
+              and jsonb_typeof(p.recommend_numbers) = 'array'
+              and jsonb_array_length(p.recommend_numbers) > 0
+              and coalesce(lower(p.strategy), '') not like '%%preview%%'
+              and coalesce(lower(p.strategy), '') not like '%%simulation%%'
+              and coalesce(lower(p.strategy), '') not like '%%test%%'
+              and coalesce(lower(p.strategy), '') not like '%%fixture%%'
+              and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
+            order by p.prediction_issue::bigint desc, p.created_at desc, p.id desc
+            limit %s
+            """.format(columns=PREDICTION_SUMMARY_SELECT_COLUMNS_P, min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH)
+
+
+def _diagnostic_statement(conn: Any, name: str, sql: str, params: tuple = ()) -> dict[str, Any]:
+    before = _transaction_status(conn)
+    with conn.cursor() as cur:
+        execute_started = time.perf_counter()
+        cur.execute(sql, params, prepare=False)
+        execute_ms = round((time.perf_counter() - execute_started) * 1000, 2)
+        after = _transaction_status(conn)
+        fetch_started = time.perf_counter()
+        rows = cur.fetchall()
+        fetch_ms = round((time.perf_counter() - fetch_started) * 1000, 2)
+    return {
+        "statement": name,
+        "execute_ms": execute_ms,
+        "fetch_ms": fetch_ms,
+        "row_count": len(rows),
+        "transaction_status_before": before,
+        "transaction_status_after": after,
+    }
+
+
+def _run_card_two_roundtrip_sequence(statements: list[tuple[str, str, tuple]]) -> dict[str, Any]:
+    acquire_started = time.perf_counter()
+    with _dashboard_read_connection() as conn:
+        pool_acquire_ms = round((time.perf_counter() - acquire_started) * 1000, 2)
+        result = {
+            "checkout_status": _transaction_status(conn),
+            "pool_acquire_ms": pool_acquire_ms,
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "connection_hash": _connection_hash(conn),
+            "statements": [],
+        }
+        try:
+            for name, sql, params in statements:
+                result["statements"].append(_diagnostic_statement(conn, name, sql, params))
+            result["final_status"] = _transaction_status(conn)
+            return result
+        finally:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.warning("card two roundtrip diagnostic rollback failed", exc_info=True)
+
+
+def run_card_two_roundtrip_diagnostic(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    card_two = ("card_two", _prediction_history_summary_cloud_sql(), (100,))
+    select1 = ("select1", "select 1", ())
+    sequence_a = [select1, select1, card_two, select1]
+    sequence_b = [card_two, select1, card_two, select1]
+    return {
+        "status": "ok",
+        "sequence_a": [_run_card_two_roundtrip_sequence(sequence_a) for _ in range(repetitions)],
+        "sequence_b": [_run_card_two_roundtrip_sequence(sequence_b) for _ in range(repetitions)],
+    }
+
+
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     if _cloud_enabled():
         try:

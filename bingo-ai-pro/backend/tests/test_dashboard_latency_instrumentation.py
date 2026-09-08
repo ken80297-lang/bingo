@@ -39,6 +39,8 @@ class FakeCursor:
         self.rows = rows or []
         self.error = error
         self.execute_count = 0
+        self.sql_history: list[str] = []
+        self.kwargs_history: list[dict] = []
 
     def __enter__(self):
         return self
@@ -48,6 +50,8 @@ class FakeCursor:
 
     def execute(self, sql, params=(), **kwargs):
         self.execute_count += 1
+        self.sql_history.append(sql)
+        self.kwargs_history.append(kwargs)
         if self.error:
             raise self.error
 
@@ -66,6 +70,7 @@ class FakeConnection:
         self.cursor_obj = cursor
         self.closed = False
         self.info = FakeInfo()
+        self.rollback_count = 0
 
     def __enter__(self):
         return self
@@ -86,6 +91,7 @@ class SequentialFakeConnection:
         self.enter_count = 0
         self.exit_count = 0
         self.info = FakeInfo()
+        self.rollback_count = 0
 
     def __enter__(self):
         self.enter_count += 1
@@ -95,6 +101,9 @@ class SequentialFakeConnection:
         self.exit_count += 1
         self.closed = True
         return False
+
+    def rollback(self):
+        self.rollback_count += 1
 
     def cursor(self):
         cursor = self.cursors.pop(0)
@@ -843,6 +852,56 @@ def test_card_two_query_timing_records_cloud_failure(monkeypatch):
     assert timing["error_type"] == "ConnectionError"
     assert "total_ms" in timing
     assert "secret host" not in str(timing)
+
+
+def test_card_two_roundtrip_diagnostic_uses_dashboard_pool_without_writes(monkeypatch):
+    connections = [
+        SequentialFakeConnection([FakeCursor(rows=[(1,)]), FakeCursor(rows=[(1,)]), FakeCursor(rows=[_prediction_summary_row(0)]), FakeCursor(rows=[(1,)])]),
+        SequentialFakeConnection([FakeCursor(rows=[_prediction_summary_row(0)]), FakeCursor(rows=[(1,)]), FakeCursor(rows=[_prediction_summary_row(0)]), FakeCursor(rows=[(1,)])]),
+    ]
+    acquired = []
+
+    def fake_dashboard_connection():
+        connection = connections[len(acquired)]
+        acquired.append(connection)
+        return connection
+
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+
+    result = prediction_history_store.run_card_two_roundtrip_diagnostic(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert len(result["sequence_a"]) == 1
+    assert len(result["sequence_b"]) == 1
+    assert [item["statement"] for item in result["sequence_a"][0]["statements"]] == [
+        "select1",
+        "select1",
+        "card_two",
+        "select1",
+    ]
+    assert [item["statement"] for item in result["sequence_b"][0]["statements"]] == [
+        "card_two",
+        "select1",
+        "card_two",
+        "select1",
+    ]
+    assert all(connection.rollback_count == 1 for connection in connections)
+    all_sql = "\n".join(sql for connection in connections for cursor in connection.cursor_history for sql in cursor.sql_history)
+    assert "select 1" in all_sql
+    assert "from prediction_history p" in all_sql
+    assert "insert " not in all_sql.lower()
+    assert "update " not in all_sql.lower()
+    assert "delete " not in all_sql.lower()
+    assert "create " not in all_sql.lower()
+    assert all(
+        kwargs.get("prepare") is False
+        for connection in connections
+        for cursor in connection.cursor_history
+        for kwargs in cursor.kwargs_history
+    )
+    assert result["sequence_a"][0]["checkout_status"] == "INTRANS"
+    assert result["sequence_a"][0]["backend_pid"] == 12345
+    assert result["sequence_a"][0]["connection_hash"]
 
 
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):
