@@ -188,10 +188,24 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
     prediction_history_store._CARD_TWO_HISTORY_TIMINGS.clear()
     prediction_history_store._record_card_two_history_timing(
         {
-            "type": "summary",
-            "total_ms": 123.45,
-            "rows": 12,
-            "metadata_queries": 1,
+            "type": "stage",
+            "stage": "main_query",
+            "duration_ms": 123.45,
+            "result": "success",
+            "db_timing": {
+                "query_tag": "card_two_history.main_query",
+                "pool_acquire_ms": 1.23,
+                "execute_ms": 45.67,
+                "fetch_ms": 0.89,
+                "backend_pid": 12345,
+                "connection_hash": "abc123def456",
+                "connection_reused": False,
+                "transaction_status_before": "IDLE",
+                "transaction_status_after": "INTRANS",
+                "connection_age_ms": 2.34,
+                "result": "success",
+                "row_count": 12,
+            },
         }
     )
     monkeypatch.setattr(database, "get_connection", fail("database.get_connection"))
@@ -232,12 +246,19 @@ def test_runtime_diagnostics_exposes_collector_db_path_without_db_or_work(monkey
         "fallback_occurred": False,
         "error_type": None,
     }
-    assert payload["card_two_history_timing"]["latest"] == {
-        "type": "summary",
-        "total_ms": 123.45,
-        "rows": 12,
-        "metadata_queries": 1,
-        "recorded_at": payload["card_two_history_timing"]["latest"]["recorded_at"],
+    assert payload["card_two_history_timing"]["latest"]["db_timing"] == {
+        "query_tag": "card_two_history.main_query",
+        "pool_acquire_ms": 1.23,
+        "execute_ms": 45.67,
+        "fetch_ms": 0.89,
+        "backend_pid": 12345,
+        "connection_hash": "abc123def456",
+        "connection_reused": False,
+        "transaction_status_before": "IDLE",
+        "transaction_status_after": "INTRANS",
+        "connection_age_ms": 2.34,
+        "result": "success",
+        "row_count": 12,
     }
     assert payload["card_two_history_timing"]["limit"] == 20
 

@@ -55,10 +55,17 @@ class FakeCursor:
         return self.rows
 
 
+class FakeInfo:
+    def __init__(self, backend_pid: int = 12345):
+        self.backend_pid = backend_pid
+        self.transaction_status = 2
+
+
 class FakeConnection:
     def __init__(self, cursor: FakeCursor):
         self.cursor_obj = cursor
         self.closed = False
+        self.info = FakeInfo()
 
     def __enter__(self):
         return self
@@ -78,6 +85,7 @@ class SequentialFakeConnection:
         self.closed = False
         self.enter_count = 0
         self.exit_count = 0
+        self.info = FakeInfo()
 
     def __enter__(self):
         self.enter_count += 1
@@ -665,8 +673,28 @@ def test_card_two_history_records_db_timing_breakdown(monkeypatch):
         assert db_timing["backend"] == "postgres"
         assert db_timing["result"] == "success"
         assert db_timing["row_count"] == expected_rows
-        assert set(db_timing) >= {"connect_ms", "execute_ms", "fetch_ms", "total_ms"}
+        assert set(db_timing) >= {
+            "backend_pid",
+            "connect_ms",
+            "connection_age_ms",
+            "connection_hash",
+            "execute_ms",
+            "fetch_ms",
+            "pool_acquire_ms",
+            "query_tag",
+            "total_ms",
+            "transaction_status_after",
+            "transaction_status_before",
+        }
+        assert db_timing["backend_pid"] == 12345
+        assert db_timing["connection_hash"]
+        assert db_timing["transaction_status_before"] == "INTRANS"
+        assert db_timing["transaction_status_after"] == "INTRANS"
+        assert "postgres://secret" not in str(db_timing)
+    assert stages["main_query"]["db_timing"]["query_tag"] == "card_two_history.main_query"
+    assert stages["metadata_bulk"]["db_timing"]["query_tag"] == "card_two_history.metadata_bulk"
     assert stages["metadata_bulk"]["db_timing"]["connection_reused"] is True
+    assert stages["metadata_bulk"]["db_timing"]["connection_hash"] == stages["main_query"]["db_timing"]["connection_hash"]
     assert status["latest"]["metadata_queries"] == 1
 
 

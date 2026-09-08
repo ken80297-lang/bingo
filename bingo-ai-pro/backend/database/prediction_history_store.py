@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -592,10 +593,13 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
 
 def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, Any] | None = None) -> list[Any]:
     with conn.cursor() as cur:
+        if timing is not None:
+            timing["transaction_status_before"] = _transaction_status(conn)
         execute_started = time.perf_counter()
         cur.execute(sql, params, prepare=False)
         if timing is not None:
             timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+            timing["transaction_status_after"] = _transaction_status(conn)
         fetch_started = time.perf_counter()
         rows = cur.fetchall()
         if timing is not None:
@@ -609,13 +613,51 @@ def _record_shared_connection_acquire_timing(timing: dict[str, Any] | None, stat
         return
     if not state:
         timing["connect_ms"] = 0.0
+        timing["pool_acquire_ms"] = 0.0
         return
+    timing["pool_acquire_ms"] = state.get("connect_ms", 0.0)
     if state.get("connect_reported"):
         timing["connect_ms"] = 0.0
         timing["connection_reused"] = True
         return
     timing["connect_ms"] = state.get("connect_ms", 0.0)
     state["connect_reported"] = True
+
+
+def _connection_hash(conn: Any) -> str | None:
+    try:
+        raw = f"{type(conn).__name__}:{id(conn)}"
+    except Exception:
+        return None
+    return sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _transaction_status(conn: Any) -> str | None:
+    try:
+        status = conn.info.transaction_status
+    except Exception:
+        return None
+    mapping = {
+        0: "IDLE",
+        1: "ACTIVE",
+        2: "INTRANS",
+        3: "INERROR",
+        4: "UNKNOWN",
+    }
+    value = getattr(status, "value", status)
+    return mapping.get(value, str(status))
+
+
+def _record_connection_metadata(timing: dict[str, Any] | None, conn: Any, state: dict[str, Any] | None) -> None:
+    if timing is None:
+        return
+    timing["connection_hash"] = _connection_hash(conn)
+    if state and state.get("opened_at") is not None:
+        timing["connection_age_ms"] = round((time.perf_counter() - state["opened_at"]) * 1000, 2)
+    try:
+        timing["backend_pid"] = conn.info.backend_pid
+    except Exception:
+        timing["backend_pid"] = None
 
 
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
@@ -628,13 +670,16 @@ def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
             if not shared_state.get("cloud_available", True) or shared_conn is None:
                 raise RuntimeError("dashboard read connection unavailable")
             _record_shared_connection_acquire_timing(timing, shared_state)
+            _record_connection_metadata(timing, shared_conn, shared_state)
             return _execute_cloud_query(shared_conn, sql, params, timing)
 
         connect_started = time.perf_counter()
         conn_context = _cloud_connection()
         if timing is not None:
             timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+            timing["pool_acquire_ms"] = timing["connect_ms"]
         with conn_context as conn:
+            _record_connection_metadata(timing, conn, None)
             return _execute_cloud_query(conn, sql, params, timing)
     except Exception as exc:
         shared_state = _CARD_TWO_DASHBOARD_CONNECTION_STATE.get()
@@ -717,13 +762,19 @@ def _card_two_dashboard_connection_scope(enabled: bool):
         yield
         return
 
-    state: dict[str, Any] = {"cloud_available": True, "connect_ms": 0.0, "connect_reported": False}
+    state: dict[str, Any] = {
+        "cloud_available": True,
+        "connect_ms": 0.0,
+        "connect_reported": False,
+        "opened_at": None,
+    }
     acquired = False
     try:
         acquire_started = time.perf_counter()
         with _dashboard_read_connection() as conn:
             acquired = True
             state["connect_ms"] = round((time.perf_counter() - acquire_started) * 1000, 2)
+            state["opened_at"] = time.perf_counter()
             conn_token = _CARD_TWO_DASHBOARD_CONNECTION.set(conn)
             state_token = _CARD_TWO_DASHBOARD_CONNECTION_STATE.set(state)
             try:
@@ -1355,7 +1406,7 @@ def _get_prediction_history_summary_records_loaded(
     total_started: float,
 ) -> list[dict]:
     main_query_started = time.perf_counter()
-    main_query_timing: dict[str, Any] = {}
+    main_query_timing: dict[str, Any] = {"query_tag": "card_two_history.main_query"}
     rows = _maybe_timed_dashboard_stage(
         diagnostic_component,
         "prediction_history_summary_query",
@@ -1434,7 +1485,7 @@ def _get_prediction_history_summary_records_loaded(
         return transformed
 
     records = _maybe_timed_card_two_history_stage(diagnostics_enabled, "transform", transform_rows)
-    metadata_query_timing: dict[str, Any] = {}
+    metadata_query_timing: dict[str, Any] = {"query_tag": "card_two_history.metadata_bulk"}
     metadata_by_record, metadata_queries = _maybe_timed_card_two_history_stage(
         diagnostics_enabled,
         "metadata_bulk",
