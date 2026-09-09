@@ -1020,6 +1020,22 @@ def test_connection_path_benchmark_uses_current_pool_and_does_not_expose_dsn(mon
     assert "pooler.supabase.com" not in json.dumps(result)
 
 
+def test_connection_path_benchmark_reports_path_errors_without_raising(monkeypatch):
+    def fail_dashboard_connection():
+        raise TimeoutError("hidden connection detail")
+
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fail_dashboard_connection)
+    monkeypatch.setattr(postgres, "DATABASE_URL", "postgres://user:secret@example.pooler.supabase.com:6543/postgres")
+
+    result = prediction_history_store.run_card_two_connection_path_benchmark(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert result["current_pooler"]["error_type"] == "TimeoutError"
+    assert result["current_pooler"]["sequences"] == []
+    assert "hidden connection detail" not in json.dumps(result)
+    assert "secret" not in json.dumps(result)
+
+
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):
     rows = [
         _prediction_summary_row(0),

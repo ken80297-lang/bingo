@@ -917,6 +917,19 @@ def _run_connection_path_sequences(connection_factory, repetitions: int) -> list
     return [_run_card_two_roundtrip_sequence(sequence, connection_factory) for _ in range(repetitions)]
 
 
+def _safe_connection_path_sequences(connection_factory, repetitions: int) -> dict[str, Any]:
+    try:
+        return {
+            "error_type": None,
+            "sequences": _run_connection_path_sequences(connection_factory, repetitions),
+        }
+    except Exception as exc:
+        return {
+            "error_type": type(exc).__name__,
+            "sequences": [],
+        }
+
+
 def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, Any]:
     from database import postgres
 
@@ -943,27 +956,29 @@ def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, An
             "env_var": direct_name,
             "endpoint": _connection_endpoint_status(direct_url),
             "sequences": [],
+            "error_type": None,
         },
         "session_pooler": {
             "available": bool(session_url),
             "env_var": session_name,
             "endpoint": _connection_endpoint_status(session_url),
             "sequences": [],
+            "error_type": None,
         },
         "current_pooler": {
-            "sequences": _run_connection_path_sequences(_dashboard_read_connection, repetitions),
+            **_safe_connection_path_sequences(_dashboard_read_connection, repetitions),
         },
     }
     if direct_url:
-        result["direct_connection"]["sequences"] = _run_connection_path_sequences(
+        result["direct_connection"].update(_safe_connection_path_sequences(
             lambda: _diagnostic_psycopg_connection(direct_url),
             repetitions,
-        )
+        ))
     if session_url:
-        result["session_pooler"]["sequences"] = _run_connection_path_sequences(
+        result["session_pooler"].update(_safe_connection_path_sequences(
             lambda: _diagnostic_psycopg_connection(session_url),
             repetitions,
-        )
+        ))
     return result
 
 
