@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from database import collector_store, learning_store, official_draw_store, prediction_history_store
+from database import collector_store, learning_store, official_draw_store, postgres, prediction_history_store
 from services import player_dashboard
 
 
@@ -963,6 +963,61 @@ def test_card_two_autocommit_roundtrip_diagnostic_is_isolated_and_read_only(monk
     assert "update " not in all_sql.lower()
     assert "delete " not in all_sql.lower()
     assert "create " not in all_sql.lower()
+
+
+def test_connection_path_benchmark_uses_current_pool_and_does_not_expose_dsn(monkeypatch):
+    connections = [
+        SequentialFakeConnection(
+            [
+                FakeCursor(rows=[(1,)]),
+                FakeCursor(rows=[(1,)]),
+                FakeCursor(rows=[_prediction_summary_row(index)]),
+                FakeCursor(rows=[(1,)]),
+            ]
+        )
+        for index in range(2)
+    ]
+    acquired = []
+
+    def fake_dashboard_connection():
+        connection = connections[len(acquired)]
+        acquired.append(connection)
+        return connection
+
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+    monkeypatch.setattr(
+        postgres,
+        "DATABASE_URL",
+        "postgres://user:secret@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require",
+    )
+    for name in (
+        "DIRECT_DATABASE_URL",
+        "DATABASE_DIRECT_URL",
+        "SUPABASE_DIRECT_DATABASE_URL",
+        "SESSION_POOLER_DATABASE_URL",
+        "DATABASE_SESSION_POOLER_URL",
+        "SUPABASE_SESSION_POOLER_DATABASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    result = prediction_history_store.run_card_two_connection_path_benchmark(repetitions=2)
+
+    assert result["status"] == "ok"
+    assert result["current_connection_path"] == {
+        "configured": True,
+        "hostname_classification": "transaction pooler",
+        "port": 6543,
+        "sslmode": "require",
+        "definitely_transaction_pooler": True,
+    }
+    assert result["direct_connection"]["available"] is False
+    assert result["direct_connection"]["sequences"] == []
+    assert result["session_pooler"]["available"] is False
+    assert result["session_pooler"]["sequences"] == []
+    assert len(result["current_pooler"]["sequences"]) == 2
+    assert all(connection.rollback_count == 1 for connection in connections)
+    assert "secret" not in json.dumps(result)
+    assert "pooler.supabase.com" not in json.dumps(result)
 
 
 def test_prediction_history_summary_filter_order_limit_and_schema_preserved(monkeypatch):

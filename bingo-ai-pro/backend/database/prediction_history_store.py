@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from config.production_scope import (
     get_production_generation,
@@ -786,6 +787,64 @@ def _diagnostic_autocommit_read_connection():
         pool.close(timeout=1.0)
 
 
+def _connection_endpoint_status(conninfo: str | None) -> dict[str, Any]:
+    if not conninfo:
+        return {
+            "configured": False,
+            "hostname_classification": "unknown",
+            "port": None,
+            "sslmode": None,
+            "definitely_transaction_pooler": False,
+        }
+    try:
+        parsed = urlsplit(conninfo)
+        hostname = parsed.hostname or ""
+        port = parsed.port
+        sslmode = (parse_qs(parsed.query).get("sslmode") or [None])[0]
+    except Exception:
+        return {
+            "configured": True,
+            "hostname_classification": "unknown",
+            "port": None,
+            "sslmode": None,
+            "definitely_transaction_pooler": False,
+        }
+    classification = "unknown"
+    if hostname.startswith("db.") and "supabase" in hostname:
+        classification = "direct"
+    elif "pooler.supabase" in hostname and port == 6543:
+        classification = "transaction pooler"
+    elif "pooler.supabase" in hostname and port == 5432:
+        classification = "session pooler"
+    return {
+        "configured": True,
+        "hostname_classification": classification,
+        "port": port,
+        "sslmode": sslmode,
+        "definitely_transaction_pooler": classification == "transaction pooler",
+    }
+
+
+def _first_env_value(names: tuple[str, ...]) -> tuple[str | None, str | None]:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return name, value
+    return None, None
+
+
+@contextmanager
+def _diagnostic_psycopg_connection(conninfo: str):
+    import psycopg
+    from database import postgres
+
+    conn = psycopg.connect(conninfo, connect_timeout=postgres._connect_timeout_seconds())
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _run_card_two_roundtrip_sequence(statements: list[tuple[str, str, tuple]], connection_factory=None) -> dict[str, Any]:
     connection_factory = connection_factory or _dashboard_read_connection
     acquire_started = time.perf_counter()
@@ -849,6 +908,63 @@ def run_card_two_autocommit_roundtrip_diagnostic(repetitions: int = 5) -> dict[s
         "autocommit": autocommit,
         "semantic_equivalence": semantic_equivalence,
     }
+
+
+def _run_connection_path_sequences(connection_factory, repetitions: int) -> list[dict[str, Any]]:
+    card_two = ("card_two", _prediction_history_summary_cloud_sql(), (100,))
+    select1 = ("select1", "select 1", ())
+    sequence = [select1, select1, card_two, select1]
+    return [_run_card_two_roundtrip_sequence(sequence, connection_factory) for _ in range(repetitions)]
+
+
+def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, Any]:
+    from database import postgres
+
+    repetitions = max(1, min(int(repetitions or 7), 7))
+    direct_name, direct_url = _first_env_value(
+        (
+            "DIRECT_DATABASE_URL",
+            "DATABASE_DIRECT_URL",
+            "SUPABASE_DIRECT_DATABASE_URL",
+        )
+    )
+    session_name, session_url = _first_env_value(
+        (
+            "SESSION_POOLER_DATABASE_URL",
+            "DATABASE_SESSION_POOLER_URL",
+            "SUPABASE_SESSION_POOLER_DATABASE_URL",
+        )
+    )
+    result: dict[str, Any] = {
+        "status": "ok",
+        "current_connection_path": _connection_endpoint_status(postgres.DATABASE_URL),
+        "direct_connection": {
+            "available": bool(direct_url),
+            "env_var": direct_name,
+            "endpoint": _connection_endpoint_status(direct_url),
+            "sequences": [],
+        },
+        "session_pooler": {
+            "available": bool(session_url),
+            "env_var": session_name,
+            "endpoint": _connection_endpoint_status(session_url),
+            "sequences": [],
+        },
+        "current_pooler": {
+            "sequences": _run_connection_path_sequences(_dashboard_read_connection, repetitions),
+        },
+    }
+    if direct_url:
+        result["direct_connection"]["sequences"] = _run_connection_path_sequences(
+            lambda: _diagnostic_psycopg_connection(direct_url),
+            repetitions,
+        )
+    if session_url:
+        result["session_pooler"]["sequences"] = _run_connection_path_sequences(
+            lambda: _diagnostic_psycopg_connection(session_url),
+            repetitions,
+        )
+    return result
 
 
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
