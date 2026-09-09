@@ -175,6 +175,8 @@ PLAYER_CACHE_FILTER_VERSION = "production_prediction_v2"
 _PLAYER_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="player-dashboard")
 _PLAYER_IN_FLIGHT_LOCK = threading.Lock()
 _PLAYER_COMPONENT_IN_FLIGHT: dict[str, Any] = {}
+_PLAYER_ACTIVE_COMPONENTS: dict[int, dict[str, Any]] = {}
+_PLAYER_ACTIVE_COMPONENTS_LOCK = threading.Lock()
 _PLAYER_CACHE_GENERATION = 0
 _PLAYER_RUNTIME_METRICS: dict[str, int] = {
     "submitted_count": 0,
@@ -354,6 +356,14 @@ def _submit_component(name: str, fn):
 
     def timed_fn():
         started_at = time.perf_counter()
+        thread_id = threading.get_ident()
+        with _PLAYER_ACTIVE_COMPONENTS_LOCK:
+            _PLAYER_ACTIVE_COMPONENTS[thread_id] = {
+                "component": name,
+                "thread_id": thread_id,
+                "process_id": None,
+                "started_at": started_at,
+            }
         try:
             if name == "card_two_history":
                 from database.prediction_history_store import card_two_dashboard_execution_context
@@ -371,6 +381,9 @@ def _submit_component(name: str, fn):
                 type(exc).__name__,
             )
             raise
+        finally:
+            with _PLAYER_ACTIVE_COMPONENTS_LOCK:
+                _PLAYER_ACTIVE_COMPONENTS.pop(thread_id, None)
         logger.warning(
             "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=success",
             name,
@@ -513,6 +526,19 @@ def _player_in_flight_count() -> int:
         return sum(1 for future in _PLAYER_COMPONENT_IN_FLIGHT.values() if future is not None and not future.done())
 
 
+def active_dashboard_components() -> list[dict[str, Any]]:
+    now = time.perf_counter()
+    with _PLAYER_ACTIVE_COMPONENTS_LOCK:
+        return [
+            {
+                "component": item.get("component"),
+                "thread_id": item.get("thread_id"),
+                "active_ms": round((now - float(item.get("started_at") or now)) * 1000, 2),
+            }
+            for item in _PLAYER_ACTIVE_COMPONENTS.values()
+        ]
+
+
 def player_dashboard_runtime_metrics() -> dict:
     return {
         **dict(_PLAYER_RUNTIME_METRICS),
@@ -557,6 +583,62 @@ def run_card_two_dashboard_context_benchmark(repetitions: int = 7) -> dict:
                 "summary_status": summary.get("status"),
                 "summary_ms": round((time.perf_counter() - summary_started) * 1000, 2),
                 "timeout_steps": list(((summary.get("timing") or {}).get("timeout_steps")) or []),
+                "in_flight_count": _player_in_flight_count(),
+                "context": context,
+            }
+        )
+    return {"status": "ok", "samples": samples}
+
+
+def run_isolated_card_two_dashboard_context_benchmark(repetitions: int = 7) -> dict:
+    from database.prediction_history_store import get_card_two_history_timing_status
+
+    repetitions = max(1, min(int(repetitions or 7), 7))
+    seen = {
+        event.get("recorded_at")
+        for event in get_card_two_history_timing_status().get("recent", [])
+        if event.get("type") == "dashboard_context"
+    }
+    samples = []
+    for index in range(repetitions):
+        future, state = _submit_component(
+            "card_two_history",
+            lambda: _timed_component_stage(
+                "card_two_history",
+                "prediction_history_summary_records",
+                lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+            ),
+        )
+        result_count = None
+        error_type = None
+        if future is not None:
+            try:
+                result = future.result(timeout=8.0)
+                result_count = len(result or [])
+            except Exception as exc:
+                error_type = type(exc).__name__
+        context = None
+        wait_until = time.monotonic() + 2.0
+        while time.monotonic() < wait_until:
+            recent = get_card_two_history_timing_status().get("recent", [])
+            for event in reversed(recent):
+                if event.get("type") != "dashboard_context":
+                    continue
+                recorded_at = event.get("recorded_at")
+                if recorded_at in seen:
+                    continue
+                context = deepcopy(event)
+                seen.add(recorded_at)
+                break
+            if context is not None:
+                break
+            time.sleep(0.05)
+        samples.append(
+            {
+                "sample": index + 1,
+                "submit_state": state,
+                "result_count": result_count,
+                "error_type": error_type,
                 "in_flight_count": _player_in_flight_count(),
                 "context": context,
             }

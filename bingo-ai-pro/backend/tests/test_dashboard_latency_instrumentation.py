@@ -26,12 +26,14 @@ def reset_player_dashboard_state():
     player_dashboard._PLAYER_COMPONENT_CACHE["analysis"] = {}
     player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
     player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
+    player_dashboard._PLAYER_ACTIVE_COMPONENTS.clear()
     for key in player_dashboard._PLAYER_RUNTIME_METRICS:
         player_dashboard._PLAYER_RUNTIME_METRICS[key] = 0
     yield
     player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
     player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
     player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
+    player_dashboard._PLAYER_ACTIVE_COMPONENTS.clear()
 
 
 class FakeCursor:
@@ -945,6 +947,14 @@ def test_card_two_dashboard_context_records_same_connection_statement_probes(mon
     timing = {"query_tag": "card_two_history.main_query"}
     monkeypatch.setenv("DATABASE_URL", "postgres://secret")
     monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", lambda: connection)
+    monkeypatch.setattr(
+        player_dashboard,
+        "active_dashboard_components",
+        lambda: [
+            {"component": "official_draw", "thread_id": 1, "active_ms": 10.0},
+            {"component": "card_two_history", "thread_id": 2, "active_ms": 5.0},
+        ],
+    )
 
     with prediction_history_store.card_two_dashboard_execution_context(12.34):
         with prediction_history_store._card_two_dashboard_connection_scope(True):
@@ -964,8 +974,13 @@ def test_card_two_dashboard_context_records_same_connection_statement_probes(mon
     assert context["executor_queue_ms"] == 12.34
     assert context["connection_checkout_ms"] >= 0
     assert context["select1_a_execute_ms"] >= 0
+    assert context["select1_a_active_components"] == ["official_draw"]
     assert context["card_two_execute_ms"] == timing["execute_ms"]
+    assert context["active_components_before_card_two"] == ["official_draw"]
+    assert context["active_components_after_card_two"] == ["official_draw"]
+    assert context["overlapping_components_card_two"][0]["component"] == "official_draw"
     assert context["select1_b_execute_ms"] >= 0
+    assert context["select1_b_active_components"] == ["official_draw"]
     assert context["fetch_ms"] == timing["fetch_ms"]
     assert context["component_total_execution_ms"] >= 0
     assert context["thread_id"]

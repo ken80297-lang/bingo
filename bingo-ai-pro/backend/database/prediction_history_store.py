@@ -603,10 +603,12 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
         context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
         if context is not None and timing and timing.get("query_tag") == "card_two_history.main_query":
             _execute_dashboard_context_probe(conn, "select1_a")
+            context["active_components_before_card_two"] = _active_dashboard_component_names()
         execute_started = time.perf_counter()
         cur.execute(sql, params, prepare=False)
+        execute_finished = time.perf_counter()
         if timing is not None:
-            timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+            timing["execute_ms"] = round((execute_finished - execute_started) * 1000, 2)
             timing["transaction_status_after"] = _transaction_status(conn)
         fetch_started = time.perf_counter()
         rows = cur.fetchall()
@@ -619,8 +621,47 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
             context["status_before_execute"] = timing.get("transaction_status_before")
             context["status_after_execute"] = timing.get("transaction_status_after")
             context["card_two_fetch_finished_at"] = time.perf_counter()
+            context["card_two_execute_window_ms"] = round((execute_finished - execute_started) * 1000, 2)
+            context["active_components_after_card_two"] = _active_dashboard_component_names()
+            context["overlapping_components_card_two"] = _overlapping_dashboard_components(
+                execute_started,
+                execute_finished,
+            )
             _execute_dashboard_context_probe(conn, "select1_b")
         return rows
+
+
+def _active_dashboard_component_names() -> list[str]:
+    try:
+        from services.player_dashboard import active_dashboard_components
+
+        return sorted(
+            {
+                str(item.get("component"))
+                for item in active_dashboard_components()
+                if item.get("component") and item.get("component") != "card_two_history"
+            }
+        )
+    except Exception:
+        return []
+
+
+def _overlapping_dashboard_components(started: float, finished: float) -> list[dict[str, Any]]:
+    try:
+        from services.player_dashboard import active_dashboard_components
+
+        overlap_ms = round((finished - started) * 1000, 2)
+        return [
+            {
+                "component": item.get("component"),
+                "thread_id": item.get("thread_id"),
+                "overlap_ms": overlap_ms,
+            }
+            for item in active_dashboard_components()
+            if item.get("component") and item.get("component") != "card_two_history"
+        ]
+    except Exception:
+        return []
 
 
 def _execute_dashboard_context_probe(conn: Any, name: str) -> None:
@@ -637,6 +678,7 @@ def _execute_dashboard_context_probe(conn: Any, name: str) -> None:
     context[f"{name}_execute_ms"] = execute_ms
     context[f"{name}_status_before"] = before
     context[f"{name}_status_after"] = after
+    context[f"{name}_active_components"] = _active_dashboard_component_names()
 
 
 def _record_shared_connection_acquire_timing(timing: dict[str, Any] | None, state: dict[str, Any] | None) -> None:

@@ -276,3 +276,4 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-autocommit-roundtrip" in routes
     assert "/api/runtime-diagnostics/card-two-connection-path-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-dashboard-context-benchmark" in routes
+    assert "/api/runtime-diagnostics/card-two-isolated-dashboard-context-benchmark" in routes
