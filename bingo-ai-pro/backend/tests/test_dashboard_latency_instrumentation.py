@@ -1218,6 +1218,93 @@ def test_prediction_history_stage_logging_is_dashboard_opt_in(monkeypatch, caplo
     assert "component_stage_latency" not in joined
 
 
+def test_card_two_concurrency_culprit_benchmark_uses_real_component_conditions(monkeypatch):
+    submitted = []
+    component_calls = []
+    context_index = {"value": 0}
+
+    monkeypatch.setattr(
+        player_dashboard,
+        "_resolve_dashboard_benchmark_inputs",
+        lambda: {
+            "current": {"issue": "115040900"},
+            "detected_latest_issue": "115040900",
+            "previous_target_issue": "115040901",
+        },
+    )
+    monkeypatch.setattr(player_dashboard, "get_current_release", lambda: component_calls.append("active_release") or {})
+    monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: component_calls.append("analysis") or {})
+    monkeypatch.setattr(
+        player_dashboard,
+        "_current_prediction_for_draw",
+        lambda current: component_calls.append("next_prediction_lookup") or {"prediction_issue": "115040901"},
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "_prediction_from_history",
+        lambda record, current, latest, allow_slow_lookups=False: component_calls.append("next_prediction_history") or {},
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_prediction_lifecycle_aggregates",
+        lambda diagnostic_component=None: component_calls.append(("prediction_aggregates", diagnostic_component)) or {},
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "_build_previous_verification_snapshot",
+        lambda issue: component_calls.append(("previous_verification", issue)) or {},
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_prediction_history_records",
+        lambda limit, diagnostic_component=None: component_calls.append(("card_two_history", limit, diagnostic_component)) or [{}],
+    )
+
+    def fake_submit(name, fn):
+        submitted.append(name)
+        return _completed_future(fn()), "submitted"
+
+    def fake_context_after(seen):
+        context_index["value"] += 1
+        return {
+            "type": "dashboard_context",
+            "recorded_at": context_index["value"],
+            "card_two_execute_ms": 100.0 + context_index["value"],
+            "fetch_ms": 1.0,
+            "executor_queue_ms": 0.0,
+            "overlapping_components_card_two": [],
+        }
+
+    monkeypatch.setattr(player_dashboard, "_submit_component", fake_submit)
+    monkeypatch.setattr(player_dashboard, "_dashboard_benchmark_context_after", fake_context_after)
+    monkeypatch.setattr(player_dashboard.time, "sleep", lambda seconds: None)
+
+    result = player_dashboard.run_card_two_concurrency_culprit_benchmark(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert [condition["condition"] for condition in result["conditions"]] == [
+        "alone",
+        "active_release",
+        "analysis",
+        "next_prediction_snapshot",
+        "prediction_aggregates",
+        "previous_verification",
+        "level_2",
+        "level_3",
+    ]
+    assert submitted.count("card_two_history") == 8
+    assert "active_release" in submitted
+    assert "analysis" in submitted
+    assert "next_prediction_snapshot" in submitted
+    assert "prediction_aggregates" in submitted
+    assert "previous_verification" in submitted
+    assert ("card_two_history", 100, "card_two_history") in component_calls
+    assert ("prediction_aggregates", "prediction_aggregates") in component_calls
+    assert ("previous_verification", "115040901") in component_calls
+    assert "next_prediction_lookup" in component_calls
+    assert "next_prediction_history" in component_calls
+
+
 def _completed_future(value):
     future = Future()
     future.set_result(value)

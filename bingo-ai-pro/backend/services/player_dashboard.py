@@ -646,6 +646,146 @@ def run_isolated_card_two_dashboard_context_benchmark(repetitions: int = 7) -> d
     return {"status": "ok", "samples": samples}
 
 
+def _card_two_history_component():
+    return _timed_component_stage(
+        "card_two_history",
+        "prediction_history_summary_records",
+        lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+    )
+
+
+def _dashboard_benchmark_context_after(seen: set) -> dict | None:
+    from database.prediction_history_store import get_card_two_history_timing_status
+
+    wait_until = time.monotonic() + 2.0
+    while time.monotonic() < wait_until:
+        recent = get_card_two_history_timing_status().get("recent", [])
+        for event in reversed(recent):
+            if event.get("type") != "dashboard_context":
+                continue
+            recorded_at = event.get("recorded_at")
+            if recorded_at in seen:
+                continue
+            seen.add(recorded_at)
+            return deepcopy(event)
+        time.sleep(0.05)
+    return None
+
+
+def _resolve_dashboard_benchmark_inputs() -> dict:
+    timings: list[dict] = []
+    warnings: list[str] = []
+    deadline = time.monotonic() + PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS
+    card_one = get_player_card_one_snapshot(deadline=deadline, timings=timings, warnings=warnings)
+    current = card_one.get("current") or {}
+    detected_latest_issue = card_one.get("detected_latest_issue")
+    next_prediction = card_one.get("next_prediction") or {}
+    return {
+        "current": current,
+        "detected_latest_issue": detected_latest_issue,
+        "previous_target_issue": next_prediction.get("based_on_issue") or current.get("issue"),
+    }
+
+
+def _dashboard_benchmark_component_callables(inputs: dict) -> dict[str, Any]:
+    current = inputs.get("current") or {}
+    detected_latest_issue = inputs.get("detected_latest_issue")
+    previous_target_issue = inputs.get("previous_target_issue")
+
+    def build_next_snapshot():
+        record = _timed_component_stage(
+            "next_prediction_snapshot",
+            "current_prediction_lookup",
+            lambda: _current_prediction_for_draw(current),
+        )
+        return _timed_component_stage(
+            "next_prediction_snapshot",
+            "prediction_from_history",
+            lambda: _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=False),
+        )
+
+    return {
+        "active_release": get_current_release,
+        "analysis": get_latest_analysis_history,
+        "next_prediction_snapshot": build_next_snapshot,
+        "prediction_aggregates": lambda: get_prediction_lifecycle_aggregates(diagnostic_component="prediction_aggregates"),
+        "previous_verification": lambda: _build_previous_verification_snapshot(previous_target_issue),
+    }
+
+
+def _run_card_two_pairwise_condition(name: str, overlap_names: list[str], repetitions: int, inputs: dict, seen: set) -> dict:
+    callables = _dashboard_benchmark_component_callables(inputs)
+    samples = []
+    for index in range(repetitions):
+        wait_until = time.monotonic() + 8.0
+        while active_dashboard_components() and time.monotonic() < wait_until:
+            time.sleep(0.02)
+        overlap_futures = [
+            _submit_component(component, callables[component])[0]
+            for component in overlap_names
+            if component in callables
+        ]
+        time.sleep(0.005)
+        future, state = _submit_component("card_two_history", _card_two_history_component)
+        result_count = None
+        error_type = None
+        if future is not None:
+            try:
+                result = future.result(timeout=8.0)
+                result_count = len(result or [])
+            except Exception as exc:
+                error_type = type(exc).__name__
+        for overlap_future in overlap_futures:
+            if overlap_future is None:
+                continue
+            try:
+                overlap_future.result(timeout=8.0)
+            except Exception:
+                pass
+        context = _dashboard_benchmark_context_after(seen)
+        samples.append(
+            {
+                "sample": index + 1,
+                "submit_state": state,
+                "overlap_requested": list(overlap_names),
+                "result_count": result_count,
+                "error_type": error_type,
+                "in_flight_count": _player_in_flight_count(),
+                "context": context,
+            }
+        )
+    return {"condition": name, "overlap_requested": list(overlap_names), "samples": samples}
+
+
+def run_card_two_concurrency_culprit_benchmark(repetitions: int = 5) -> dict:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    from database.prediction_history_store import get_card_two_history_timing_status
+
+    seen = {
+        event.get("recorded_at")
+        for event in get_card_two_history_timing_status().get("recent", [])
+        if event.get("type") == "dashboard_context"
+    }
+    inputs = _resolve_dashboard_benchmark_inputs()
+    conditions = [
+        ("alone", []),
+        ("active_release", ["active_release"]),
+        ("analysis", ["analysis"]),
+        ("next_prediction_snapshot", ["next_prediction_snapshot"]),
+        ("prediction_aggregates", ["prediction_aggregates"]),
+        ("previous_verification", ["previous_verification"]),
+        ("level_2", ["previous_verification", "prediction_aggregates"]),
+        ("level_3", ["previous_verification", "prediction_aggregates", "analysis"]),
+    ]
+    return {
+        "status": "ok",
+        "conditions": [
+            _run_card_two_pairwise_condition(name, overlap, repetitions, inputs, seen)
+            for name, overlap in conditions
+        ],
+    }
+
+
 def _as_int(value: Any) -> int | None:
     try:
         return int(value)

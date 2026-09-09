@@ -62,3 +62,10 @@ def api_card_two_isolated_dashboard_context_benchmark() -> dict:
     from services.player_dashboard import run_isolated_card_two_dashboard_context_benchmark
 
     return run_isolated_card_two_dashboard_context_benchmark()
+
+
+@router.post("/runtime-diagnostics/card-two-concurrency-culprit-benchmark")
+def api_card_two_concurrency_culprit_benchmark() -> dict:
+    from services.player_dashboard import run_card_two_concurrency_culprit_benchmark
+
+    return run_card_two_concurrency_culprit_benchmark()
