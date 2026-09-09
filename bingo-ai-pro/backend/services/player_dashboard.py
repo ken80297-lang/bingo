@@ -355,7 +355,13 @@ def _submit_component(name: str, fn):
     def timed_fn():
         started_at = time.perf_counter()
         try:
-            result = fn()
+            if name == "card_two_history":
+                from database.prediction_history_store import card_two_dashboard_execution_context
+
+                with card_two_dashboard_execution_context((started_at - submitted_at) * 1000):
+                    result = fn()
+            else:
+                result = fn()
         except Exception as exc:
             logger.warning(
                 "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=failed error_type=%s",
@@ -513,6 +519,49 @@ def player_dashboard_runtime_metrics() -> dict:
         "in_flight_count": _player_in_flight_count(),
         "max_workers": getattr(_PLAYER_EXECUTOR, "_max_workers", None),
     }
+
+
+def run_card_two_dashboard_context_benchmark(repetitions: int = 7) -> dict:
+    from database.prediction_history_store import get_card_two_history_timing_status
+
+    repetitions = max(1, min(int(repetitions or 7), 7))
+    seen = {
+        event.get("recorded_at")
+        for event in get_card_two_history_timing_status().get("recent", [])
+        if event.get("type") == "dashboard_context"
+    }
+    samples = []
+    for index in range(repetitions):
+        invalidate_player_dashboard_cache("card_two_dashboard_context_benchmark")
+        summary_started = time.perf_counter()
+        summary = build_player_dashboard_summary()
+        context = None
+        wait_until = time.monotonic() + 8.0
+        while time.monotonic() < wait_until:
+            recent = get_card_two_history_timing_status().get("recent", [])
+            for event in reversed(recent):
+                if event.get("type") != "dashboard_context":
+                    continue
+                recorded_at = event.get("recorded_at")
+                if recorded_at in seen:
+                    continue
+                context = deepcopy(event)
+                seen.add(recorded_at)
+                break
+            if context is not None:
+                break
+            time.sleep(0.05)
+        samples.append(
+            {
+                "sample": index + 1,
+                "summary_status": summary.get("status"),
+                "summary_ms": round((time.perf_counter() - summary_started) * 1000, 2),
+                "timeout_steps": list(((summary.get("timing") or {}).get("timeout_steps")) or []),
+                "in_flight_count": _player_in_flight_count(),
+                "context": context,
+            }
+        )
+    return {"status": "ok", "samples": samples}
 
 
 def _as_int(value: Any) -> int | None:

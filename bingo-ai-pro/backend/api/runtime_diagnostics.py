@@ -48,3 +48,10 @@ def api_card_two_autocommit_roundtrip_diagnostic() -> dict:
 @router.post("/runtime-diagnostics/card-two-connection-path-benchmark")
 def api_card_two_connection_path_benchmark() -> dict:
     return run_card_two_connection_path_benchmark()
+
+
+@router.post("/runtime-diagnostics/card-two-dashboard-context-benchmark")
+def api_card_two_dashboard_context_benchmark() -> dict:
+    from services.player_dashboard import run_card_two_dashboard_context_benchmark
+
+    return run_card_two_dashboard_context_benchmark()

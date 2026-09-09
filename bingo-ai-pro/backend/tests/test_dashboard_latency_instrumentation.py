@@ -308,6 +308,36 @@ def test_dashboard_component_latency_preserves_result(monkeypatch, caplog):
     assert "result=success" in joined
 
 
+def test_card_two_submit_component_enters_dashboard_execution_context(monkeypatch):
+    events = []
+
+    class FakeContext:
+        def __init__(self, queue_ms):
+            self.queue_ms = queue_ms
+
+        def __enter__(self):
+            events.append(("enter", self.queue_ms))
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append(("exit", exc_type))
+            return False
+
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+    monkeypatch.setattr(
+        prediction_history_store,
+        "card_two_dashboard_execution_context",
+        lambda queue_ms: FakeContext(queue_ms),
+    )
+
+    future, state = player_dashboard._submit_component("card_two_history", lambda: {"status": "ok"})
+
+    assert state == "submitted"
+    assert future.result() == {"status": "ok"}
+    assert events[0][0] == "enter"
+    assert isinstance(events[0][1], float)
+    assert events[1] == ("exit", None)
+
+
 def test_dashboard_component_timeout_fallback_behavior_unchanged():
     warnings: list[str] = []
     timings: list[dict] = []
@@ -902,6 +932,50 @@ def test_card_two_roundtrip_diagnostic_uses_dashboard_pool_without_writes(monkey
     assert result["sequence_a"][0]["checkout_status"] == "INTRANS"
     assert result["sequence_a"][0]["backend_pid"] == 12345
     assert result["sequence_a"][0]["connection_hash"]
+
+
+def test_card_two_dashboard_context_records_same_connection_statement_probes(monkeypatch):
+    connection = SequentialFakeConnection(
+        [
+            FakeCursor(rows=[_prediction_summary_row(0)]),
+            FakeCursor(rows=[(1,)]),
+            FakeCursor(rows=[(1,)]),
+        ]
+    )
+    timing = {"query_tag": "card_two_history.main_query"}
+    monkeypatch.setenv("DATABASE_URL", "postgres://secret")
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", lambda: connection)
+
+    with prediction_history_store.card_two_dashboard_execution_context(12.34):
+        with prediction_history_store._card_two_dashboard_connection_scope(True):
+            rows = prediction_history_store._with_card_two_query_timing(
+                timing,
+                lambda: prediction_history_store._query_cloud(
+                    prediction_history_store._prediction_history_summary_cloud_sql(),
+                    (100,),
+                ),
+            )
+
+    status = prediction_history_store.get_card_two_history_timing_status()
+    context = status["latest"]
+
+    assert rows == [_prediction_summary_row(0)]
+    assert context["type"] == "dashboard_context"
+    assert context["executor_queue_ms"] == 12.34
+    assert context["connection_checkout_ms"] >= 0
+    assert context["select1_a_execute_ms"] >= 0
+    assert context["card_two_execute_ms"] == timing["execute_ms"]
+    assert context["select1_b_execute_ms"] >= 0
+    assert context["fetch_ms"] == timing["fetch_ms"]
+    assert context["component_total_execution_ms"] >= 0
+    assert context["thread_id"]
+    assert context["process_id"]
+    assert context["connection_hash"]
+    assert all(
+        sql.strip().lower().startswith("select")
+        for cursor in connection.cursor_history
+        for sql in cursor.sql_history
+    )
 
 
 def test_card_two_autocommit_roundtrip_diagnostic_is_isolated_and_read_only(monkeypatch):

@@ -43,6 +43,10 @@ _CARD_TWO_DASHBOARD_CONNECTION_STATE: ContextVar[dict[str, Any] | None] = Contex
     "card_two_dashboard_connection_state",
     default=None,
 )
+_CARD_TWO_DASHBOARD_EXECUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "card_two_dashboard_execution_context",
+    default=None,
+)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -596,6 +600,9 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
     with conn.cursor() as cur:
         if timing is not None:
             timing["transaction_status_before"] = _transaction_status(conn)
+        context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+        if context is not None and timing and timing.get("query_tag") == "card_two_history.main_query":
+            _execute_dashboard_context_probe(conn, "select1_a")
         execute_started = time.perf_counter()
         cur.execute(sql, params, prepare=False)
         if timing is not None:
@@ -606,7 +613,30 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
         if timing is not None:
             timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
             timing["row_count"] = len(rows)
+        if context is not None and timing and timing.get("query_tag") == "card_two_history.main_query":
+            context["card_two_execute_ms"] = timing.get("execute_ms")
+            context["fetch_ms"] = timing.get("fetch_ms")
+            context["status_before_execute"] = timing.get("transaction_status_before")
+            context["status_after_execute"] = timing.get("transaction_status_after")
+            context["card_two_fetch_finished_at"] = time.perf_counter()
+            _execute_dashboard_context_probe(conn, "select1_b")
         return rows
+
+
+def _execute_dashboard_context_probe(conn: Any, name: str) -> None:
+    context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+    if context is None:
+        return
+    with conn.cursor() as cur:
+        before = _transaction_status(conn)
+        started = time.perf_counter()
+        cur.execute("select 1", prepare=False)
+        execute_ms = round((time.perf_counter() - started) * 1000, 2)
+        after = _transaction_status(conn)
+        cur.fetchall()
+    context[f"{name}_execute_ms"] = execute_ms
+    context[f"{name}_status_before"] = before
+    context[f"{name}_status_after"] = after
 
 
 def _record_shared_connection_acquire_timing(timing: dict[str, Any] | None, state: dict[str, Any] | None) -> None:
@@ -1052,15 +1082,33 @@ def _card_two_dashboard_connection_scope(enabled: bool):
     acquired = False
     try:
         acquire_started = time.perf_counter()
+        context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+        if context is not None:
+            context["component_pre_db_ms"] = round((acquire_started - context["worker_started_at"]) * 1000, 2)
         with _dashboard_read_connection() as conn:
             acquired = True
             state["connect_ms"] = round((time.perf_counter() - acquire_started) * 1000, 2)
             state["opened_at"] = time.perf_counter()
+            context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+            if context is not None:
+                context["connection_checkout_ms"] = state["connect_ms"]
+                context["connection_hash"] = _connection_hash(conn)
+                context["checkout_status"] = _transaction_status(conn)
+                context["backend_pid"] = getattr(getattr(conn, "info", None), "backend_pid", None)
+                context["autocommit"] = getattr(conn, "autocommit", None)
             conn_token = _CARD_TWO_DASHBOARD_CONNECTION.set(conn)
             state_token = _CARD_TWO_DASHBOARD_CONNECTION_STATE.set(state)
             try:
                 yield
             finally:
+                context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+                if context is not None:
+                    context["db_scope_exited_at"] = time.perf_counter()
+                    if context.get("card_two_fetch_finished_at") is not None:
+                        context["db_post_fetch_ms"] = round(
+                            (context["db_scope_exited_at"] - context["card_two_fetch_finished_at"]) * 1000,
+                            2,
+                        )
                 _CARD_TWO_DASHBOARD_CONNECTION.reset(conn_token)
                 _CARD_TWO_DASHBOARD_CONNECTION_STATE.reset(state_token)
     except Exception as exc:
@@ -1087,6 +1135,39 @@ def _record_card_two_history_timing(payload: dict[str, Any]) -> None:
     with _CARD_TWO_HISTORY_TIMING_LOCK:
         _CARD_TWO_HISTORY_TIMINGS.append(event)
         del _CARD_TWO_HISTORY_TIMINGS[:-_CARD_TWO_HISTORY_TIMING_LIMIT]
+
+
+@contextmanager
+def card_two_dashboard_execution_context(queue_ms: float | None = None):
+    context = {
+        "type": "dashboard_context",
+        "component": "card_two_history",
+        "executor_queue_ms": round(queue_ms, 2) if queue_ms is not None else None,
+        "process_id": os.getpid(),
+        "thread_id": threading.get_ident(),
+        "worker_started_at": time.perf_counter(),
+    }
+    token = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.set(context)
+    try:
+        yield
+        context["result"] = "success"
+    except Exception as exc:
+        context["result"] = "failed"
+        context["error_type"] = type(exc).__name__
+        raise
+    finally:
+        now = time.perf_counter()
+        context["component_total_execution_ms"] = round((now - context["worker_started_at"]) * 1000, 2)
+        if context.get("db_scope_exited_at") is not None:
+            context["component_post_db_ms"] = round((now - context["db_scope_exited_at"]) * 1000, 2)
+        for key in (
+            "worker_started_at",
+            "card_two_fetch_finished_at",
+            "db_scope_exited_at",
+        ):
+            context.pop(key, None)
+        _record_card_two_history_timing(context)
+        _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.reset(token)
 
 
 def get_card_two_history_timing_status() -> dict[str, Any]:
