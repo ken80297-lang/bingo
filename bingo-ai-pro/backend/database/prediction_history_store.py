@@ -53,6 +53,10 @@ _DIAGNOSTIC_QUERY_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     default=None,
 )
 _DIAGNOSTIC_QUERY_LABEL: ContextVar[str | None] = ContextVar("diagnostic_query_label", default=None)
+_DIAGNOSTIC_CARD_TWO_TIMING_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "diagnostic_card_two_timing_events",
+    default=None,
+)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -1235,8 +1239,7 @@ def _run_card_two_contention_sample(
     run_overlap_loader: bool = True,
 ) -> dict[str, Any]:
     query_events: list[dict[str, Any]] = []
-    with _CARD_TWO_HISTORY_TIMING_LOCK:
-        timing_start = len(_CARD_TWO_HISTORY_TIMINGS)
+    timing_events: list[dict[str, Any]] = []
     started = time.perf_counter()
     errors: dict[str, str] = {}
     card_result_count = None
@@ -1287,14 +1290,17 @@ def _run_card_two_contention_sample(
             card_future = executor.submit(card_task)
             card_future.result(timeout=30)
 
-    if same_connection:
-        with _dashboard_read_connection() as conn:
-            shared_conn = conn
+    timing_token = _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.set(timing_events)
+    try:
+        if same_connection:
+            with _dashboard_read_connection() as conn:
+                shared_conn = conn
+                run_pair()
+        else:
             run_pair()
-    else:
-        run_pair()
+    finally:
+        _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.reset(timing_token)
 
-    timing_events = _diagnostic_recent_card_two_events(timing_start)
     sample = _diagnostic_card_two_sample(timing_events, query_events)
     sample.update(
         {
@@ -1545,6 +1551,9 @@ def _card_two_dashboard_connection_scope(enabled: bool):
 def _record_card_two_history_timing(payload: dict[str, Any]) -> None:
     event = dict(payload)
     event.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+    diagnostic_events = _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.get()
+    if diagnostic_events is not None:
+        diagnostic_events.append(deepcopy(event))
     with _CARD_TWO_HISTORY_TIMING_LOCK:
         _CARD_TWO_HISTORY_TIMINGS.append(event)
         del _CARD_TWO_HISTORY_TIMINGS[:-_CARD_TWO_HISTORY_TIMING_LIMIT]
