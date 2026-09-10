@@ -9,6 +9,7 @@ from database.collector_store import get_collector_db_path_status
 from database.prediction_history_store import get_card_two_history_timing_status
 from database.prediction_history_store import run_card_two_autocommit_roundtrip_diagnostic
 from database.prediction_history_store import run_card_two_connection_path_benchmark
+from database.prediction_history_store import run_card_two_contention_isolation_benchmark
 from database.prediction_history_store import run_card_two_roundtrip_diagnostic
 
 router = APIRouter(prefix="/api", tags=["Runtime Diagnostics"])
@@ -69,3 +70,8 @@ def api_card_two_concurrency_culprit_benchmark() -> dict:
     from services.player_dashboard import run_card_two_concurrency_culprit_benchmark
 
     return run_card_two_concurrency_culprit_benchmark()
+
+
+@router.post("/runtime-diagnostics/card-two-contention-isolation-benchmark")
+def api_card_two_contention_isolation_benchmark() -> dict:
+    return run_card_two_contention_isolation_benchmark()

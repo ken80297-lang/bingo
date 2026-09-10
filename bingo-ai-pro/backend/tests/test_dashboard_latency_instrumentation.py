@@ -1305,6 +1305,50 @@ def test_card_two_concurrency_culprit_benchmark_uses_real_component_conditions(m
     assert "next_prediction_history" in component_calls
 
 
+def test_card_two_contention_isolation_benchmark_defines_controlled_modes(monkeypatch):
+    calls = []
+
+    def fake_sample(**kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": kwargs["mode"],
+            "overlap_component": kwargs["overlap_component"],
+            "same_connection_requested": kwargs["same_connection"],
+            "overlap_requested": kwargs["overlap"],
+            "overlap_loader_requested": kwargs.get("run_overlap_loader", True),
+            "main_query": {"execute_ms": 10.0},
+            "metadata_bulk": {"execute_ms": 20.0},
+        }
+
+    monkeypatch.setattr(prediction_history_store, "_run_card_two_contention_sample", fake_sample)
+
+    result = prediction_history_store.run_card_two_contention_isolation_benchmark(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert result["repetitions"] == 1
+    assert [item["mode"] for item in result["modes"]] == [
+        "mode_a_alone_shared_connection",
+        "mode_b_same_connection_overlap",
+        "mode_c_separate_connections_concurrent",
+        "mode_d_same_connection_staggered",
+        "mode_e_separate_connections_overlapping",
+        "mode_b_previous_verification_same_connection_overlap",
+        "mode_c_previous_verification_separate_connections_overlap",
+    ]
+    by_mode = {call["mode"]: call for call in calls}
+    assert by_mode["mode_a_alone_shared_connection"]["run_overlap_loader"] is False
+    assert by_mode["mode_b_same_connection_overlap"]["same_connection"] is True
+    assert by_mode["mode_b_same_connection_overlap"]["overlap"] is True
+    assert by_mode["mode_c_separate_connections_concurrent"]["same_connection"] is False
+    assert by_mode["mode_c_separate_connections_concurrent"]["overlap"] is True
+    assert by_mode["mode_d_same_connection_staggered"]["same_connection"] is True
+    assert by_mode["mode_d_same_connection_staggered"]["overlap"] is False
+    assert by_mode["mode_e_separate_connections_overlapping"]["same_connection"] is False
+    assert by_mode["mode_e_separate_connections_overlapping"]["overlap"] is True
+    assert by_mode["mode_b_previous_verification_same_connection_overlap"]["overlap_component"] == "previous_verification"
+    assert by_mode["mode_c_previous_verification_separate_connections_overlap"]["overlap_component"] == "previous_verification"
+
+
 def _completed_future(value):
     future = Future()
     future.set_result(value)

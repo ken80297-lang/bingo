@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -47,6 +48,11 @@ _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT: ContextVar[dict[str, Any] | None] = Conte
     "card_two_dashboard_execution_context",
     default=None,
 )
+_DIAGNOSTIC_QUERY_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "diagnostic_query_events",
+    default=None,
+)
+_DIAGNOSTIC_QUERY_LABEL: ContextVar[str | None] = ContextVar("diagnostic_query_label", default=None)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -605,8 +611,11 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
             _execute_dashboard_context_probe(conn, "select1_a")
             context["active_components_before_card_two"] = _active_dashboard_component_names()
         execute_started = time.perf_counter()
-        cur.execute(sql, params, prepare=False)
-        execute_finished = time.perf_counter()
+        try:
+            cur.execute(sql, params, prepare=False)
+        finally:
+            execute_finished = time.perf_counter()
+            _record_diagnostic_query_event(conn, timing, execute_started, execute_finished)
         if timing is not None:
             timing["execute_ms"] = round((execute_finished - execute_started) * 1000, 2)
             timing["transaction_status_after"] = _transaction_status(conn)
@@ -629,6 +638,30 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
             )
             _execute_dashboard_context_probe(conn, "select1_b")
         return rows
+
+
+def _record_diagnostic_query_event(
+    conn: Any,
+    timing: dict[str, Any] | None,
+    started: float,
+    finished: float,
+) -> None:
+    events = _DIAGNOSTIC_QUERY_EVENTS.get()
+    if events is None:
+        return
+    label = _DIAGNOSTIC_QUERY_LABEL.get() or (timing or {}).get("query_tag") or "unknown"
+    events.append(
+        {
+            "label": label,
+            "query_tag": (timing or {}).get("query_tag"),
+            "thread_id": threading.get_ident(),
+            "connection_hash": _connection_hash(conn),
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "started_at": started,
+            "finished_at": finished,
+            "execute_ms": round((finished - started) * 1000, 2),
+        }
+    )
 
 
 def _active_dashboard_component_names() -> list[str]:
@@ -1054,6 +1087,320 @@ def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, An
     return result
 
 
+@contextmanager
+def _diagnostic_query_capture(events: list[dict[str, Any]], label: str):
+    events_token = _DIAGNOSTIC_QUERY_EVENTS.set(events)
+    label_token = _DIAGNOSTIC_QUERY_LABEL.set(label)
+    try:
+        yield
+    finally:
+        _DIAGNOSTIC_QUERY_LABEL.reset(label_token)
+        _DIAGNOSTIC_QUERY_EVENTS.reset(events_token)
+
+
+@contextmanager
+def _diagnostic_shared_dashboard_connection(conn: Any):
+    state = {
+        "cloud_available": True,
+        "connect_ms": 0.0,
+        "connect_reported": False,
+        "opened_at": time.perf_counter(),
+    }
+    conn_token = _CARD_TWO_DASHBOARD_CONNECTION.set(conn)
+    state_token = _CARD_TWO_DASHBOARD_CONNECTION_STATE.set(state)
+    try:
+        yield
+    finally:
+        _CARD_TWO_DASHBOARD_CONNECTION.reset(conn_token)
+        _CARD_TWO_DASHBOARD_CONNECTION_STATE.reset(state_token)
+
+
+def _diagnostic_recent_card_two_events(start_index: int) -> list[dict[str, Any]]:
+    with _CARD_TWO_HISTORY_TIMING_LOCK:
+        return deepcopy(_CARD_TWO_HISTORY_TIMINGS[start_index:])
+
+
+def _diagnostic_stage(events: list[dict[str, Any]], stage: str) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if event.get("type") == "stage" and event.get("stage") == stage:
+            return event
+    return None
+
+
+def _diagnostic_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if event.get("type") == "summary":
+            return event
+    return None
+
+
+def _diagnostic_context(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if event.get("type") == "dashboard_context":
+            return event
+    return None
+
+
+def _diagnostic_card_two_sample(events: list[dict[str, Any]], query_events: list[dict[str, Any]]) -> dict[str, Any]:
+    main = _diagnostic_stage(events, "main_query") or {}
+    metadata = _diagnostic_stage(events, "metadata_bulk") or {}
+    summary = _diagnostic_summary(events) or {}
+    context = _diagnostic_context(events) or {}
+    return {
+        "total_ms": summary.get("total_ms"),
+        "rows": summary.get("rows"),
+        "metadata_queries": summary.get("metadata_queries"),
+        "component_total_execution_ms": context.get("component_total_execution_ms"),
+        "main_query": {
+            "stage_ms": main.get("duration_ms"),
+            **(main.get("db_timing") or {}),
+        },
+        "metadata_bulk": {
+            "stage_ms": metadata.get("duration_ms"),
+            **(metadata.get("db_timing") or {}),
+        },
+        "dashboard_context": context,
+        "query_events": query_events,
+    }
+
+
+def _query_events_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return min(left.get("finished_at", 0), right.get("finished_at", 0)) > max(
+        left.get("started_at", 0),
+        right.get("started_at", 0),
+    )
+
+
+def _diagnostic_sql_overlap(query_events: list[dict[str, Any]]) -> dict[str, Any]:
+    card_events = [
+        event for event in query_events
+        if str(event.get("label") or "").startswith("card_two")
+    ]
+    overlap_events = [
+        event for event in query_events
+        if str(event.get("label") or "").startswith("overlap")
+    ]
+    overlaps = [
+        {
+            "card_label": card.get("label"),
+            "overlap_label": overlap.get("label"),
+            "same_python_connection": card.get("connection_hash") == overlap.get("connection_hash"),
+            "same_backend_pid": card.get("backend_pid") == overlap.get("backend_pid"),
+            "overlap_ms": round(
+                (
+                    min(card.get("finished_at", 0), overlap.get("finished_at", 0))
+                    - max(card.get("started_at", 0), overlap.get("started_at", 0))
+                )
+                * 1000,
+                2,
+            ),
+        }
+        for card in card_events
+        for overlap in overlap_events
+        if _query_events_overlap(card, overlap)
+    ]
+    return {
+        "sql_overlap": bool(overlaps),
+        "overlaps": overlaps,
+        "card_two_connection_hashes": sorted({str(event.get("connection_hash")) for event in card_events}),
+        "overlap_connection_hashes": sorted({str(event.get("connection_hash")) for event in overlap_events}),
+        "card_two_backend_pids": sorted({str(event.get("backend_pid")) for event in card_events}),
+        "overlap_backend_pids": sorted({str(event.get("backend_pid")) for event in overlap_events}),
+    }
+
+
+def _run_diagnostic_card_two(events: list[dict[str, Any]]) -> list[dict]:
+    with _diagnostic_query_capture(events, "card_two"):
+        with card_two_dashboard_execution_context(0.0):
+            return get_prediction_history_summary_records(100, diagnostic_component="card_two_history")
+
+
+def _run_diagnostic_overlap_loader(events: list[dict[str, Any]], component: str) -> Any:
+    with _diagnostic_query_capture(events, f"overlap.{component}"):
+        if component == "previous_verification":
+            latest = get_prediction_history_summary_records(1, diagnostic_component=None)
+            target_issue = (latest[0] if latest else {}).get("prediction_issue")
+            if target_issue:
+                return get_latest_verified_prediction_summary_at_or_before(target_issue)
+            return None
+        return get_prediction_lifecycle_aggregates(diagnostic_component=component)
+
+
+def _run_card_two_contention_sample(
+    *,
+    mode: str,
+    overlap_component: str,
+    same_connection: bool,
+    overlap: bool,
+    run_overlap_loader: bool = True,
+) -> dict[str, Any]:
+    query_events: list[dict[str, Any]] = []
+    with _CARD_TWO_HISTORY_TIMING_LOCK:
+        timing_start = len(_CARD_TWO_HISTORY_TIMINGS)
+    started = time.perf_counter()
+    errors: dict[str, str] = {}
+    card_result_count = None
+    overlap_result_type = None
+
+    shared_conn: Any | None = None
+
+    @contextmanager
+    def maybe_shared_connection():
+        if same_connection and shared_conn is not None:
+            with _diagnostic_shared_dashboard_connection(shared_conn):
+                yield
+            return
+        yield
+
+    def card_task() -> None:
+        nonlocal card_result_count
+        try:
+            with maybe_shared_connection():
+                records = _run_diagnostic_card_two(query_events)
+            card_result_count = len(records or [])
+        except Exception as exc:
+            errors["card_two"] = type(exc).__name__
+
+    def overlap_task() -> None:
+        nonlocal overlap_result_type
+        try:
+            with maybe_shared_connection():
+                result = _run_diagnostic_overlap_loader(query_events, overlap_component)
+            overlap_result_type = type(result).__name__
+        except Exception as exc:
+            errors["overlap"] = type(exc).__name__
+
+    def run_pair() -> None:
+        if not run_overlap_loader:
+            card_task()
+            return
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="card-two-contention") as executor:
+            if overlap:
+                overlap_future = executor.submit(overlap_task)
+                time.sleep(0.005)
+                card_future = executor.submit(card_task)
+                card_future.result(timeout=30)
+                overlap_future.result(timeout=30)
+                return
+            overlap_future = executor.submit(overlap_task)
+            overlap_future.result(timeout=30)
+            card_future = executor.submit(card_task)
+            card_future.result(timeout=30)
+
+    if same_connection:
+        with _dashboard_read_connection() as conn:
+            shared_conn = conn
+            run_pair()
+    else:
+        run_pair()
+
+    timing_events = _diagnostic_recent_card_two_events(timing_start)
+    sample = _diagnostic_card_two_sample(timing_events, query_events)
+    sample.update(
+        {
+            "mode": mode,
+            "overlap_component": overlap_component,
+            "same_connection_requested": same_connection,
+            "overlap_requested": overlap,
+            "overlap_loader_requested": run_overlap_loader,
+            "result_count": card_result_count,
+            "overlap_result_type": overlap_result_type,
+            "errors": errors,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+    )
+    sample.update(_diagnostic_sql_overlap(query_events))
+    sample["same_python_connection"] = (
+        bool(sample.get("card_two_connection_hashes"))
+        and sample.get("card_two_connection_hashes") == sample.get("overlap_connection_hashes")
+    )
+    sample["same_backend_pid"] = (
+        bool(sample.get("card_two_backend_pids"))
+        and sample.get("card_two_backend_pids") == sample.get("overlap_backend_pids")
+    )
+    return sample
+
+
+def run_card_two_contention_isolation_benchmark(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    modes = [
+        {
+            "name": "mode_a_alone_shared_connection",
+            "overlap_component": "prediction_aggregates",
+            "same_connection": False,
+            "overlap": False,
+            "alone": True,
+        },
+        {
+            "name": "mode_b_same_connection_overlap",
+            "overlap_component": "prediction_aggregates",
+            "same_connection": True,
+            "overlap": True,
+            "alone": False,
+        },
+        {
+            "name": "mode_c_separate_connections_concurrent",
+            "overlap_component": "prediction_aggregates",
+            "same_connection": False,
+            "overlap": True,
+            "alone": False,
+        },
+        {
+            "name": "mode_d_same_connection_staggered",
+            "overlap_component": "prediction_aggregates",
+            "same_connection": True,
+            "overlap": False,
+            "alone": False,
+        },
+        {
+            "name": "mode_e_separate_connections_overlapping",
+            "overlap_component": "prediction_aggregates",
+            "same_connection": False,
+            "overlap": True,
+            "alone": False,
+        },
+        {
+            "name": "mode_b_previous_verification_same_connection_overlap",
+            "overlap_component": "previous_verification",
+            "same_connection": True,
+            "overlap": True,
+            "alone": False,
+        },
+        {
+            "name": "mode_c_previous_verification_separate_connections_overlap",
+            "overlap_component": "previous_verification",
+            "same_connection": False,
+            "overlap": True,
+            "alone": False,
+        },
+    ]
+    results = []
+    for mode in modes:
+        samples = []
+        for _ in range(repetitions):
+            if mode.get("alone"):
+                samples.append(
+                    _run_card_two_contention_sample(
+                        mode=mode["name"],
+                        overlap_component=mode["overlap_component"],
+                        same_connection=False,
+                        overlap=False,
+                        run_overlap_loader=False,
+                    )
+                )
+            else:
+                samples.append(
+                    _run_card_two_contention_sample(
+                        mode=mode["name"],
+                        overlap_component=mode["overlap_component"],
+                        same_connection=bool(mode["same_connection"]),
+                        overlap=bool(mode["overlap"]),
+                    )
+                )
+        results.append({"mode": mode["name"], "config": mode, "samples": samples})
+    return {"status": "ok", "repetitions": repetitions, "modes": results}
+
+
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
     if _cloud_enabled():
         try:
@@ -1113,6 +1460,30 @@ def _with_card_two_query_timing(timing: dict[str, Any] | None, fn):
 def _card_two_dashboard_connection_scope(enabled: bool):
     if not enabled or not _cloud_enabled():
         yield
+        return
+
+    existing_conn = _CARD_TWO_DASHBOARD_CONNECTION.get()
+    existing_state = _CARD_TWO_DASHBOARD_CONNECTION_STATE.get()
+    if existing_conn is not None and existing_state is not None:
+        context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+        if context is not None:
+            context["component_pre_db_ms"] = round((time.perf_counter() - context["worker_started_at"]) * 1000, 2)
+            context["connection_checkout_ms"] = existing_state.get("connect_ms", 0.0)
+            context["connection_hash"] = _connection_hash(existing_conn)
+            context["checkout_status"] = _transaction_status(existing_conn)
+            context["backend_pid"] = getattr(getattr(existing_conn, "info", None), "backend_pid", None)
+            context["autocommit"] = getattr(existing_conn, "autocommit", None)
+        try:
+            yield
+        finally:
+            context = _CARD_TWO_DASHBOARD_EXECUTION_CONTEXT.get()
+            if context is not None:
+                context["db_scope_exited_at"] = time.perf_counter()
+                if context.get("card_two_fetch_finished_at") is not None:
+                    context["db_post_fetch_ms"] = round(
+                        (context["db_scope_exited_at"] - context["card_two_fetch_finished_at"]) * 1000,
+                        2,
+                    )
         return
 
     state: dict[str, Any] = {
