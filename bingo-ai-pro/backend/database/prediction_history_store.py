@@ -1257,12 +1257,15 @@ def _run_card_two_contention_sample(
 
     def card_task() -> None:
         nonlocal card_result_count
+        timing_token = _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.set(timing_events)
         try:
             with maybe_shared_connection():
                 records = _run_diagnostic_card_two(query_events)
             card_result_count = len(records or [])
         except Exception as exc:
             errors["card_two"] = type(exc).__name__
+        finally:
+            _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.reset(timing_token)
 
     def overlap_task() -> None:
         nonlocal overlap_result_type
@@ -1290,16 +1293,12 @@ def _run_card_two_contention_sample(
             card_future = executor.submit(card_task)
             card_future.result(timeout=30)
 
-    timing_token = _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.set(timing_events)
-    try:
-        if same_connection:
-            with _dashboard_read_connection() as conn:
-                shared_conn = conn
-                run_pair()
-        else:
+    if same_connection:
+        with _dashboard_read_connection() as conn:
+            shared_conn = conn
             run_pair()
-    finally:
-        _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.reset(timing_token)
+    else:
+        run_pair()
 
     sample = _diagnostic_card_two_sample(timing_events, query_events)
     sample.update(
@@ -2288,6 +2287,12 @@ def _get_prediction_history_summary_records_loaded(
                 if event.get("type") == "stage" and event.get("stage") == "metadata_bulk":
                     event["db_timing"] = dict(metadata_query_timing)
                     break
+            diagnostic_events = _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS.get()
+            if diagnostic_events is not None:
+                for event in reversed(diagnostic_events):
+                    if event.get("type") == "stage" and event.get("stage") == "metadata_bulk":
+                        event["db_timing"] = dict(metadata_query_timing)
+                        break
         total_ms = round((time.perf_counter() - total_started) * 1000, 2)
         _record_card_two_history_timing(
             {
