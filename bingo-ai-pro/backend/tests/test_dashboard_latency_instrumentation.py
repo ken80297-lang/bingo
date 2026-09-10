@@ -1349,6 +1349,34 @@ def test_card_two_contention_isolation_benchmark_defines_controlled_modes(monkey
     assert by_mode["mode_c_previous_verification_separate_connections_overlap"]["overlap_component"] == "previous_verification"
 
 
+def test_card_two_ordering_benchmark_defines_four_modes(monkeypatch):
+    calls = []
+
+    def fake_sample(mode):
+        calls.append(mode)
+        return {
+            "mode": mode,
+            "total_ms": 1.0,
+            "main_query": {"execute_ms": 1.0},
+            "metadata_bulk": {"execute_ms": 1.0},
+            "ordering_verified": True,
+        }
+
+    monkeypatch.setattr(prediction_history_store, "_run_card_two_ordering_sample", fake_sample)
+
+    result = prediction_history_store.run_card_two_ordering_benchmark(repetitions=1)
+
+    assert result["status"] == "ok"
+    assert result["repetitions"] == 1
+    assert calls == [
+        "mode_a_card_two_alone",
+        "mode_b_card_two_main_first",
+        "mode_c_db_heavy_first",
+        "mode_d_concurrent_start",
+    ]
+    assert [item["mode"] for item in result["modes"]] == calls
+
+
 def _completed_future(value):
     future = Future()
     future.set_result(value)

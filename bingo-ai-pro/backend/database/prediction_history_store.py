@@ -53,6 +53,10 @@ _DIAGNOSTIC_QUERY_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     default=None,
 )
 _DIAGNOSTIC_QUERY_LABEL: ContextVar[str | None] = ContextVar("diagnostic_query_label", default=None)
+_DIAGNOSTIC_QUERY_STARTED_EVENT: ContextVar[threading.Event | None] = ContextVar(
+    "diagnostic_query_started_event",
+    default=None,
+)
 _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     "diagnostic_card_two_timing_events",
     default=None,
@@ -615,6 +619,9 @@ def _execute_cloud_query(conn, sql: str, params: tuple = (), timing: dict[str, A
             _execute_dashboard_context_probe(conn, "select1_a")
             context["active_components_before_card_two"] = _active_dashboard_component_names()
         execute_started = time.perf_counter()
+        started_event = _DIAGNOSTIC_QUERY_STARTED_EVENT.get()
+        if started_event is not None:
+            started_event.set()
         try:
             cur.execute(sql, params, prepare=False)
         finally:
@@ -1092,12 +1099,18 @@ def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, An
 
 
 @contextmanager
-def _diagnostic_query_capture(events: list[dict[str, Any]], label: str):
+def _diagnostic_query_capture(
+    events: list[dict[str, Any]],
+    label: str,
+    started_event: threading.Event | None = None,
+):
     events_token = _DIAGNOSTIC_QUERY_EVENTS.set(events)
     label_token = _DIAGNOSTIC_QUERY_LABEL.set(label)
+    started_token = _DIAGNOSTIC_QUERY_STARTED_EVENT.set(started_event)
     try:
         yield
     finally:
+        _DIAGNOSTIC_QUERY_STARTED_EVENT.reset(started_token)
         _DIAGNOSTIC_QUERY_LABEL.reset(label_token)
         _DIAGNOSTIC_QUERY_EVENTS.reset(events_token)
 
@@ -1404,6 +1417,218 @@ def run_card_two_contention_isolation_benchmark(repetitions: int = 5) -> dict[st
                 )
         results.append({"mode": mode["name"], "config": mode, "samples": samples})
     return {"status": "ok", "repetitions": repetitions, "modes": results}
+
+
+def _diagnostic_ordering_relationship(query_events: list[dict[str, Any]]) -> dict[str, Any]:
+    card_main = [
+        event for event in query_events
+        if event.get("label") == "card_two.main_query"
+    ]
+    card_metadata = [
+        event for event in query_events
+        if event.get("label") == "card_two.metadata_bulk"
+    ]
+    overlap_events = [
+        event for event in query_events
+        if str(event.get("label") or "").startswith("overlap.")
+    ]
+    first_main = min(card_main, key=lambda event: event.get("started_at", 0), default=None)
+    first_overlap = min(overlap_events, key=lambda event: event.get("started_at", 0), default=None)
+    return {
+        "card_main_started_at": first_main.get("started_at") if first_main else None,
+        "card_main_finished_at": first_main.get("finished_at") if first_main else None,
+        "first_overlap_started_at": first_overlap.get("started_at") if first_overlap else None,
+        "first_overlap_finished_at": first_overlap.get("finished_at") if first_overlap else None,
+        "card_main_before_overlap": (
+            bool(first_main and first_overlap)
+            and first_main.get("finished_at", 0) <= first_overlap.get("started_at", 0)
+        ),
+        "overlap_before_card_main": (
+            bool(first_main and first_overlap)
+            and first_overlap.get("started_at", 0) <= first_main.get("started_at", 0)
+        ),
+        "card_main_overlap_sql": any(
+            _query_events_overlap(card, overlap)
+            for card in card_main
+            for overlap in overlap_events
+        ),
+        "metadata_overlap_sql": any(
+            _query_events_overlap(metadata, overlap)
+            for metadata in card_metadata
+            for overlap in overlap_events
+        ),
+    }
+
+
+def _diagnostic_ordered_card_two(
+    *,
+    query_events: list[dict[str, Any]],
+    after_main,
+) -> dict[str, Any]:
+    total_started = time.perf_counter()
+    with _card_two_dashboard_connection_scope(True):
+        main_timing: dict[str, Any] = {"query_tag": "card_two_history.main_query"}
+        main_started = time.perf_counter()
+        with _diagnostic_query_capture(query_events, "card_two.main_query"):
+            rows = _with_card_two_query_timing(
+                main_timing,
+                lambda: _query_cloud(_prediction_history_summary_cloud_sql(), (100,)),
+            )
+        main_stage_ms = round((time.perf_counter() - main_started) * 1000, 2)
+
+        records = []
+        for row in rows:
+            record = _row_to_prediction_summary(row)
+            if not is_production_prediction(record):
+                continue
+            record["read_layer"] = {
+                "data_source": "database",
+                "table_name": "prediction_history",
+                "query_name": "production_prediction_history_summary_v1",
+                "production_filtered": True,
+            }
+            records.append(record)
+
+        if after_main is not None:
+            after_main()
+
+        metadata_timing: dict[str, Any] = {"query_tag": "card_two_history.metadata_bulk"}
+        metadata_started = time.perf_counter()
+        with _diagnostic_query_capture(query_events, "card_two.metadata_bulk"):
+            metadata_by_record, metadata_queries = _with_card_two_query_timing(
+                metadata_timing,
+                lambda: _prediction_event_metadata_bulk(records),
+            )
+        metadata_stage_ms = round((time.perf_counter() - metadata_started) * 1000, 2)
+        enriched = [
+            _enrich_prediction_metadata_from_map(record, metadata_by_record.get(id(record)))
+            for record in records
+        ]
+    return {
+        "total_ms": round((time.perf_counter() - total_started) * 1000, 2),
+        "rows": len(enriched),
+        "metadata_queries": metadata_queries,
+        "main_query": {
+            "stage_ms": main_stage_ms,
+            **main_timing,
+        },
+        "metadata_bulk": {
+            "stage_ms": metadata_stage_ms,
+            **metadata_timing,
+        },
+    }
+
+
+def _run_card_two_ordering_sample(mode: str) -> dict[str, Any]:
+    query_events: list[dict[str, Any]] = []
+    errors: dict[str, str] = {}
+    overlap_result_type = None
+    overlap_started_event = threading.Event()
+    overlap_future = None
+    start_barrier = threading.Event()
+    started = time.perf_counter()
+
+    def run_overlap(wait_for_barrier: bool = False) -> None:
+        nonlocal overlap_result_type
+        try:
+            if wait_for_barrier:
+                start_barrier.wait(timeout=5)
+            with _diagnostic_query_capture(
+                query_events,
+                "overlap.prediction_aggregates",
+                overlap_started_event,
+            ):
+                result = get_prediction_lifecycle_aggregates(diagnostic_component="prediction_aggregates")
+            overlap_result_type = type(result).__name__
+        except Exception as exc:
+            errors["overlap"] = type(exc).__name__
+
+    def run_card(after_main=None, wait_for_barrier: bool = False) -> dict[str, Any] | None:
+        try:
+            if wait_for_barrier:
+                start_barrier.wait(timeout=5)
+            return _diagnostic_ordered_card_two(
+                query_events=query_events,
+                after_main=after_main,
+            )
+        except Exception as exc:
+            errors["card_two"] = type(exc).__name__
+            return None
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="card-two-ordering") as executor:
+        if mode == "mode_a_card_two_alone":
+            card_two = run_card()
+        elif mode == "mode_b_card_two_main_first":
+            def after_main():
+                nonlocal overlap_future
+                overlap_future = executor.submit(run_overlap)
+
+            card_two = run_card(after_main=after_main)
+            if overlap_future is not None:
+                overlap_future.result(timeout=30)
+        elif mode == "mode_c_db_heavy_first":
+            overlap_future = executor.submit(run_overlap)
+            ordering_verified = overlap_started_event.wait(timeout=10)
+            card_two = run_card()
+            overlap_future.result(timeout=30)
+            query_events.append(
+                {
+                    "label": "diagnostic.ordering_marker",
+                    "ordering": "db_heavy_first",
+                    "verified": ordering_verified,
+                }
+            )
+        elif mode == "mode_d_concurrent_start":
+            overlap_future = executor.submit(run_overlap, True)
+            card_future = executor.submit(run_card, None, True)
+            start_barrier.set()
+            card_two = card_future.result(timeout=30)
+            overlap_future.result(timeout=30)
+        else:
+            raise ValueError(f"unknown ordering benchmark mode: {mode}")
+
+    sample = dict(card_two or {})
+    sample.update(
+        {
+            "mode": mode,
+            "errors": errors,
+            "overlap_result_type": overlap_result_type,
+            "query_events": query_events,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+    )
+    sample.update(_diagnostic_sql_overlap(query_events))
+    sample.update(_diagnostic_ordering_relationship(query_events))
+    if mode == "mode_a_card_two_alone":
+        sample["ordering_verified"] = True
+    elif mode == "mode_b_card_two_main_first":
+        sample["ordering_verified"] = bool(sample.get("card_main_before_overlap"))
+    elif mode == "mode_c_db_heavy_first":
+        sample["ordering_verified"] = bool(sample.get("overlap_before_card_main"))
+    elif mode == "mode_d_concurrent_start":
+        sample["ordering_verified"] = True
+    return sample
+
+
+def run_card_two_ordering_benchmark(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    modes = [
+        "mode_a_card_two_alone",
+        "mode_b_card_two_main_first",
+        "mode_c_db_heavy_first",
+        "mode_d_concurrent_start",
+    ]
+    return {
+        "status": "ok",
+        "repetitions": repetitions,
+        "modes": [
+            {
+                "mode": mode,
+                "samples": [_run_card_two_ordering_sample(mode) for _ in range(repetitions)],
+            }
+            for mode in modes
+        ],
+    }
 
 
 def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
