@@ -280,3 +280,4 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-concurrency-culprit-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-contention-isolation-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-ordering-benchmark" in routes
+    assert "/api/runtime-diagnostics/card-two-stepwise-latency-benchmark" in routes

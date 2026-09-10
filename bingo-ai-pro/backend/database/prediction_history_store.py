@@ -857,25 +857,190 @@ def _diagnostic_card_two_signature(rows: list[Any]) -> dict[str, Any]:
 
 def _diagnostic_statement(conn: Any, name: str, sql: str, params: tuple = ()) -> dict[str, Any]:
     before = _transaction_status(conn)
-    with conn.cursor() as cur:
+    cursor_create_started = time.perf_counter()
+    cursor_context = conn.cursor()
+    cursor_create_finished = time.perf_counter()
+    close_started = None
+    close_finished = None
+    with cursor_context as cur:
         execute_started = time.perf_counter()
         cur.execute(sql, params, prepare=False)
-        execute_ms = round((time.perf_counter() - execute_started) * 1000, 2)
+        execute_finished = time.perf_counter()
         after = _transaction_status(conn)
         fetch_started = time.perf_counter()
         rows = cur.fetchall()
-        fetch_ms = round((time.perf_counter() - fetch_started) * 1000, 2)
+        fetch_finished = time.perf_counter()
+        close_started = time.perf_counter()
+    close_finished = time.perf_counter()
     result = {
         "statement": name,
-        "execute_ms": execute_ms,
-        "fetch_ms": fetch_ms,
+        "thread_id": threading.get_ident(),
+        "connection_hash": _connection_hash(conn),
+        "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+        "cursor_create_ms": round((cursor_create_finished - cursor_create_started) * 1000, 2),
+        "execute_ms": round((execute_finished - execute_started) * 1000, 2),
+        "fetch_ms": round((fetch_finished - fetch_started) * 1000, 2),
+        "cursor_close_ms": round((close_finished - close_started) * 1000, 2) if close_started is not None else None,
         "row_count": len(rows),
         "transaction_status_before": before,
         "transaction_status_after": after,
+        "timeline": {
+            "cursor_create_start": cursor_create_started,
+            "cursor_create_end": cursor_create_finished,
+            "execute_call_start": execute_started,
+            "execute_call_end": execute_finished,
+            "fetch_start": fetch_started,
+            "fetch_end": fetch_finished,
+            "cursor_close_start": close_started,
+            "cursor_close_end": close_finished,
+        },
     }
     if name == "card_two":
         result.update(_diagnostic_card_two_signature(rows))
     return result
+
+
+def _diagnostic_pool_statement_sequence(statements: list[tuple[str, str, tuple]]) -> dict[str, Any]:
+    acquire_started = time.perf_counter()
+    release_started = None
+    release_finished = None
+    with _dashboard_read_connection() as conn:
+        acquire_finished = time.perf_counter()
+        result = {
+            "pool_acquire_start": acquire_started,
+            "pool_acquire_end": acquire_finished,
+            "pool_acquire_ms": round((acquire_finished - acquire_started) * 1000, 2),
+            "connection_obtained": acquire_finished,
+            "connection_hash": _connection_hash(conn),
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "checkout_status": _transaction_status(conn),
+            "statements": [],
+        }
+        try:
+            for name, sql, params in statements:
+                result["statements"].append(_diagnostic_statement(conn, name, sql, params))
+            result["final_status"] = _transaction_status(conn)
+        finally:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.warning("card two stepwise diagnostic rollback failed", exc_info=True)
+            release_started = time.perf_counter()
+    release_finished = time.perf_counter()
+    result["connection_release_start"] = release_started
+    result["connection_release_end"] = release_finished
+    result["connection_release_ms"] = (
+        round((release_finished - release_started) * 1000, 2)
+        if release_started is not None
+        else None
+    )
+    return result
+
+
+def _diagnostic_main_query_sample(*, reset_before: bool = False, connection_factory=None) -> dict[str, Any]:
+    connection_factory = connection_factory or _dashboard_read_connection
+    acquire_started = time.perf_counter()
+    release_started = None
+    release_finished = None
+    with connection_factory() as conn:
+        acquire_finished = time.perf_counter()
+        if reset_before:
+            conn.rollback()
+        result = {
+            "pool_acquire_start": acquire_started,
+            "pool_acquire_end": acquire_finished,
+            "pool_acquire_ms": round((acquire_finished - acquire_started) * 1000, 2),
+            "connection_obtained": acquire_finished,
+            "connection_hash": _connection_hash(conn),
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "checkout_status": _transaction_status(conn),
+            "reset_before": reset_before,
+            "statement": _diagnostic_statement(
+                conn,
+                "card_two",
+                _prediction_history_summary_cloud_sql(),
+                (100,),
+            ),
+        }
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("card two main query diagnostic rollback failed", exc_info=True)
+        release_started = time.perf_counter()
+    release_finished = time.perf_counter()
+    result["connection_release_start"] = release_started
+    result["connection_release_end"] = release_finished
+    result["connection_release_ms"] = (
+        round((release_finished - release_started) * 1000, 2)
+        if release_started is not None
+        else None
+    )
+    return result
+
+
+def _diagnostic_explain_card_two_main_query() -> dict[str, Any]:
+    explain_sql = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _prediction_history_summary_cloud_sql()
+    try:
+        with _dashboard_read_connection() as conn:
+            with conn.cursor() as cur:
+                started = time.perf_counter()
+                cur.execute(explain_sql, (100,), prepare=False)
+                rows = cur.fetchall()
+                wall_ms = round((time.perf_counter() - started) * 1000, 2)
+            payload = rows[0][0] if rows else None
+            root = payload[0] if isinstance(payload, list) and payload else {}
+            plan = root.get("Plan", {}) if isinstance(root, dict) else {}
+            return {
+                "available": True,
+                "wall_ms": wall_ms,
+                "planning_ms": root.get("Planning Time") if isinstance(root, dict) else None,
+                "execution_ms": root.get("Execution Time") if isinstance(root, dict) else None,
+                "actual_rows": plan.get("Actual Rows"),
+                "shared_hit_blocks": plan.get("Shared Hit Blocks"),
+                "shared_read_blocks": plan.get("Shared Read Blocks"),
+                "node_type": plan.get("Node Type"),
+            }
+    except Exception as exc:
+        return {
+            "available": False,
+            "error_type": type(exc).__name__,
+        }
+
+
+def _diagnostic_wait_state(pid: int | None) -> dict[str, Any]:
+    if not pid:
+        return {"available": False, "reason": "missing backend pid"}
+    try:
+        with _dashboard_read_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select state, wait_event_type, wait_event,
+                           xact_start is not null as has_xact_start,
+                           query_start is not null as has_query_start
+                    from pg_stat_activity
+                    where pid = %s
+                    """,
+                    (pid,),
+                    prepare=False,
+                )
+                rows = cur.fetchall()
+        if not rows:
+            return {"available": True, "rows": []}
+        row = rows[0]
+        return {
+            "available": True,
+            "state": row[0],
+            "wait_event_type": row[1],
+            "wait_event": row[2],
+            "has_xact_start": row[3],
+            "has_query_start": row[4],
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "error_type": type(exc).__name__,
+        }
 
 
 @contextmanager
@@ -1023,6 +1188,73 @@ def run_card_two_autocommit_roundtrip_diagnostic(repetitions: int = 5) -> dict[s
         "control": control,
         "autocommit": autocommit,
         "semantic_equivalence": semantic_equivalence,
+    }
+
+
+def run_card_two_stepwise_latency_benchmark(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    card_two = ("card_two", _prediction_history_summary_cloud_sql(), (100,))
+    select1 = ("select1", "select 1", ())
+    sequential_sequence = [select1, card_two, select1, card_two, select1, card_two, select1]
+
+    reused_statements = [card_two for _ in range(5)]
+    reused_connection = _diagnostic_pool_statement_sequence(reused_statements)
+    first_pid = reused_connection.get("backend_pid")
+
+    autocommit: dict[str, Any]
+    try:
+        autocommit = {
+            "executed": True,
+            "samples": [
+                _diagnostic_main_query_sample(
+                    reset_before=False,
+                    connection_factory=_diagnostic_autocommit_read_connection,
+                )
+                for _ in range(repetitions)
+            ],
+        }
+    except Exception as exc:
+        autocommit = {
+            "executed": False,
+            "error_type": type(exc).__name__,
+            "samples": [],
+        }
+
+    return {
+        "status": "ok",
+        "repetitions": repetitions,
+        "timer_boundary": {
+            "main_query_execute_ms": "Python wall-clock duration of cur.execute(sql, params, prepare=False)",
+            "main_query_fetch_ms": "Python wall-clock duration of cur.fetchall() after execute returns",
+            "pool_acquire_ms": "connection checkout/acquire measured before cursor execution",
+            "cursor_create_ms": "Python wall-clock duration of conn.cursor() creation",
+            "connection_release_ms": "Python wall-clock duration leaving the connection context",
+        },
+        "main_query_execute_calls": 1,
+        "main_query_fetch_calls": 1,
+        "sequential_probe": [
+            _diagnostic_pool_statement_sequence(sequential_sequence)
+            for _ in range(repetitions)
+        ],
+        "fresh_connection": [
+            _diagnostic_main_query_sample(reset_before=False)
+            for _ in range(repetitions)
+        ],
+        "reused_connection": reused_connection,
+        "transaction_current": [
+            _diagnostic_main_query_sample(reset_before=False)
+            for _ in range(repetitions)
+        ],
+        "transaction_reset": [
+            _diagnostic_main_query_sample(reset_before=True)
+            for _ in range(repetitions)
+        ],
+        "autocommit": autocommit,
+        "postgres_server_execution": [
+            _diagnostic_explain_card_two_main_query()
+            for _ in range(repetitions)
+        ],
+        "wait_state": _diagnostic_wait_state(first_pid),
     }
 
 

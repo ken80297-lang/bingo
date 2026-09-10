@@ -12,6 +12,7 @@ from database.prediction_history_store import run_card_two_connection_path_bench
 from database.prediction_history_store import run_card_two_contention_isolation_benchmark
 from database.prediction_history_store import run_card_two_ordering_benchmark
 from database.prediction_history_store import run_card_two_roundtrip_diagnostic
+from database.prediction_history_store import run_card_two_stepwise_latency_benchmark
 
 router = APIRouter(prefix="/api", tags=["Runtime Diagnostics"])
 
@@ -81,3 +82,8 @@ def api_card_two_contention_isolation_benchmark() -> dict:
 @router.post("/runtime-diagnostics/card-two-ordering-benchmark")
 def api_card_two_ordering_benchmark() -> dict:
     return run_card_two_ordering_benchmark()
+
+
+@router.post("/runtime-diagnostics/card-two-stepwise-latency-benchmark")
+def api_card_two_stepwise_latency_benchmark() -> dict:
+    return run_card_two_stepwise_latency_benchmark()

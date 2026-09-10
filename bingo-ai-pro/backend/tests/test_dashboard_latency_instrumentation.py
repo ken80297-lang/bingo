@@ -1377,6 +1377,59 @@ def test_card_two_ordering_benchmark_defines_four_modes(monkeypatch):
     assert [item["mode"] for item in result["modes"]] == calls
 
 
+def test_card_two_stepwise_latency_benchmark_is_bounded(monkeypatch):
+    sequence_calls = []
+    sample_calls = []
+
+    def fake_sequence(statements):
+        sequence_calls.append([statement[0] for statement in statements])
+        return {
+            "backend_pid": 12345,
+            "statements": [
+                {"statement": statement[0], "execute_ms": 1.0}
+                for statement in statements
+            ],
+        }
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {
+            "statement": {"statement": "card_two", "execute_ms": 2.0},
+            "reset_before": kwargs.get("reset_before", False),
+        }
+
+    monkeypatch.setattr(prediction_history_store, "_diagnostic_pool_statement_sequence", fake_sequence)
+    monkeypatch.setattr(prediction_history_store, "_diagnostic_main_query_sample", fake_sample)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_diagnostic_explain_card_two_main_query",
+        lambda: {"available": True, "execution_ms": 3.0},
+    )
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_diagnostic_wait_state",
+        lambda pid: {"available": True, "state": "idle", "pid": pid},
+    )
+
+    result = prediction_history_store.run_card_two_stepwise_latency_benchmark(repetitions=9)
+
+    assert result["status"] == "ok"
+    assert result["repetitions"] == 5
+    assert result["main_query_execute_calls"] == 1
+    assert result["main_query_fetch_calls"] == 1
+    assert len(result["sequential_probe"]) == 5
+    assert len(result["fresh_connection"]) == 5
+    assert len(result["reused_connection"]["statements"]) == 5
+    assert len(result["transaction_current"]) == 5
+    assert len(result["transaction_reset"]) == 5
+    assert len(result["autocommit"]["samples"]) == 5
+    assert len(result["postgres_server_execution"]) == 5
+    assert sequence_calls[0] == ["card_two", "card_two", "card_two", "card_two", "card_two"]
+    assert ["select1", "card_two", "select1", "card_two", "select1", "card_two", "select1"] in sequence_calls
+    assert any(call.get("reset_before") is True for call in sample_calls)
+    assert any(call.get("connection_factory") is prediction_history_store._diagnostic_autocommit_read_connection for call in sample_calls)
+
+
 def _completed_future(value):
     future = Future()
     future.set_result(value)
