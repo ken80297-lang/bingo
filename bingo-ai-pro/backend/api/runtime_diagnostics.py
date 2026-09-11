@@ -15,6 +15,7 @@ from database.prediction_history_store import run_card_two_contention_isolation_
 from database.prediction_history_store import run_card_two_ordering_benchmark
 from database.prediction_history_store import run_card_two_roundtrip_diagnostic
 from database.prediction_history_store import run_card_two_stepwise_latency_benchmark
+from database.prediction_history_store import run_network_roundtrip_decomposition
 
 router = APIRouter(prefix="/api", tags=["Runtime Diagnostics"])
 
@@ -63,6 +64,11 @@ def api_card_two_connection_path_ab_benchmark() -> dict:
 @router.post("/runtime-diagnostics/session-pooler-connection-classification")
 def api_session_pooler_connection_classification() -> dict:
     return classify_session_pooler_connection_failure()
+
+
+@router.post("/runtime-diagnostics/network-roundtrip-decomposition")
+def api_network_roundtrip_decomposition() -> dict:
+    return run_network_roundtrip_decomposition()
 
 
 @router.post("/runtime-diagnostics/card-two-dashboard-context-benchmark")

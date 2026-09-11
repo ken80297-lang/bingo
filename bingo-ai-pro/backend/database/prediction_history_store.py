@@ -1868,6 +1868,205 @@ def classify_session_pooler_connection_failure() -> dict[str, Any]:
     return result
 
 
+def _stats(values: list[float]) -> dict[str, Any]:
+    return {
+        "samples": values,
+        "median": _median(values),
+        "min": round(min(values), 2) if values else None,
+        "max": round(max(values), 2) if values else None,
+    }
+
+
+def _dns_latency_samples(host: str, count: int = 10) -> dict[str, Any]:
+    samples: list[float] = []
+    errors: list[str] = []
+    for _ in range(max(1, min(count, 10))):
+        started = time.perf_counter()
+        try:
+            socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            samples.append(round((time.perf_counter() - started) * 1000, 2))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+    return {**_stats(samples), "errors": errors}
+
+
+def _tcp_latency_samples(host: str, port: int, count: int = 10) -> dict[str, Any]:
+    samples: list[float] = []
+    errors: list[str] = []
+    for _ in range(max(1, min(count, 10))):
+        started = time.perf_counter()
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                pass
+            samples.append(round((time.perf_counter() - started) * 1000, 2))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+    return {**_stats(samples), "errors": errors}
+
+
+def _psycopg_connect_latency_samples(conninfo: str | None, count: int = 5) -> dict[str, Any]:
+    samples: list[float] = []
+    errors: list[str] = []
+    if not conninfo:
+        return {**_stats(samples), "errors": ["missing conninfo"]}
+    import psycopg
+
+    for _ in range(max(1, min(count, 5))):
+        conn = None
+        started = time.perf_counter()
+        try:
+            conn = psycopg.connect(conninfo, connect_timeout=5)
+            samples.append(round((time.perf_counter() - started) * 1000, 2))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            if conn is not None:
+                conn.close()
+    return {**_stats(samples), "errors": errors}
+
+
+def _same_connection_select1_sequence(conninfo: str | None) -> dict[str, Any]:
+    if not conninfo:
+        return {
+            "samples": [],
+            "median": None,
+            "backend_pid": None,
+            "same_backend_pid": False,
+            "transaction_status_sequence": [],
+            "errors": ["missing conninfo"],
+        }
+    import psycopg
+
+    conn = None
+    samples: list[float] = []
+    statuses: list[dict[str, Any]] = []
+    backend_pids: list[Any] = []
+    errors: list[str] = []
+    try:
+        conn = psycopg.connect(conninfo, connect_timeout=5)
+        backend_pid = getattr(getattr(conn, "info", None), "backend_pid", None)
+        for index in range(5):
+            before = _transaction_status(conn)
+            with conn.cursor() as cur:
+                started = time.perf_counter()
+                cur.execute("select 1", prepare=False)
+                samples.append(round((time.perf_counter() - started) * 1000, 2))
+                row = cur.fetchone()
+            after = _transaction_status(conn)
+            backend_pids.append(getattr(getattr(conn, "info", None), "backend_pid", None))
+            statuses.append(
+                {
+                    "statement": index + 1,
+                    "before": before,
+                    "after": after,
+                    "result": "PASS" if row and row[0] == 1 else "FAIL",
+                }
+            )
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("same connection select1 diagnostic rollback failed", exc_info=True)
+        return {
+            "samples": samples,
+            "median": _median(samples),
+            "backend_pid": backend_pid,
+            "same_backend_pid": len(set(backend_pids)) == 1 if backend_pids else False,
+            "transaction_status_sequence": statuses,
+            "errors": errors,
+        }
+    except Exception as exc:
+        errors.append(type(exc).__name__)
+        return {
+            "samples": samples,
+            "median": _median(samples),
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None) if conn is not None else None,
+            "same_backend_pid": False,
+            "transaction_status_sequence": statuses,
+            "errors": errors,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _latency_layer(
+    dns: dict[str, Any],
+    tcp_6543: dict[str, Any],
+    transaction_connect: dict[str, Any],
+    same_connection_select1: dict[str, Any],
+) -> str:
+    dns_median = dns.get("median")
+    tcp_median = tcp_6543.get("median")
+    connect_median = transaction_connect.get("median")
+    select_median = same_connection_select1.get("median")
+    if isinstance(dns_median, (int, float)) and dns_median >= 75:
+        return "DNS"
+    if isinstance(tcp_median, (int, float)) and tcp_median >= 75:
+        return "TCP"
+    if isinstance(connect_median, (int, float)) and connect_median >= 300:
+        return "TLS_POSTGRES_STARTUP"
+    if isinstance(select_median, (int, float)) and select_median >= 75:
+        return "SQL_ROUNDTRIP"
+    return "UNKNOWN"
+
+
+def run_network_roundtrip_decomposition() -> dict[str, Any]:
+    from database import postgres
+
+    session_name, session_url = _first_env_value(
+        (
+            "DATABASE_SESSION_POOLER_URL",
+            "SESSION_POOLER_DATABASE_URL",
+            "SUPABASE_SESSION_POOLER_DATABASE_URL",
+        )
+    )
+    current_parsed = _parse_diagnostic_conninfo(postgres.DATABASE_URL)
+    host = current_parsed.get("host")
+    result: dict[str, Any] = {
+        "render_region": os.getenv("RENDER_REGION") or os.getenv("RENDER_SERVICE_REGION"),
+        "current_pooler_host": host,
+        "session_pooler_env_present": bool(session_url),
+        "session_pooler_env_var": session_name,
+    }
+    if not host:
+        result.update(
+            {
+                "dns": {**_stats([]), "errors": ["missing current pooler host"]},
+                "tcp_6543": {**_stats([]), "errors": ["missing current pooler host"]},
+                "tcp_5432": {**_stats([]), "errors": ["missing current pooler host"]},
+                "psycopg_transaction_connect": _psycopg_connect_latency_samples(postgres.DATABASE_URL),
+                "psycopg_session_connect": _psycopg_connect_latency_samples(session_url),
+                "same_connection_select1": _same_connection_select1_sequence(postgres.DATABASE_URL),
+                "latency_layer": "UNKNOWN",
+            }
+        )
+        return result
+
+    dns = _dns_latency_samples(str(host), 10)
+    tcp_6543 = _tcp_latency_samples(str(host), 6543, 10)
+    tcp_5432 = _tcp_latency_samples(str(host), 5432, 10)
+    transaction_connect = _psycopg_connect_latency_samples(postgres.DATABASE_URL, 5)
+    session_connect = _psycopg_connect_latency_samples(session_url, 5)
+    same_connection_select1 = _same_connection_select1_sequence(postgres.DATABASE_URL)
+    result.update(
+        {
+            "dns": dns,
+            "tcp_6543": tcp_6543,
+            "tcp_5432": tcp_5432,
+            "psycopg_transaction_connect": transaction_connect,
+            "psycopg_session_connect": session_connect,
+            "same_connection_select1": same_connection_select1,
+            "latency_layer": _latency_layer(
+                dns,
+                tcp_6543,
+                transaction_connect,
+                same_connection_select1,
+            ),
+        }
+    )
+    return result
+
+
 def run_card_two_connection_path_ab_benchmark(repetitions: int = 5) -> dict[str, Any]:
     repetitions = max(1, min(int(repetitions or 5), 5))
     paths = _connection_path_dsn_candidates()

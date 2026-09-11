@@ -277,6 +277,7 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-connection-path-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-connection-path-ab-benchmark" in routes
     assert "/api/runtime-diagnostics/session-pooler-connection-classification" in routes
+    assert "/api/runtime-diagnostics/network-roundtrip-decomposition" in routes
     assert "/api/runtime-diagnostics/card-two-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-isolated-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-concurrency-culprit-benchmark" in routes
@@ -419,3 +420,38 @@ def test_session_pooler_classification_handles_invalid_url_port():
     assert parsed["database"] == "postgres"
     assert parsed["username_format"] == "postgres.<project-ref>"
     assert parsed["parse_error"] == "ValueError"
+
+
+def test_network_roundtrip_decomposition_missing_current_host(monkeypatch):
+    from database import postgres
+    from database import prediction_history_store
+
+    monkeypatch.setattr(postgres, "DATABASE_URL", None)
+    monkeypatch.delenv("DATABASE_SESSION_POOLER_URL", raising=False)
+    monkeypatch.delenv("SESSION_POOLER_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SESSION_POOLER_DATABASE_URL", raising=False)
+
+    def empty_samples(*args, **kwargs):
+        return {"samples": [], "median": None, "min": None, "max": None, "errors": ["not run"]}
+
+    monkeypatch.setattr(prediction_history_store, "_psycopg_connect_latency_samples", empty_samples)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_same_connection_select1_sequence",
+        lambda _conninfo: {
+            "samples": [],
+            "median": None,
+            "backend_pid": None,
+            "same_backend_pid": False,
+            "transaction_status_sequence": [],
+            "errors": ["not run"],
+        },
+    )
+
+    payload = prediction_history_store.run_network_roundtrip_decomposition()
+
+    assert payload["current_pooler_host"] is None
+    assert payload["dns"]["errors"] == ["missing current pooler host"]
+    assert payload["tcp_6543"]["errors"] == ["missing current pooler host"]
+    assert payload["tcp_5432"]["errors"] == ["missing current pooler host"]
+    assert payload["latency_layer"] == "UNKNOWN"
