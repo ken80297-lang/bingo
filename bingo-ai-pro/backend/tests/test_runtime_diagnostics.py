@@ -276,6 +276,7 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-autocommit-roundtrip" in routes
     assert "/api/runtime-diagnostics/card-two-connection-path-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-connection-path-ab-benchmark" in routes
+    assert "/api/runtime-diagnostics/session-pooler-connection-classification" in routes
     assert "/api/runtime-diagnostics/card-two-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-isolated-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-concurrency-culprit-benchmark" in routes
@@ -361,3 +362,47 @@ def test_connection_path_ab_benchmark_sanitizes_dsn_metadata(monkeypatch):
     assert candidates["SESSION_POOLER"]["endpoint"]["port"] == 5432
     assert candidates["SESSION_POOLER"]["endpoint"]["hostname_classification"] == "session pooler"
     assert candidates["DIRECT_DATABASE"]["endpoint"]["hostname_classification"] == "direct"
+
+
+def test_session_pooler_classification_missing_env_does_not_connect(monkeypatch):
+    from database import prediction_history_store
+
+    for name in (
+        "DATABASE_SESSION_POOLER_URL",
+        "SESSION_POOLER_DATABASE_URL",
+        "SUPABASE_SESSION_POOLER_DATABASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("network should not run when session pooler env is missing")
+
+    monkeypatch.setattr(prediction_history_store.socket, "getaddrinfo", fail)
+    payload = prediction_history_store.classify_session_pooler_connection_failure()
+
+    assert payload["session_pooler_env_present"] is False
+    assert payload["parsed_host"] is None
+    assert payload["dns_resolution"] == "FAIL"
+    assert payload["resolved_address_family"] == "NONE"
+    assert payload["tcp_connect_to_host_5432"] == "FAIL"
+    assert payload["psycopg_connect"] == "FAIL"
+    assert payload["select_one_result"] == "NOT RUN"
+
+
+def test_session_pooler_classification_sanitizes_credentials():
+    from database.prediction_history_store import _parse_diagnostic_conninfo
+    from database.prediction_history_store import _sanitize_connection_error
+
+    dsn = "postgresql://postgres.project-ref:secret-pass@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
+    parsed = _parse_diagnostic_conninfo(dsn)
+    message = f"could not connect using {dsn} for postgres.project-ref with secret-pass"
+
+    sanitized = _sanitize_connection_error(message, dsn, parsed)
+
+    assert parsed["host"] == "aws-0-ap-northeast-1.pooler.supabase.com"
+    assert parsed["port"] == 5432
+    assert parsed["database"] == "postgres"
+    assert parsed["username_format"] == "postgres.<project-ref>"
+    assert "secret-pass" not in sanitized
+    assert "postgres.project-ref" not in sanitized
+    assert dsn not in sanitized

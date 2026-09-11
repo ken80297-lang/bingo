@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import sqlite3
 import threading
 import time
@@ -1645,6 +1646,211 @@ def _connection_path_rankings(paths: dict[str, dict[str, Any]]) -> dict[str, lis
             if paths.get(name, {}).get("available")
         ],
     }
+
+
+def _safe_username_format(username: str | None) -> str | None:
+    if not username:
+        return None
+    if username == "postgres":
+        return "postgres"
+    if username.startswith("postgres."):
+        return "postgres.<project-ref>"
+    return "<non-postgres-format>"
+
+
+def _parse_diagnostic_conninfo(conninfo: str | None) -> dict[str, Any]:
+    if not conninfo:
+        return {
+            "scheme": None,
+            "host": None,
+            "port": None,
+            "database": None,
+            "username": None,
+            "username_format": None,
+        }
+    parsed = urlsplit(conninfo)
+    scheme = parsed.scheme or None
+    host = parsed.hostname
+    port = parsed.port
+    database = parsed.path.lstrip("/") or None
+    username = parsed.username
+    if not host:
+        try:
+            from psycopg.conninfo import conninfo_to_dict
+
+            values = conninfo_to_dict(conninfo)
+            scheme = "conninfo"
+            host = values.get("host")
+            raw_port = values.get("port")
+            port = int(raw_port) if raw_port else None
+            database = values.get("dbname")
+            username = values.get("user")
+        except Exception:
+            pass
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "database": database,
+        "username": username,
+        "username_format": _safe_username_format(username),
+    }
+
+
+def _resolved_address_family(addrinfo: list[Any]) -> str:
+    families = {item[0] for item in addrinfo}
+    has_ipv4 = socket.AF_INET in families
+    has_ipv6 = socket.AF_INET6 in families
+    if has_ipv4 and has_ipv6:
+        return "BOTH"
+    if has_ipv4:
+        return "IPv4"
+    if has_ipv6:
+        return "IPv6"
+    return "NONE"
+
+
+def _sanitize_connection_error(message: str, conninfo: str | None, parsed: dict[str, Any]) -> str:
+    sanitized = str(message or "")
+    if conninfo:
+        sanitized = sanitized.replace(conninfo, "<redacted-dsn>")
+    for key in ("username",):
+        value = parsed.get(key)
+        if value:
+            sanitized = sanitized.replace(str(value), "<redacted-username>")
+    try:
+        url = urlsplit(conninfo or "")
+        if url.password:
+            sanitized = sanitized.replace(url.password, "<redacted-password>")
+        if url.netloc:
+            sanitized = sanitized.replace(url.netloc, "<redacted-netloc>")
+    except Exception:
+        pass
+    return sanitized
+
+
+def _classify_connection_error(error_type: str | None, message: str, tcp_result: str) -> str:
+    text = str(message or "").lower()
+    if "could not translate host name" in text or "name or service not known" in text:
+        return "DNS"
+    if "timeout" in text or "timed out" in text:
+        return "TCP_TIMEOUT"
+    if "connection refused" in text:
+        return "CONNECTION_REFUSED"
+    if "password authentication failed" in text or "authentication failed" in text or "28p01" in text:
+        return "AUTHENTICATION"
+    if "ssl" in text or "tls" in text or error_type == "SSLError":
+        return "SSL"
+    if "too many clients" in text or "remaining connection slots" in text or "pool" in text and "full" in text:
+        return "POOLER_CAPACITY"
+    if "database" in text and ("does not exist" in text or "unknown" in text):
+        return "DATABASE"
+    if tcp_result == "FAIL" and ("network is unreachable" in text or "no route to host" in text):
+        return "NETWORK_RESTRICTION"
+    return "UNKNOWN"
+
+
+def _session_pooler_shape(parsed: dict[str, Any]) -> dict[str, bool]:
+    host = str(parsed.get("host") or "")
+    return {
+        "host_matches_supabase_session_pooler": (
+            host.startswith("aws-")
+            and host.endswith(".pooler.supabase.com")
+            and "-ap-northeast-1." in host
+        ),
+        "port_is_5432": parsed.get("port") == 5432,
+        "username_starts_with_postgres_dot": str(parsed.get("username") or "").startswith("postgres."),
+        "database_is_postgres": parsed.get("database") == "postgres",
+    }
+
+
+def classify_session_pooler_connection_failure() -> dict[str, Any]:
+    session_name, session_url = _first_env_value(
+        (
+            "DATABASE_SESSION_POOLER_URL",
+            "SESSION_POOLER_DATABASE_URL",
+            "SUPABASE_SESSION_POOLER_DATABASE_URL",
+        )
+    )
+    parsed = _parse_diagnostic_conninfo(session_url)
+    host = parsed.get("host")
+    port = parsed.get("port")
+    diagnostic_port = 5432
+    result: dict[str, Any] = {
+        "session_pooler_env_present": bool(session_url),
+        "session_pooler_env_var": session_name,
+        "parsed_scheme": parsed.get("scheme"),
+        "parsed_host": host,
+        "parsed_port": port,
+        "parsed_database": parsed.get("database"),
+        "parsed_username_format": parsed.get("username_format"),
+        "supabase_session_pooler_shape": _session_pooler_shape(parsed),
+        "dns_resolution": "FAIL",
+        "resolved_address_family": "NONE",
+        "tcp_connect_to_host_5432": "FAIL",
+        "tcp_connect_ms": None,
+        "psycopg_connect": "FAIL",
+        "psycopg_connect_ms": None,
+        "operational_error_class": None,
+        "sanitized_error_message": None,
+        "error_category": "UNKNOWN",
+        "select_one_result": "NOT RUN",
+    }
+    if not session_url or not host:
+        result["sanitized_error_message"] = "DATABASE_SESSION_POOLER_URL is not configured or host could not be parsed."
+        result["error_category"] = "UNKNOWN"
+        return result
+
+    try:
+        addrinfo = socket.getaddrinfo(str(host), diagnostic_port, type=socket.SOCK_STREAM)
+        result["dns_resolution"] = "PASS"
+        result["resolved_address_family"] = _resolved_address_family(addrinfo)
+    except Exception as exc:
+        result["operational_error_class"] = type(exc).__name__
+        result["sanitized_error_message"] = _sanitize_connection_error(str(exc), session_url, parsed)
+        result["error_category"] = "DNS"
+        return result
+
+    tcp_started = time.perf_counter()
+    try:
+        with socket.create_connection((str(host), diagnostic_port), timeout=5):
+            pass
+        result["tcp_connect_to_host_5432"] = "PASS"
+    except Exception as exc:
+        result["operational_error_class"] = type(exc).__name__
+        result["sanitized_error_message"] = _sanitize_connection_error(str(exc), session_url, parsed)
+        result["error_category"] = _classify_connection_error(type(exc).__name__, str(exc), "FAIL")
+    finally:
+        result["tcp_connect_ms"] = round((time.perf_counter() - tcp_started) * 1000, 2)
+
+    import psycopg
+
+    conn = None
+    psycopg_started = time.perf_counter()
+    try:
+        conn = psycopg.connect(session_url, connect_timeout=5)
+        result["psycopg_connect"] = "PASS"
+        result["operational_error_class"] = None
+        result["sanitized_error_message"] = None
+        with conn.cursor() as cur:
+            cur.execute("select 1", prepare=False)
+            row = cur.fetchone()
+        result["select_one_result"] = "PASS" if row and row[0] == 1 else "FAIL"
+        result["error_category"] = "UNKNOWN" if result["select_one_result"] == "PASS" else "DATABASE"
+    except Exception as exc:
+        result["operational_error_class"] = type(exc).__name__
+        result["sanitized_error_message"] = _sanitize_connection_error(str(exc), session_url, parsed)
+        result["error_category"] = _classify_connection_error(
+            type(exc).__name__,
+            str(exc),
+            result["tcp_connect_to_host_5432"],
+        )
+        result["select_one_result"] = "FAIL"
+    finally:
+        result["psycopg_connect_ms"] = round((time.perf_counter() - psycopg_started) * 1000, 2)
+        if conn is not None:
+            conn.close()
+    return result
 
 
 def run_card_two_connection_path_ab_benchmark(repetitions: int = 5) -> dict[str, Any]:

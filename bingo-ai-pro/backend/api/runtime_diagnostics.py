@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 
 from config.runtime_flags import get_scheduler_runtime_flags
 from database.collector_store import get_collector_db_path_status
+from database.prediction_history_store import classify_session_pooler_connection_failure
 from database.prediction_history_store import get_card_two_history_timing_status
 from database.prediction_history_store import run_card_two_autocommit_roundtrip_diagnostic
 from database.prediction_history_store import run_card_two_connection_path_ab_benchmark
@@ -57,6 +58,11 @@ def api_card_two_connection_path_benchmark() -> dict:
 @router.post("/runtime-diagnostics/card-two-connection-path-ab-benchmark")
 def api_card_two_connection_path_ab_benchmark() -> dict:
     return run_card_two_connection_path_ab_benchmark()
+
+
+@router.post("/runtime-diagnostics/session-pooler-connection-classification")
+def api_session_pooler_connection_classification() -> dict:
+    return classify_session_pooler_connection_failure()
 
 
 @router.post("/runtime-diagnostics/card-two-dashboard-context-benchmark")
