@@ -275,9 +275,89 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-roundtrip" in routes
     assert "/api/runtime-diagnostics/card-two-autocommit-roundtrip" in routes
     assert "/api/runtime-diagnostics/card-two-connection-path-benchmark" in routes
+    assert "/api/runtime-diagnostics/card-two-connection-path-ab-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-isolated-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-concurrency-culprit-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-contention-isolation-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-ordering-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-stepwise-latency-benchmark" in routes
+
+
+def test_connection_path_ab_benchmark_reports_unavailable_paths_without_db_work(monkeypatch):
+    from database import postgres
+    from database import prediction_history_store
+
+    monkeypatch.setattr(postgres, "DATABASE_URL", None)
+    for name in (
+        "DIRECT_DATABASE_URL",
+        "DATABASE_DIRECT_URL",
+        "SUPABASE_DIRECT_DATABASE_URL",
+        "SESSION_POOLER_DATABASE_URL",
+        "DATABASE_SESSION_POOLER_URL",
+        "SUPABASE_SESSION_POOLER_DATABASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("benchmark should not connect when no safe DSN is configured")
+
+    monkeypatch.setattr(prediction_history_store, "_diagnostic_connect_path", fail)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fail)
+
+    payload = prediction_history_store.run_card_two_connection_path_ab_benchmark()
+
+    assert payload["status"] == "ok"
+    assert payload["sample_count"] == 5
+    assert set(payload["paths"]) == {
+        "CURRENT_TRANSACTION_POOLER",
+        "SESSION_POOLER",
+        "DIRECT_DATABASE",
+    }
+    for path in payload["paths"].values():
+        assert path["available"] is False
+        assert path["sequences"] == []
+        assert path["fresh_connections"] == []
+        assert path["reused_connections"] == []
+        assert path["summary"] is None
+        assert path["not_available_reason"] == "configured safe DSN not available"
+
+
+def test_connection_path_ab_benchmark_sanitizes_dsn_metadata(monkeypatch):
+    from database import postgres
+    from database.prediction_history_store import _connection_path_dsn_candidates
+
+    monkeypatch.setattr(
+        postgres,
+        "DATABASE_URL",
+        "postgresql://user:secret-current@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require",
+    )
+    monkeypatch.setenv(
+        "SESSION_POOLER_DATABASE_URL",
+        "postgresql://user:secret-session@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require",
+    )
+    monkeypatch.setenv(
+        "DIRECT_DATABASE_URL",
+        "postgresql://user:secret-direct@db.project.supabase.co:5432/postgres?sslmode=require",
+    )
+
+    candidates = _connection_path_dsn_candidates()
+    text = repr(
+        {
+            name: {
+                "available": path["available"],
+                "env_var": path["env_var"],
+                "endpoint": path["endpoint"],
+            }
+            for name, path in candidates.items()
+        }
+    )
+
+    assert "secret-current" not in text
+    assert "secret-session" not in text
+    assert "secret-direct" not in text
+    assert candidates["CURRENT_TRANSACTION_POOLER"]["endpoint"]["port"] == 6543
+    assert candidates["CURRENT_TRANSACTION_POOLER"]["endpoint"]["hostname_classification"] == "transaction pooler"
+    assert candidates["SESSION_POOLER"]["endpoint"]["port"] == 5432
+    assert candidates["SESSION_POOLER"]["endpoint"]["hostname_classification"] == "session pooler"
+    assert candidates["DIRECT_DATABASE"]["endpoint"]["hostname_classification"] == "direct"

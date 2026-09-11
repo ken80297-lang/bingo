@@ -8,6 +8,7 @@ from config.runtime_flags import get_scheduler_runtime_flags
 from database.collector_store import get_collector_db_path_status
 from database.prediction_history_store import get_card_two_history_timing_status
 from database.prediction_history_store import run_card_two_autocommit_roundtrip_diagnostic
+from database.prediction_history_store import run_card_two_connection_path_ab_benchmark
 from database.prediction_history_store import run_card_two_connection_path_benchmark
 from database.prediction_history_store import run_card_two_contention_isolation_benchmark
 from database.prediction_history_store import run_card_two_ordering_benchmark
@@ -51,6 +52,11 @@ def api_card_two_autocommit_roundtrip_diagnostic() -> dict:
 @router.post("/runtime-diagnostics/card-two-connection-path-benchmark")
 def api_card_two_connection_path_benchmark() -> dict:
     return run_card_two_connection_path_benchmark()
+
+
+@router.post("/runtime-diagnostics/card-two-connection-path-ab-benchmark")
+def api_card_two_connection_path_ab_benchmark() -> dict:
+    return run_card_two_connection_path_ab_benchmark()
 
 
 @router.post("/runtime-diagnostics/card-two-dashboard-context-benchmark")

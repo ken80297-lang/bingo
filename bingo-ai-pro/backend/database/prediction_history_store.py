@@ -982,29 +982,34 @@ def _diagnostic_explain_card_two_main_query() -> dict[str, Any]:
     explain_sql = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _prediction_history_summary_cloud_sql()
     try:
         with _dashboard_read_connection() as conn:
-            with conn.cursor() as cur:
-                started = time.perf_counter()
-                cur.execute(explain_sql, (100,), prepare=False)
-                rows = cur.fetchall()
-                wall_ms = round((time.perf_counter() - started) * 1000, 2)
-            payload = rows[0][0] if rows else None
-            root = payload[0] if isinstance(payload, list) and payload else {}
-            plan = root.get("Plan", {}) if isinstance(root, dict) else {}
-            return {
-                "available": True,
-                "wall_ms": wall_ms,
-                "planning_ms": root.get("Planning Time") if isinstance(root, dict) else None,
-                "execution_ms": root.get("Execution Time") if isinstance(root, dict) else None,
-                "actual_rows": plan.get("Actual Rows"),
-                "shared_hit_blocks": plan.get("Shared Hit Blocks"),
-                "shared_read_blocks": plan.get("Shared Read Blocks"),
-                "node_type": plan.get("Node Type"),
-            }
+            return _diagnostic_explain_card_two_main_query_on_conn(conn)
     except Exception as exc:
         return {
             "available": False,
             "error_type": type(exc).__name__,
         }
+
+
+def _diagnostic_explain_card_two_main_query_on_conn(conn: Any) -> dict[str, Any]:
+    explain_sql = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _prediction_history_summary_cloud_sql()
+    with conn.cursor() as cur:
+        started = time.perf_counter()
+        cur.execute(explain_sql, (100,), prepare=False)
+        rows = cur.fetchall()
+        wall_ms = round((time.perf_counter() - started) * 1000, 2)
+    payload = rows[0][0] if rows else None
+    root = payload[0] if isinstance(payload, list) and payload else {}
+    plan = root.get("Plan", {}) if isinstance(root, dict) else {}
+    return {
+        "available": True,
+        "wall_ms": wall_ms,
+        "planning_ms": root.get("Planning Time") if isinstance(root, dict) else None,
+        "execution_ms": root.get("Execution Time") if isinstance(root, dict) else None,
+        "actual_rows": plan.get("Actual Rows"),
+        "shared_hit_blocks": plan.get("Shared Hit Blocks"),
+        "shared_read_blocks": plan.get("Shared Read Blocks"),
+        "node_type": plan.get("Node Type"),
+    }
 
 
 def _diagnostic_wait_state(pid: int | None) -> dict[str, Any]:
@@ -1328,6 +1333,375 @@ def run_card_two_connection_path_benchmark(repetitions: int = 7) -> dict[str, An
             repetitions,
         ))
     return result
+
+
+_CONNECTION_PATH_BENCHMARK_BUCKETS = (
+    ("lt_75_ms", None, 75),
+    ("75_225_ms", 75, 225),
+    ("225_375_ms", 225, 375),
+    ("375_525_ms", 375, 525),
+    ("525_675_ms", 525, 675),
+    ("gt_675_ms", 675, None),
+)
+
+
+def _median(values: list[Any]) -> float | None:
+    samples = sorted(float(value) for value in values if isinstance(value, (int, float)))
+    if not samples:
+        return None
+    midpoint = len(samples) // 2
+    if len(samples) % 2:
+        return round(samples[midpoint], 2)
+    return round((samples[midpoint - 1] + samples[midpoint]) / 2, 2)
+
+
+def _diagnostic_connect_path(conninfo: str) -> tuple[Any, float]:
+    import psycopg
+    from database import postgres
+
+    started = time.perf_counter()
+    conn = psycopg.connect(conninfo, connect_timeout=postgres._connect_timeout_seconds())
+    return conn, round((time.perf_counter() - started) * 1000, 2)
+
+
+def _connection_path_dsn_candidates() -> dict[str, dict[str, Any]]:
+    from database import postgres
+
+    direct_name, direct_url = _first_env_value(
+        (
+            "DIRECT_DATABASE_URL",
+            "DATABASE_DIRECT_URL",
+            "SUPABASE_DIRECT_DATABASE_URL",
+        )
+    )
+    session_name, session_url = _first_env_value(
+        (
+            "SESSION_POOLER_DATABASE_URL",
+            "DATABASE_SESSION_POOLER_URL",
+            "SUPABASE_SESSION_POOLER_DATABASE_URL",
+        )
+    )
+    return {
+        "CURRENT_TRANSACTION_POOLER": {
+            "available": bool(postgres.DATABASE_URL),
+            "env_var": "DATABASE_URL" if postgres.DATABASE_URL else None,
+            "conninfo": postgres.DATABASE_URL,
+            "endpoint": _connection_endpoint_status(postgres.DATABASE_URL),
+            "sequence_uses_dashboard_pool": True,
+        },
+        "SESSION_POOLER": {
+            "available": bool(session_url),
+            "env_var": session_name,
+            "conninfo": session_url,
+            "endpoint": _connection_endpoint_status(session_url),
+            "sequence_uses_dashboard_pool": False,
+        },
+        "DIRECT_DATABASE": {
+            "available": bool(direct_url),
+            "env_var": direct_name,
+            "conninfo": direct_url,
+            "endpoint": _connection_endpoint_status(direct_url),
+            "sequence_uses_dashboard_pool": False,
+        },
+    }
+
+
+def _bucket_statement_latencies(values: list[float]) -> dict[str, int]:
+    buckets = {name: 0 for name, _low, _high in _CONNECTION_PATH_BENCHMARK_BUCKETS}
+    for value in values:
+        for name, low, high in _CONNECTION_PATH_BENCHMARK_BUCKETS:
+            if (low is None or value >= low) and (high is None or value < high):
+                buckets[name] += 1
+                break
+    return buckets
+
+
+def _quantization_visible(values: list[float]) -> bool:
+    bucketed = _bucket_statement_latencies(values)
+    quantized_samples = sum(
+        bucketed[name]
+        for name in ("75_225_ms", "225_375_ms", "375_525_ms", "525_675_ms")
+    )
+    return quantized_samples >= max(2, len(values) // 2) if values else False
+
+
+def _diagnostic_path_sequence_sample(path: dict[str, Any]) -> dict[str, Any]:
+    sequence = [
+        ("select1_first", "select 1", ()),
+        ("select1_second", "select 1", ()),
+        ("card_two_1", _prediction_history_summary_cloud_sql(), (100,)),
+        ("select1_third", "select 1", ()),
+        ("card_two_2", _prediction_history_summary_cloud_sql(), (100,)),
+        ("select1_fourth", "select 1", ()),
+    ]
+    connect_started = time.perf_counter()
+    conn = None
+    close_conn = None
+    close_started = None
+    try:
+        if path.get("sequence_uses_dashboard_pool"):
+            connection_context = _dashboard_read_connection()
+            conn = connection_context.__enter__()
+            connect_ms = round((time.perf_counter() - connect_started) * 1000, 2)
+            close_conn = lambda: connection_context.__exit__(None, None, None)
+        else:
+            conn, connect_ms = _diagnostic_connect_path(str(path["conninfo"]))
+            close_conn = conn.close
+        result = {
+            "connection_path": path["name"],
+            "connect_ms": connect_ms,
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "connection_hash": _connection_hash(conn),
+            "checkout_status": _transaction_status(conn),
+            "autocommit": getattr(conn, "autocommit", None),
+            "statements": [],
+        }
+        for name, sql, params in sequence:
+            result["statements"].append(_diagnostic_statement(conn, name, sql, params))
+        result["final_status"] = _transaction_status(conn)
+        try:
+            result["server_execution"] = _diagnostic_explain_card_two_main_query_on_conn(conn)
+        except Exception as exc:
+            result["server_execution"] = {
+                "available": False,
+                "error_type": type(exc).__name__,
+            }
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("connection path benchmark rollback failed", exc_info=True)
+        close_started = time.perf_counter()
+        close_conn()
+        result["close_ms"] = round((time.perf_counter() - close_started) * 1000, 2)
+        return result
+    except Exception as exc:
+        if conn is not None and close_started is None:
+            try:
+                if close_conn is not None:
+                    close_conn()
+                else:
+                    conn.close()
+            except Exception:
+                pass
+        return {
+            "connection_path": path["name"],
+            "error_type": type(exc).__name__,
+            "connect_ms": round((time.perf_counter() - connect_started) * 1000, 2),
+            "statements": [],
+        }
+
+
+def _diagnostic_path_fresh_sample(path: dict[str, Any]) -> dict[str, Any]:
+    conn = None
+    try:
+        conn, connect_ms = _diagnostic_connect_path(str(path["conninfo"]))
+        select1 = _diagnostic_statement(conn, "select1", "select 1", ())
+        card_two = _diagnostic_statement(conn, "card_two", _prediction_history_summary_cloud_sql(), (100,))
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("fresh connection benchmark rollback failed", exc_info=True)
+        return {
+            "connection_path": path["name"],
+            "connect_ms": connect_ms,
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "select1": select1,
+            "card_two": card_two,
+        }
+    except Exception as exc:
+        return {
+            "connection_path": path["name"],
+            "error_type": type(exc).__name__,
+            "connect_ms": None,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _diagnostic_path_reused_sample(path: dict[str, Any]) -> dict[str, Any]:
+    conn = None
+    statements = [
+        ("select1_1", "select 1", ()),
+        ("card_two_1", _prediction_history_summary_cloud_sql(), (100,)),
+        ("select1_2", "select 1", ()),
+        ("card_two_2", _prediction_history_summary_cloud_sql(), (100,)),
+        ("select1_3", "select 1", ()),
+        ("card_two_3", _prediction_history_summary_cloud_sql(), (100,)),
+        ("select1_4", "select 1", ()),
+    ]
+    try:
+        conn, connect_ms = _diagnostic_connect_path(str(path["conninfo"]))
+        result = {
+            "connection_path": path["name"],
+            "connect_ms": connect_ms,
+            "backend_pid": getattr(getattr(conn, "info", None), "backend_pid", None),
+            "connection_hash": _connection_hash(conn),
+            "statements": [
+                _diagnostic_statement(conn, name, sql, params)
+                for name, sql, params in statements
+            ],
+            "final_status": _transaction_status(conn),
+        }
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("reused connection benchmark rollback failed", exc_info=True)
+        return result
+    except Exception as exc:
+        return {
+            "connection_path": path["name"],
+            "error_type": type(exc).__name__,
+            "statements": [],
+        }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _statement_execute_ms(samples: list[dict[str, Any]], names: set[str]) -> list[float]:
+    values: list[float] = []
+    for sample in samples:
+        for statement in sample.get("statements", []):
+            if statement.get("statement") in names and isinstance(statement.get("execute_ms"), (int, float)):
+                values.append(float(statement["execute_ms"]))
+    return values
+
+
+def _connection_path_summary(
+    sequences: list[dict[str, Any]],
+    fresh_connections: list[dict[str, Any]],
+    reused_connections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    first_select_values = _statement_execute_ms(sequences, {"select1_first"})
+    warm_select_values = _statement_execute_ms(
+        sequences,
+        {"select1_second", "select1_third", "select1_fourth"},
+    ) + _statement_execute_ms(
+        reused_connections,
+        {"select1_2", "select1_3", "select1_4"},
+    )
+    card_two_values = _statement_execute_ms(
+        sequences,
+        {"card_two_1", "card_two_2"},
+    ) + _statement_execute_ms(
+        reused_connections,
+        {"card_two_1", "card_two_2", "card_two_3"},
+    )
+    all_execute_values = first_select_values + warm_select_values + card_two_values
+    server_execution_values = [
+        sample.get("server_execution", {}).get("execution_ms")
+        for sample in sequences
+        if isinstance(sample.get("server_execution", {}).get("execution_ms"), (int, float))
+    ]
+    connect_values = [
+        sample.get("connect_ms")
+        for sample in sequences + fresh_connections + reused_connections
+        if isinstance(sample.get("connect_ms"), (int, float))
+    ]
+    errors = [
+        sample.get("error_type")
+        for sample in sequences + fresh_connections + reused_connections
+        if sample.get("error_type")
+    ]
+    card_two_median = _median(card_two_values)
+    server_median = _median(server_execution_values)
+    return {
+        "connect_median_ms": _median(connect_values),
+        "first_select1_median_ms": _median(first_select_values),
+        "warm_select1_median_ms": _median(warm_select_values),
+        "card_two_median_ms": card_two_median,
+        "server_execution_median_ms": server_median,
+        "client_server_gap_ms": (
+            round(card_two_median - server_median, 2)
+            if card_two_median is not None and server_median is not None
+            else None
+        ),
+        "latency_buckets": _bucket_statement_latencies(all_execute_values),
+        "quantization_visible": _quantization_visible(all_execute_values),
+        "stable": not errors and bool(sequences),
+        "errors": errors,
+    }
+
+
+def _connection_path_rankings(paths: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    def ranked(metric: str) -> list[str]:
+        available = [
+            (name, payload["summary"].get(metric))
+            for name, payload in paths.items()
+            if payload.get("available")
+            and payload.get("summary")
+            and isinstance(payload["summary"].get(metric), (int, float))
+        ]
+        return [name for name, _value in sorted(available, key=lambda item: item[1])]
+
+    return {
+        "lowest_warm_statement_latency": ranked("warm_select1_median_ms"),
+        "lowest_connection_latency": ranked("connect_median_ms"),
+        "lowest_card_two_latency": ranked("card_two_median_ms"),
+        "operational_safety": [
+            name
+            for name in ("CURRENT_TRANSACTION_POOLER", "SESSION_POOLER", "DIRECT_DATABASE")
+            if paths.get(name, {}).get("available")
+        ],
+    }
+
+
+def run_card_two_connection_path_ab_benchmark(repetitions: int = 5) -> dict[str, Any]:
+    repetitions = max(1, min(int(repetitions or 5), 5))
+    paths = _connection_path_dsn_candidates()
+    result_paths: dict[str, dict[str, Any]] = {}
+    for name, path in paths.items():
+        path["name"] = name
+        sanitized = {
+            "available": path["available"],
+            "env_var": path["env_var"],
+            "endpoint": path["endpoint"],
+            "sequence_uses_dashboard_pool": path["sequence_uses_dashboard_pool"],
+            "sequences": [],
+            "fresh_connections": [],
+            "reused_connections": [],
+            "summary": None,
+        }
+        if not path["available"]:
+            sanitized["not_available_reason"] = "configured safe DSN not available"
+            result_paths[name] = sanitized
+            continue
+        sanitized["sequences"] = [
+            _diagnostic_path_sequence_sample(path)
+            for _ in range(repetitions)
+        ]
+        sanitized["fresh_connections"] = [
+            _diagnostic_path_fresh_sample(path)
+            for _ in range(repetitions)
+        ]
+        sanitized["reused_connections"] = [
+            _diagnostic_path_reused_sample(path)
+            for _ in range(repetitions)
+        ]
+        sanitized["summary"] = _connection_path_summary(
+            sanitized["sequences"],
+            sanitized["fresh_connections"],
+            sanitized["reused_connections"],
+        )
+        result_paths[name] = sanitized
+
+    return {
+        "status": "ok",
+        "sample_count": repetitions,
+        "timer_boundary": {
+            "connect_ms": "pool checkout for current production sequence; fresh psycopg connect for fresh/reused and non-current paths",
+            "execute_ms": "Python wall-clock duration of cur.execute(sql, params, prepare=False)",
+            "server_execution_ms": "Postgres EXPLAIN ANALYZE Execution Time for Card Two main query",
+        },
+        "paths": result_paths,
+        "rankings": _connection_path_rankings(result_paths),
+        "decision_rules": {
+            "connection_path_primary_bottleneck": "true if session/direct warm SELECT 1 and Card Two medians fall substantially below 100 ms while current remains quantized",
+            "network_or_driver_next": "true if all available paths remain near the same ~150 ms latency bands",
+            "production_switch": "diagnostic output only; no automatic DATABASE_URL change",
+        },
+    }
 
 
 @contextmanager
