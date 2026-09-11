@@ -406,3 +406,16 @@ def test_session_pooler_classification_sanitizes_credentials():
     assert "secret-pass" not in sanitized
     assert "postgres.project-ref" not in sanitized
     assert dsn not in sanitized
+
+
+def test_session_pooler_classification_handles_invalid_url_port():
+    from database.prediction_history_store import _parse_diagnostic_conninfo
+
+    parsed = _parse_diagnostic_conninfo("postgresql://postgres.project:secret@example.test:notaport/postgres")
+
+    assert parsed["scheme"] == "postgresql"
+    assert parsed["host"] == "example.test"
+    assert parsed["port"] is None
+    assert parsed["database"] == "postgres"
+    assert parsed["username_format"] == "postgres.<project-ref>"
+    assert parsed["parse_error"] == "ValueError"

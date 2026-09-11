@@ -1668,12 +1668,25 @@ def _parse_diagnostic_conninfo(conninfo: str | None) -> dict[str, Any]:
             "username": None,
             "username_format": None,
         }
-    parsed = urlsplit(conninfo)
-    scheme = parsed.scheme or None
-    host = parsed.hostname
-    port = parsed.port
-    database = parsed.path.lstrip("/") or None
-    username = parsed.username
+    parse_error = None
+    try:
+        parsed = urlsplit(conninfo)
+        scheme = parsed.scheme or None
+        host = parsed.hostname
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            parse_error = type(exc).__name__
+            port = None
+        database = parsed.path.lstrip("/") or None
+        username = parsed.username
+    except Exception as exc:
+        parse_error = type(exc).__name__
+        scheme = None
+        host = None
+        port = None
+        database = None
+        username = None
     if not host:
         try:
             from psycopg.conninfo import conninfo_to_dict
@@ -1694,6 +1707,7 @@ def _parse_diagnostic_conninfo(conninfo: str | None) -> dict[str, Any]:
         "database": database,
         "username": username,
         "username_format": _safe_username_format(username),
+        "parse_error": parse_error,
     }
 
 
@@ -1784,6 +1798,7 @@ def classify_session_pooler_connection_failure() -> dict[str, Any]:
         "parsed_port": port,
         "parsed_database": parsed.get("database"),
         "parsed_username_format": parsed.get("username_format"),
+        "parse_error": parsed.get("parse_error"),
         "supabase_session_pooler_shape": _session_pooler_shape(parsed),
         "dns_resolution": "FAIL",
         "resolved_address_family": "NONE",
@@ -1823,11 +1838,11 @@ def classify_session_pooler_connection_failure() -> dict[str, Any]:
     finally:
         result["tcp_connect_ms"] = round((time.perf_counter() - tcp_started) * 1000, 2)
 
-    import psycopg
-
     conn = None
     psycopg_started = time.perf_counter()
     try:
+        import psycopg
+
         conn = psycopg.connect(session_url, connect_timeout=5)
         result["psycopg_connect"] = "PASS"
         result["operational_error_class"] = None
