@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +18,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request, urlopen
 
 from config.production_scope import (
     get_production_generation,
@@ -2065,6 +2068,178 @@ def run_network_roundtrip_decomposition() -> dict[str, Any]:
         }
     )
     return result
+
+
+def _http_json(url: str, timeout: float = 4.0) -> dict[str, Any]:
+    try:
+        request = Request(url, headers={"User-Agent": "bingo-ai-pro-runtime-diagnostics"})
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        return {"error_type": type(exc).__name__}
+
+
+def _public_outbound_ip() -> dict[str, Any]:
+    payload = _http_json("https://api.ipify.org?format=json", timeout=4.0)
+    ip = payload.get("ip")
+    if ip:
+        return {"ip": ip, "source": "api.ipify.org", "error_type": None}
+    return {"ip": None, "source": "api.ipify.org", "error_type": payload.get("error_type")}
+
+
+def _geo_lookup(ip: str | None) -> dict[str, Any]:
+    if not ip:
+        return {"available": False, "error_type": "missing_ip"}
+    payload = _http_json(f"https://ipwho.is/{ip}", timeout=4.0)
+    if payload.get("success") is False:
+        return {
+            "available": False,
+            "ip": ip,
+            "error_type": payload.get("message") or "geo_lookup_failed",
+        }
+    return {
+        "available": not bool(payload.get("error_type")),
+        "ip": ip,
+        "continent": payload.get("continent"),
+        "country": payload.get("country"),
+        "region": payload.get("region"),
+        "city": payload.get("city"),
+        "latitude": payload.get("latitude"),
+        "longitude": payload.get("longitude"),
+        "timezone": (payload.get("timezone") or {}).get("id") if isinstance(payload.get("timezone"), dict) else None,
+        "connection": {
+            "asn": (payload.get("connection") or {}).get("asn") if isinstance(payload.get("connection"), dict) else None,
+            "org": (payload.get("connection") or {}).get("org") if isinstance(payload.get("connection"), dict) else None,
+            "isp": (payload.get("connection") or {}).get("isp") if isinstance(payload.get("connection"), dict) else None,
+        },
+        "error_type": payload.get("error_type"),
+    }
+
+
+def _dns_addresses(host: str | None) -> dict[str, Any]:
+    if not host:
+        return {"addresses": [], "errors": ["missing host"]}
+    try:
+        addrinfo = socket.getaddrinfo(str(host), None, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        return {"addresses": [], "errors": [type(exc).__name__]}
+    addresses: list[str] = []
+    for item in addrinfo:
+        address = item[4][0]
+        if address not in addresses:
+            addresses.append(address)
+    return {"addresses": addresses, "errors": []}
+
+
+def _aws_region_hint_from_host(host: str | None) -> str | None:
+    text = str(host or "")
+    for part in text.split("."):
+        if part.startswith("ap-") or part.startswith("us-") or part.startswith("eu-"):
+            return part
+    return None
+
+
+def _route_probe(host: str | None) -> dict[str, Any]:
+    if not host:
+        return {"available": False, "tool": None, "output": None, "error": "missing host"}
+    commands = []
+    tracepath = shutil.which("tracepath")
+    if tracepath:
+        commands.append([tracepath, "-n", str(host)])
+    traceroute = shutil.which("traceroute")
+    if traceroute:
+        commands.append([traceroute, "-n", "-w", "1", "-q", "1", "-m", "8", str(host)])
+    ping = shutil.which("ping")
+    if ping:
+        commands.append([ping, "-c", "4", "-W", "1", str(host)])
+    if not commands:
+        return {"available": False, "tool": None, "output": None, "error": "no route tool available"}
+    command = commands[0]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        output = "\n".join((completed.stdout or "", completed.stderr or "")).strip()
+        return {
+            "available": True,
+            "tool": Path(command[0]).name,
+            "returncode": completed.returncode,
+            "output": output[:2000],
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "tool": Path(command[0]).name,
+            "output": None,
+            "error": type(exc).__name__,
+        }
+
+
+def _region_mismatch_evidence(render_geo: dict[str, Any], supabase_geo: dict[str, Any], supabase_region_hint: str | None) -> dict[str, Any]:
+    render_country = render_geo.get("country")
+    render_region = render_geo.get("region")
+    supabase_country = supabase_geo.get("country")
+    supabase_region = supabase_geo.get("region")
+    mismatch = None
+    if render_country and supabase_country:
+        mismatch = render_country != supabase_country or (
+            bool(render_region and supabase_region) and render_region != supabase_region
+        )
+    return {
+        "render_country": render_country,
+        "render_region": render_region,
+        "supabase_country": supabase_country,
+        "supabase_region": supabase_region,
+        "supabase_aws_region_hint": supabase_region_hint,
+        "region_mismatch_supported": mismatch,
+    }
+
+
+def identify_render_supabase_route() -> dict[str, Any]:
+    from database import postgres
+
+    current_parsed = _parse_diagnostic_conninfo(postgres.DATABASE_URL)
+    host = current_parsed.get("host")
+    render_env_candidates = {
+        name: os.getenv(name)
+        for name in (
+            "RENDER_REGION",
+            "RENDER_SERVICE_REGION",
+            "RENDER_SERVICE_NAME",
+            "RENDER_SERVICE_ID",
+            "RENDER_INSTANCE_ID",
+        )
+        if os.getenv(name)
+    }
+    outbound = _public_outbound_ip()
+    render_geo = _geo_lookup(outbound.get("ip"))
+    supabase_dns = _dns_addresses(str(host) if host else None)
+    supabase_ip = (supabase_dns.get("addresses") or [None])[0]
+    supabase_geo = _geo_lookup(supabase_ip)
+    supabase_region_hint = _aws_region_hint_from_host(str(host) if host else None)
+    tcp_6543 = _tcp_latency_samples(str(host), 6543, 10) if host else {**_stats([]), "errors": ["missing host"]}
+    tcp_5432 = _tcp_latency_samples(str(host), 5432, 10) if host else {**_stats([]), "errors": ["missing host"]}
+    dns = _dns_latency_samples(str(host), 10) if host else {**_stats([]), "errors": ["missing host"]}
+    mismatch = _region_mismatch_evidence(render_geo, supabase_geo, supabase_region_hint)
+    return {
+        "render_env_candidates": render_env_candidates,
+        "render_outbound_ip": outbound,
+        "render_outbound_ip_geo": render_geo,
+        "supabase_host": host,
+        "supabase_dns": supabase_dns,
+        "supabase_host_geo": supabase_geo,
+        "supabase_region_hint": supabase_region_hint,
+        "network_route": _route_probe(str(host) if host else None),
+        "dns": dns,
+        "tcp_6543": tcp_6543,
+        "tcp_5432": tcp_5432,
+        "region_mismatch_evidence": mismatch,
+    }
 
 
 def run_card_two_connection_path_ab_benchmark(repetitions: int = 5) -> dict[str, Any]:

@@ -278,6 +278,7 @@ def test_runtime_diagnostics_endpoint_registered():
     assert "/api/runtime-diagnostics/card-two-connection-path-ab-benchmark" in routes
     assert "/api/runtime-diagnostics/session-pooler-connection-classification" in routes
     assert "/api/runtime-diagnostics/network-roundtrip-decomposition" in routes
+    assert "/api/runtime-diagnostics/render-supabase-route" in routes
     assert "/api/runtime-diagnostics/card-two-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-isolated-dashboard-context-benchmark" in routes
     assert "/api/runtime-diagnostics/card-two-concurrency-culprit-benchmark" in routes
@@ -455,3 +456,22 @@ def test_network_roundtrip_decomposition_missing_current_host(monkeypatch):
     assert payload["tcp_6543"]["errors"] == ["missing current pooler host"]
     assert payload["tcp_5432"]["errors"] == ["missing current pooler host"]
     assert payload["latency_layer"] == "UNKNOWN"
+
+
+def test_region_mismatch_evidence_uses_safe_geo_fields():
+    from database.prediction_history_store import _region_mismatch_evidence
+
+    payload = _region_mismatch_evidence(
+        {"country": "United States", "region": "Oregon"},
+        {"country": "Japan", "region": "Tokyo"},
+        "ap-northeast-1",
+    )
+
+    assert payload == {
+        "render_country": "United States",
+        "render_region": "Oregon",
+        "supabase_country": "Japan",
+        "supabase_region": "Tokyo",
+        "supabase_aws_region_hint": "ap-northeast-1",
+        "region_mismatch_supported": True,
+    }
