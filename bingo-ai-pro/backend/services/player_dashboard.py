@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +16,8 @@ from database.official_draw_store import get_official_draw_summary_by_issue as g
 from database.operations_store import get_latest_operation_event
 from database.prediction_history_store import get_prediction_history_summary_records as get_prediction_history_records
 from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_latest_prediction_context
+from database.prediction_history_store import get_previous_verification_summary_snapshot
 from database.prediction_history_store import get_prediction_summary_for_source_target as get_prediction_for_source_target
 from database.prediction_history_store import get_latest_verified_prediction_summary_at_or_before as get_latest_verified_prediction_at_or_before
 from database.prediction_history_store import get_prediction_history_statistics
@@ -178,6 +181,7 @@ _PLAYER_COMPONENT_IN_FLIGHT: dict[str, Any] = {}
 _PLAYER_ACTIVE_COMPONENTS: dict[int, dict[str, Any]] = {}
 _PLAYER_ACTIVE_COMPONENTS_LOCK = threading.Lock()
 _PLAYER_CACHE_GENERATION = 0
+_PLAYER_DASHBOARD_GENERATION_CONTEXT: ContextVar[str | None] = ContextVar("player_dashboard_generation_id", default=None)
 _PLAYER_RUNTIME_METRICS: dict[str, int] = {
     "submitted_count": 0,
     "skipped_busy_count": 0,
@@ -189,6 +193,11 @@ _PLAYER_RUNTIME_METRICS: dict[str, int] = {
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _dashboard_generation_id() -> str:
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y%m%d-%H%M%S-") + f"{now.microsecond:06d}"
 
 
 def _cached_summary() -> dict | None:
@@ -283,12 +292,24 @@ def reload_latest_production_snapshot(official_draw: dict | None = None, reason:
     }
 
 
-def _store_component_cache(name: str, payload: Any) -> None:
+def _store_component_cache(name: str, payload: Any) -> bool:
     if name == "latest_prediction" and payload and not is_production_prediction(payload):
-        return
+        return False
     if name == "prediction_history" and isinstance(payload, list):
         payload = [item for item in payload if is_production_prediction(item)]
+    existing = _PLAYER_COMPONENT_CACHE.get(name)
+    allowed, reason = _component_cache_update_allowed(existing, payload)
+    if not allowed:
+        logger.warning(
+            "player_dashboard_component_cache_update_skipped component=%s reason=%s existing_issue=%s incoming_issue=%s",
+            name,
+            reason,
+            _component_cache_issue(existing),
+            _component_cache_issue(payload),
+        )
+        return False
     _PLAYER_COMPONENT_CACHE[name] = deepcopy(payload)
+    return True
 
 
 def _load_component_cache(name: str, fallback=None):
@@ -300,6 +321,132 @@ def _load_component_cache(name: str, fallback=None):
     if name == "prediction_history" and isinstance(cached, list):
         cached = [item for item in cached if is_production_prediction(item)]
     return deepcopy(cached)
+
+
+def _component_cache_issue(payload: Any) -> int | None:
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        candidates.extend(
+            [
+                payload.get("issue"),
+                payload.get("prediction_issue"),
+                payload.get("target_issue"),
+                payload.get("based_on_issue"),
+                payload.get("displayed_target_issue"),
+                payload.get("requested_target_issue"),
+                payload.get("latest_issue"),
+            ]
+        )
+    elif isinstance(payload, list) and payload:
+        return _component_cache_issue(payload[0])
+    values = [_as_int(value) for value in candidates if value not in (None, "")]
+    values = [value for value in values if value is not None]
+    return max(values) if values else None
+
+
+def _component_cache_update_allowed(existing: Any, incoming: Any) -> tuple[bool, str]:
+    if existing in (None, [], {}):
+        return True, "empty_cache"
+    existing_issue = _component_cache_issue(existing)
+    incoming_issue = _component_cache_issue(incoming)
+    if existing_issue is None and incoming_issue is None:
+        return True, "unversioned"
+    if incoming_issue is None:
+        return False, "incoming_issue_uncomparable"
+    if existing_issue is None:
+        return True, "existing_issue_uncomparable"
+    if incoming_issue < existing_issue:
+        return False, "older_issue"
+    if incoming_issue == existing_issue:
+        existing_at = _parse_datetime(_parse_generated_at(existing))
+        incoming_at = _parse_datetime(_parse_generated_at(incoming))
+        if existing_at is not None and incoming_at is not None and incoming_at < existing_at:
+            return False, "older_generated_at"
+        return True, "same_issue_newer_or_unversioned_time"
+    return True, "newer_or_same_issue"
+
+
+def _parse_generated_at(payload: Any) -> str | None:
+    if isinstance(payload, dict):
+        return (
+            payload.get("generated_at")
+            or payload.get("predict_time")
+            or payload.get("created_at")
+            or payload.get("updated_at")
+        )
+    if isinstance(payload, list) and payload:
+        return _parse_generated_at(payload[0])
+    return None
+
+
+def _age_seconds(generated_at: Any) -> float | None:
+    if not generated_at:
+        return None
+    try:
+        text = str(generated_at).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()), 3)
+    except Exception:
+        return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _component_metadata(
+    name: str,
+    payload: Any,
+    *,
+    source: str,
+    timed_out: bool,
+    result: str,
+    dashboard_generation_id: str | None,
+) -> dict:
+    issue = None
+    source_issue = None
+    target_issue = None
+    stale = source != "live" or result in {"stale", "skipped", "timeout", "error"}
+    if isinstance(payload, dict):
+        issue = payload.get("issue") or payload.get("displayed_target_issue") or payload.get("latest_issue")
+        source_issue = payload.get("source_issue") or payload.get("based_on_issue") or payload.get("issue")
+        target_issue = (
+            payload.get("target_issue")
+            or payload.get("prediction_issue")
+            or payload.get("displayed_target_issue")
+            or payload.get("requested_target_issue")
+        )
+        stale = bool(payload.get("stale") or payload.get("is_stale") or stale)
+    elif isinstance(payload, list) and payload:
+        first = payload[0]
+        if isinstance(first, dict):
+            issue = first.get("prediction_issue") or first.get("issue")
+            source_issue = first.get("issue")
+            target_issue = first.get("prediction_issue")
+    generated_at = _parse_generated_at(payload)
+    return {
+        "component": name,
+        "generation_id": dashboard_generation_id,
+        "issue": str(issue) if issue is not None else None,
+        "source_issue": str(source_issue) if source_issue is not None else None,
+        "target_issue": str(target_issue) if target_issue is not None else None,
+        "source": source,
+        "generated_at": generated_at,
+        "age_seconds": _age_seconds(generated_at),
+        "stale": stale,
+        "timed_out": timed_out,
+        "result": result,
+    }
 
 
 def _deadline_remaining(deadline: float) -> float:
@@ -353,6 +500,7 @@ def _public_step_name(name: str) -> str:
 
 def _submit_component(name: str, fn):
     submitted_at = time.perf_counter()
+    dashboard_generation_id = _PLAYER_DASHBOARD_GENERATION_CONTEXT.get()
 
     def timed_fn():
         started_at = time.perf_counter()
@@ -399,19 +547,28 @@ def _submit_component(name: str, fn):
             return None, "busy"
         generation = _PLAYER_CACHE_GENERATION
         future = _PLAYER_EXECUTOR.submit(timed_fn)
+        future._dashboard_generation_id = dashboard_generation_id
         _PLAYER_COMPONENT_IN_FLIGHT[name] = future
         _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
     future.add_done_callback(
-        lambda completed, component=name, submitted_generation=generation: _complete_component(
+        lambda completed, component=name, submitted_generation=generation, submitted_at=submitted_at: _complete_component(
             component,
             completed,
             submitted_generation,
+            submitted_at,
+            getattr(completed, "_dashboard_generation_id", None),
         )
     )
     return future, "submitted"
 
 
-def _complete_component(name: str, future, submitted_generation: int) -> None:
+def _complete_component(
+    name: str,
+    future,
+    submitted_generation: int,
+    submitted_at: float,
+    dashboard_generation_id: str | None,
+) -> None:
     with _PLAYER_IN_FLIGHT_LOCK:
         if submitted_generation != _PLAYER_CACHE_GENERATION:
             logger.info("player dashboard stale component result discarded component=%s", name)
@@ -421,7 +578,16 @@ def _complete_component(name: str, future, submitted_generation: int) -> None:
     except Exception:
         logger.warning("player_dashboard_component_late_result_failed component=%s", name, exc_info=True)
         return
-    _store_component_cache(name, result)
+    updated = _store_component_cache(name, result)
+    logger.warning(
+        "dashboard_late_component_completion component=%s generation_id=%s issue=%s elapsed_ms=%s cache_updated=%s cache_update_reason=%s",
+        name,
+        dashboard_generation_id or submitted_generation,
+        _component_cache_issue(result),
+        round((time.perf_counter() - submitted_at) * 1000, 2),
+        updated,
+        "updated" if updated else "guard_rejected",
+    )
 
 
 def _component_result(
@@ -433,8 +599,31 @@ def _component_result(
     timings: list[dict],
     warnings: list[str],
     fallback=None,
+    component_metadata: dict[str, dict] | None = None,
+    dashboard_generation_id: str | None = None,
 ):
     started = time.perf_counter()
+    def remember(payload: Any, source: str, *, timed_out: bool = False, result: str = "ok") -> Any:
+        if component_metadata is not None:
+            component_metadata[name] = _component_metadata(
+                name,
+                payload,
+                source=source,
+                timed_out=timed_out,
+                result=result,
+                dashboard_generation_id=dashboard_generation_id,
+            )
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            if component_metadata is not None:
+                payload["_component_metadata"] = component_metadata.get(name)
+                if source in {"cache", "fallback"}:
+                    payload["source"] = source
+                else:
+                    payload.setdefault("source", "live")
+                payload.setdefault("stale", source != "live")
+        return payload
+
     if future is None:
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         warnings.append(f"{name} stale cache")
@@ -448,28 +637,33 @@ def _component_result(
                 in_flight_count=_player_in_flight_count(),
             )
         )
-        return _load_component_cache(name, fallback)
+        return remember(_load_component_cache(name, fallback), "cache", result="stale")
 
     remaining = _deadline_remaining(deadline)
     if remaining <= 0:
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         warnings.append(f"{name} skipped budget")
         timings.append(_timed_default(name, started, "skipped", "last_good_cache", reason="budget_exhausted"))
-        return _load_component_cache(name, fallback)
+        return remember(_load_component_cache(name, fallback), "fallback", result="skipped")
 
     wait_seconds = max(0.0, min(timeout_seconds, remaining))
     try:
         result = future.result(timeout=wait_seconds)
         _store_component_cache(name, result)
         timings.append(_timed_default(name, started, "ok", "fresh"))
-        return result
-    except TimeoutError:
+        return remember(result, "live")
+    except (TimeoutError, CancelledError) as exc:
         _PLAYER_RUNTIME_METRICS["timeout_count"] += 1
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        cancel_requested = future.cancel()
+        timed_out = isinstance(exc, TimeoutError)
         logger.warning(
-            "player_dashboard_component_timeout component=%s timeout_seconds=%s fallback=last_good_cache",
+            "player_dashboard_component_timeout component=%s timeout_seconds=%s fallback=last_good_cache future_running=%s cancel_requested=%s cancelled=%s",
             name,
             round(wait_seconds, 3),
+            future.running(),
+            cancel_requested,
+            future.cancelled(),
         )
         warnings.append(f"{name} fallback cache")
         timings.append(
@@ -480,15 +674,19 @@ def _component_result(
                 "last_good_cache",
                 timeout_seconds=round(wait_seconds, 3),
                 in_flight_count=_player_in_flight_count(),
+                timed_out=timed_out,
+                cancelled=future.cancelled(),
+                future_running=future.running(),
+                cancel_requested=cancel_requested,
             )
         )
-        return _load_component_cache(name, fallback)
+        return remember(_load_component_cache(name, fallback), "cache", timed_out=True, result="timeout")
     except Exception as exc:
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         logger.warning("player_dashboard_component_failed component=%s fallback=last_good_cache", name, exc_info=True)
         warnings.append(f"{name} fallback cache")
         timings.append(_timed_default(name, started, "error", "last_good_cache", exception_type=type(exc).__name__))
-        return _load_component_cache(name, fallback)
+        return remember(_load_component_cache(name, fallback), "fallback", result="error")
 
 
 def _run_inline_step(
@@ -1144,6 +1342,7 @@ def _prediction_from_history(
         based_draw = get_official_draw_by_issue(based_on_issue) if based_on_issue and allow_slow_lookups else None
     can_resolve_based_time = (
         allow_slow_lookups
+        or based_draw is not None
         or bool((based_draw or {}).get("draw_time"))
         or bool((based_draw or {}).get("collected_at"))
     )
@@ -1158,6 +1357,7 @@ def _prediction_from_history(
         "target_issue": target_issue,
         "prediction_issue": target_issue,
         "target_issue_source": target_issue_source,
+        "source_issue": based_on_issue,
         "based_on_issue": based_on_issue,
         "based_on_draw_time": based_time["based_on_draw_time"],
         "based_on_time_source": based_time["based_on_time_source"],
@@ -1263,6 +1463,7 @@ def _pending_next_prediction(current_draw: dict | None, detected_latest_issue: A
         "target_issue": expected_target,
         "prediction_issue": expected_target,
         "target_issue_source": "expected_from_latest_issue",
+        "source_issue": current_issue,
         "based_on_issue": current_issue,
         "latest_official_issue": current_issue,
         "database_latest_issue": database_latest_issue,
@@ -1275,11 +1476,13 @@ def _pending_next_prediction(current_draw: dict | None, detected_latest_issue: A
         "refresh_status": "prediction_pending",
         "refresh_reason": "latest_prediction_missing_or_expired",
         "is_stale": True,
+        "stale": True,
         "lag_issues": None,
         "main_numbers": [],
         "recommend_numbers": [],
         "recommendation_warning": "Latest production prediction is pending for the newest official draw.",
         "production_valid": False,
+        "source": "fallback",
         "read_layer": {"query_name": "production_latest_prediction_pending", "production_filtered": True},
         "reasons": ["Latest production prediction is pending for the newest official draw."],
         "alerts": {},
@@ -2227,9 +2430,19 @@ def _last_summary_cache() -> dict | None:
         _PLAYER_SUMMARY_CACHE_LOCK.release()
 
 
-def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnings: list[str]) -> dict:
+def get_player_card_one_snapshot(
+    *,
+    deadline: float,
+    timings: list[dict],
+    warnings: list[str],
+    component_metadata: dict[str, dict] | None = None,
+    dashboard_generation_id: str | None = None,
+) -> dict:
     started = time.perf_counter()
-    official_future, official_state = _submit_component("official_draw", get_latest_official_draw)
+    official_future, official_state = _submit_component(
+        "official_draw",
+        get_latest_official_draw,
+    )
     official = _component_result(
         "official_draw",
         official_future,
@@ -2237,10 +2450,15 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
         timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
         timings=timings,
         warnings=warnings,
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     )
     current = _current_draw(official)
 
-    kuaishou_future, _ = _submit_component("kuaishou", get_latest_kuaishou_snapshot)
+    kuaishou_future, _ = _submit_component(
+        "kuaishou",
+        get_latest_kuaishou_snapshot,
+    )
     kuaishou = _component_result(
         "kuaishou",
         kuaishou_future,
@@ -2249,26 +2467,37 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
         timings=timings,
         warnings=warnings,
         fallback={},
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or {}
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
 
     next_prediction = None
     if current:
         def build_next_snapshot():
-            record = _timed_component_stage(
+            context = _timed_component_stage(
                 "next_prediction_snapshot",
-                "current_prediction_lookup",
-                lambda: _current_prediction_for_draw(current),
+                "latest_prediction_context_lookup",
+                lambda: get_latest_prediction_context(allow_fallback_lookup=False),
             )
+            context_draw = (context or {}).get("draw") or current
+            if str((context_draw or {}).get("issue") or "") != str((current or {}).get("issue") or ""):
+                record = None
+                context_draw = current
+            else:
+                record = (context or {}).get("prediction")
             if record:
                 _store_component_cache("latest_prediction", record)
             return _timed_component_stage(
                 "next_prediction_snapshot",
                 "prediction_from_history",
-                lambda: _prediction_from_history(record, current, detected_latest_issue, allow_slow_lookups=False),
+                lambda: _prediction_from_history(record, context_draw, detected_latest_issue, allow_slow_lookups=False),
             )
 
-        prediction_future, _ = _submit_component("next_prediction_snapshot", build_next_snapshot)
+        prediction_future, _ = _submit_component(
+            "next_prediction_snapshot",
+            build_next_snapshot,
+        )
         next_prediction = _component_result(
             "next_prediction_snapshot",
             prediction_future,
@@ -2276,6 +2505,8 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
             timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
             timings=timings,
             warnings=warnings,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
         )
     else:
         next_prediction = _load_component_cache("next_prediction_snapshot")
@@ -2311,26 +2542,100 @@ def get_player_card_one_snapshot(*, deadline: float, timings: list[dict], warnin
 
 
 def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
-    verified_record, previous_result_mode = _timed_component_stage(
+    combined = _timed_component_stage(
         "previous_verification",
-        "previous_result_lookup",
-        lambda: _previous_result_for_based_on(previous_target_issue),
+        "previous_verification_combined_lookup",
+        lambda: get_previous_verification_summary_snapshot(str(previous_target_issue)),
     )
+    verified_record = combined.get("record")
+    previous_result_mode = combined.get("mode") or "unavailable"
     displayed_target_issue = (verified_record or {}).get("prediction_issue")
-    verification_draw = (
-        _timed_component_stage(
-            "previous_verification",
-            "official_draw_lookup",
-            lambda: get_official_draw_by_issue(displayed_target_issue),
-        )
-        if displayed_target_issue
-        else None
-    )
+    verification_draw = combined.get("draw")
     previous_verification = _verification(verified_record, verification_draw) if verified_record else _unavailable_previous_result(previous_target_issue)
     previous_verification["previous_result_mode"] = previous_result_mode
     previous_verification["requested_target_issue"] = previous_target_issue
     previous_verification["displayed_target_issue"] = displayed_target_issue
+    previous_verification["db_timing"] = combined.get("db_timing") or {}
     return previous_verification
+
+
+def _dashboard_health(
+    component_metadata: dict[str, dict],
+    *,
+    official_issue: Any,
+    next_prediction: dict | None,
+    previous_verification: dict | None,
+    aggregates: dict | None,
+    card_two_history: list[dict] | None,
+    generation_id: str,
+) -> dict:
+    next_prediction = next_prediction or {}
+    previous_verification = previous_verification or {}
+    aggregates = aggregates or {}
+    card_two_history = card_two_history or []
+    official_text = str(official_issue) if official_issue is not None else None
+    prediction_source_issue = next_prediction.get("source_issue") or next_prediction.get("based_on_issue")
+    prediction_target_issue = next_prediction.get("target_issue") or next_prediction.get("prediction_issue")
+    verification_issue = previous_verification.get("target_issue") or previous_verification.get("displayed_target_issue")
+    aggregate_issue = aggregates.get("latest_issue")
+    card_two_issue = (card_two_history[0].get("prediction_issue") if card_two_history else None)
+    checks = [
+        official_text,
+        str(prediction_source_issue) if prediction_source_issue is not None else None,
+        str(verification_issue) if verification_issue is not None else None,
+        str(aggregate_issue) if aggregate_issue is not None else None,
+        str(card_two_issue) if card_two_issue is not None else None,
+    ]
+    numeric_checks = [_as_int(item) for item in checks if item]
+    issue_consistent = True
+    if official_text and prediction_source_issue and str(official_text) != str(prediction_source_issue):
+        issue_consistent = False
+    if numeric_checks:
+        issue_consistent = issue_consistent and (max(numeric_checks) - min(numeric_checks) <= 1)
+    live_components = sum(1 for item in component_metadata.values() if item.get("source") == "live")
+    cached_components = sum(1 for item in component_metadata.values() if item.get("source") == "cache")
+    fallback_components = sum(1 for item in component_metadata.values() if item.get("source") == "fallback")
+    failed_components = sum(1 for item in component_metadata.values() if item.get("result") == "error")
+    stale_components = sum(1 for item in component_metadata.values() if item.get("stale"))
+    status = "healthy"
+    if failed_components:
+        status = "broken"
+    elif not issue_consistent:
+        status = "degraded"
+    elif cached_components or fallback_components:
+        status = "stale"
+    elif stale_components:
+        status = "degraded"
+    logger.warning(
+        "dashboard_consistency generation_id=%s official_issue=%s prediction_source_issue=%s prediction_target_issue=%s verification_issue=%s aggregate_issue=%s card_two_issue=%s prediction_source=%s verification_source=%s aggregate_source=%s consistent=%s status=%s",
+        generation_id,
+        official_text,
+        prediction_source_issue,
+        prediction_target_issue,
+        verification_issue,
+        aggregate_issue,
+        card_two_issue,
+        (component_metadata.get("next_prediction_snapshot") or {}).get("source"),
+        (component_metadata.get("previous_verification") or {}).get("source"),
+        (component_metadata.get("prediction_aggregates") or {}).get("source"),
+        issue_consistent,
+        status,
+    )
+    return {
+        "status": status,
+        "live_components": live_components,
+        "cached_components": cached_components,
+        "fallback_components": fallback_components,
+        "failed_components": failed_components,
+        "issue_consistent": issue_consistent,
+        "dashboard_generation_id": generation_id,
+        "official_issue": official_text,
+        "prediction_source_issue": str(prediction_source_issue) if prediction_source_issue is not None else None,
+        "prediction_target_issue": str(prediction_target_issue) if prediction_target_issue is not None else None,
+        "verification_issue": str(verification_issue) if verification_issue is not None else None,
+        "aggregate_issue": str(aggregate_issue) if aggregate_issue is not None else None,
+        "card_two_issue": str(card_two_issue) if card_two_issue is not None else None,
+    }
 
 
 def build_player_dashboard_summary() -> dict:
@@ -2362,8 +2667,41 @@ def _build_player_dashboard_summary_uncached() -> dict:
     warnings: list[str] = []
     timings: list[dict] = []
     generated_at = _now()
+    dashboard_generation_id = _dashboard_generation_id()
+    component_metadata: dict[str, dict] = {}
+    generation_token = _PLAYER_DASHBOARD_GENERATION_CONTEXT.set(dashboard_generation_id)
+    try:
+        return _build_player_dashboard_summary_payload(
+            total_start=total_start,
+            deadline=deadline,
+            warnings=warnings,
+            timings=timings,
+            generated_at=generated_at,
+            dashboard_generation_id=dashboard_generation_id,
+            component_metadata=component_metadata,
+        )
+    finally:
+        _PLAYER_DASHBOARD_GENERATION_CONTEXT.reset(generation_token)
 
-    card_one = get_player_card_one_snapshot(deadline=deadline, timings=timings, warnings=warnings)
+
+def _build_player_dashboard_summary_payload(
+    *,
+    total_start: float,
+    deadline: float,
+    warnings: list[str],
+    timings: list[dict],
+    generated_at: str,
+    dashboard_generation_id: str,
+    component_metadata: dict[str, dict],
+) -> dict:
+
+    card_one = get_player_card_one_snapshot(
+        deadline=deadline,
+        timings=timings,
+        warnings=warnings,
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
+    )
     current = card_one["current"]
     official = card_one["official"]
     next_prediction = card_one["next_prediction"]
@@ -2446,17 +2784,29 @@ def _build_player_dashboard_summary_uncached() -> dict:
         )
         meta = {
             "generated_at": generated_at,
+            "dashboard_generation_id": dashboard_generation_id,
             "partial": partial,
             "warnings": warnings,
             "timeout_steps": timeout_steps,
             "stale_steps": stale_steps,
             "skipped_busy_steps": skipped_busy_steps,
             "schema_version": "player_summary_cards_v1",
+            "components": component_metadata,
         }
+        health = _dashboard_health(
+            component_metadata,
+            official_issue=detected_latest_issue,
+            next_prediction=next_prediction,
+            previous_verification=previous_verification,
+            aggregates=aggregates,
+            card_two_history=[],
+            generation_id=dashboard_generation_id,
+        )
         return {
             "status": "ok",
             "generated_at": generated_at,
             "meta": meta,
+            "health": health,
             "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
             "production_filtered": True,
             "production_scope": production_scope,
@@ -2517,6 +2867,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
         timings=timings,
         warnings=warnings,
         fallback=_load_component_cache("card_two_history", []),
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or []
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
@@ -2528,6 +2880,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
         timings=timings,
         warnings=warnings,
         fallback={},
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or {}
     analysis = _component_result(
         "analysis",
@@ -2537,6 +2891,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
         timings=timings,
         warnings=warnings,
         fallback={},
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or {}
     active_release = _component_result(
         "active_release",
@@ -2546,6 +2902,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
         timings=timings,
         warnings=warnings,
         fallback={},
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or {}
     kuaishou = _load_component_cache("kuaishou", {}) or {}
     production_scope = _run_inline_step(
@@ -2584,6 +2942,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
             timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
             timings=timings,
             warnings=warnings,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
         )
     else:
         previous_verification = None
@@ -2613,6 +2973,8 @@ def _build_player_dashboard_summary_uncached() -> dict:
         timings=timings,
         warnings=warnings,
         fallback=_card_two_empty(previous_target_issue),
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
     ) or _card_two_empty(previous_target_issue)
 
     database_issue = (current or {}).get("issue")
@@ -2666,18 +3028,30 @@ def _build_player_dashboard_summary_uncached() -> dict:
     )
     meta = {
         "generated_at": generated_at,
+        "dashboard_generation_id": dashboard_generation_id,
         "partial": partial,
         "warnings": warnings,
         "timeout_steps": timeout_steps,
         "stale_steps": stale_steps,
         "skipped_busy_steps": skipped_busy_steps,
         "schema_version": "player_summary_cards_v1",
+        "components": component_metadata,
     }
+    health = _dashboard_health(
+        component_metadata,
+        official_issue=detected_latest_issue or official_issue,
+        next_prediction=next_prediction,
+        previous_verification=previous_verification,
+        aggregates=aggregates,
+        card_two_history=card_two_history,
+        generation_id=dashboard_generation_id,
+    )
 
     payload = {
         "status": "ok",
         "generated_at": generated_at,
         "meta": meta,
+        "health": health,
         "cache_filter_version": PLAYER_CACHE_FILTER_VERSION,
         "production_filtered": True,
         "production_scope": production_scope,

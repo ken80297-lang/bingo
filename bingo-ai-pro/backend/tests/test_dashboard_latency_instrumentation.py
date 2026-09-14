@@ -358,7 +358,7 @@ def test_dashboard_component_timeout_fallback_behavior_unchanged():
     assert result == {}
     assert warnings == ["kuaishou fallback cache"]
     assert timings[0]["result"] == "timeout"
-    assert blocked.cancelled() is False
+    assert timings[0]["timed_out"] is True
 
 
 def test_dashboard_component_stage_latency_preserves_result(caplog):
@@ -1177,11 +1177,10 @@ def test_card_two_history_timing_status_is_bounded_process_memory():
 
 def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):
     calls = []
-    monkeypatch.setattr(learning_store, "get_learned_live_target_count", lambda: 7)
 
     def fake_query(sql, params=(), sqlite_sql=None):
         calls.append((sql, params, sqlite_sql))
-        return [(10, 9, 1, 8, 6, 6, 5)]
+        return [(10, 9, 1, 8, 6, 6, 5, 6, 7, "115040901")]
 
     monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
 
@@ -1192,11 +1191,10 @@ def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):
 
     assert result["total_prediction_count"] == 10
     assert result["learned_distinct_target_count"] == 7
-    assert len(calls) == 2
+    assert result["query_count"] == 1
+    assert len(calls) == 1
     joined = "\n".join(_messages(caplog, "database.prediction_history_store"))
-    assert "component_stage_latency component=prediction_aggregates stage=learned_live_target_count" in joined
-    assert "component_stage_latency component=prediction_aggregates stage=prediction_history_aggregate_query" in joined
-    assert "component_stage_latency component=prediction_aggregates stage=official_result_join_count" in joined
+    assert "component_stage_latency component=prediction_aggregates stage=prediction_lifecycle_aggregate_combined_query" in joined
 
 
 def test_prediction_history_stage_logging_is_dashboard_opt_in(monkeypatch, caplog):

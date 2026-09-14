@@ -16,6 +16,15 @@ def api_player_dashboard_summary():
         logger.exception("player dashboard summary failed")
         return {
             "status": "unknown",
+            "health": {
+                "status": "broken",
+                "live_components": 0,
+                "cached_components": 0,
+                "fallback_components": 0,
+                "failed_components": 1,
+                "issue_consistent": False,
+                "dashboard_generation_id": None,
+            },
             "current_draw": None,
             "sync": {"is_synced": False, "lag_count": None},
             "next_prediction": {},

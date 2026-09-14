@@ -657,6 +657,7 @@ def test_latest_prediction_history_merges_cloud_and_sqlite_fallback(monkeypatch)
 
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_sqlite_sidecar_enabled", lambda: True)
     monkeypatch.setattr(prediction_history_store, "_query_cloud", lambda sql, params=(): [row(1, "115040850", "115040851", "2026-07-21T01:00:00")])
     monkeypatch.setattr(prediction_history_store, "_query_sqlite", lambda sql, params=(): [row(2, "115040906", "115040907", "2026-07-21T07:00:00")])
     monkeypatch.setattr(prediction_history_store, "_prediction_event_metadata", lambda record: {})

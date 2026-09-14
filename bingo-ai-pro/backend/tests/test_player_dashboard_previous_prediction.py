@@ -3,9 +3,27 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from services import player_dashboard
+
+
+@pytest.fixture(autouse=True)
+def reset_dashboard_component_state():
+    player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
+    player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
+    for key, value in list(player_dashboard._PLAYER_COMPONENT_CACHE.items()):
+        player_dashboard._PLAYER_COMPONENT_CACHE[key] = [] if isinstance(value, list) else None
+    player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {}
+    player_dashboard._PLAYER_COMPONENT_CACHE["analysis"] = {}
+    player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
+    player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
+    yield
+    player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
+    player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
+    player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
 
 
 def test_latest_official_draw_card_marks_verified_only_for_complete_official_record():
@@ -132,13 +150,27 @@ def test_dashboard_previous_prediction_uses_based_on_direct_lookup(monkeypatch):
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [previous_prediction])
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_latest_prediction_context",
+        lambda allow_fallback_lookup=False: {"draw": latest_draw, "prediction": next_prediction, "target_issue": "115040802"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [previous_prediction])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
-    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", official_by_issue)
-    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: previous_prediction if str(issue) == "115040801" else None)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue: {
+            "record": previous_prediction if str(issue) == "115040801" else None,
+            "draw": latest_draw if str(issue) == "115040801" else None,
+            "mode": "exact_previous",
+            "db_timing": {"query_count": 1},
+        },
+    )
     monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue", lambda issue: {"issue": issue})
     monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
 
@@ -198,9 +230,14 @@ def test_dashboard_uses_official_draw_saved_event_time_fallback(monkeypatch):
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [fallback_prediction])
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_latest_prediction_context",
+        lambda allow_fallback_lookup=False: {"draw": latest_draw, "prediction": next_prediction, "target_issue": "115040822"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
-    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", lambda issue: latest_draw if str(issue) == "115040821" else None)
@@ -211,8 +248,11 @@ def test_dashboard_uses_official_draw_saved_event_time_fallback(monkeypatch):
         if event_type == "official_draw_saved" and str(issue) == "115040821"
         else None,
     )
-    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue: {"record": None, "draw": None, "mode": "unavailable", "db_timing": {"query_count": 1}},
+    )
 
     payload = player_dashboard.build_player_dashboard_summary()
     next_payload = payload["next_prediction"]
@@ -267,14 +307,27 @@ def test_dashboard_previous_prediction_falls_back_to_latest_available_verified(m
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: next_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100: [])
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_latest_prediction_context",
+        lambda allow_fallback_lookup=False: {"draw": latest_draw, "prediction": next_prediction, "target_issue": "115040842"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_history_statistics", lambda limit=100: {"status": "ok", "sample_size": 0})
-    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
     monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", official_by_issue)
-    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: fallback_prediction)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue: {
+            "record": fallback_prediction,
+            "draw": fallback_draw,
+            "mode": "latest_available_verified",
+            "db_timing": {"query_count": 1},
+        },
+    )
 
     payload = player_dashboard.build_player_dashboard_summary()
     previous = payload["previous_verification"]
@@ -312,13 +365,21 @@ def test_dashboard_marks_prediction_stale_when_database_lags_detected_source(mon
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: latest_draw)
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: stale_prediction)
-    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=10: [])
-    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda: {})
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_latest_prediction_context",
+        lambda allow_fallback_lookup=False: {"draw": latest_draw, "prediction": stale_prediction, "target_issue": "115040851"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: {"issue": "115040888"})
     monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", lambda issue: latest_draw if str(issue) == "115040850" else None)
-    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue: {"record": None, "draw": None, "mode": "unavailable", "db_timing": {"query_count": 1}},
+    )
 
     payload = player_dashboard.build_player_dashboard_summary()
     next_payload = payload["next_prediction"]
