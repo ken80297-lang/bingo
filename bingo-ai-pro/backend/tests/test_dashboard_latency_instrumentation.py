@@ -1351,6 +1351,146 @@ def test_prediction_aggregates_stage_adds_no_extra_query(monkeypatch, caplog):
     assert "component_stage_latency component=prediction_aggregates stage=prediction_lifecycle_aggregate_combined_query" in joined
 
 
+def test_dashboard_prediction_aggregates_uses_independent_read_pool(monkeypatch):
+    row = (10, 9, 1, 8, 6, 6, 5, 6, 7, "115040901")
+    pool_conn = FakeConnection(FakeCursor(rows=[row]))
+    fresh_conn = FakeConnection(FakeCursor(rows=[row]))
+    acquired = []
+
+    def fake_dashboard_connection():
+        acquired.append("pool")
+        return pool_conn
+
+    def fake_cloud_connection():
+        acquired.append("fresh")
+        return fresh_conn
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fake_cloud_connection)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        lambda *args, **kwargs: pytest.fail("sqlite fallback should not be used"),
+    )
+
+    result = prediction_history_store.get_prediction_lifecycle_aggregates(
+        diagnostic_component="prediction_aggregates",
+        use_dashboard_read_pool=True,
+    )
+
+    assert result["latest_issue"] == "115040901"
+    assert result["query_count"] == 1
+    assert acquired == ["pool"]
+    assert pool_conn.closed is True
+    assert fresh_conn.closed is False
+    assert result["db_timing"]["pool_acquire_ms"] >= 0
+    assert result["db_timing"]["execute_ms"] >= 0
+    assert result["db_timing"]["fetch_ms"] >= 0
+
+
+def test_non_dashboard_prediction_aggregates_keeps_fresh_connection_path(monkeypatch):
+    row = (10, 9, 1, 8, 6, 6, 5, 6, 7, "115040901")
+    fresh_conn = FakeConnection(FakeCursor(rows=[row]))
+    acquired = []
+
+    def fake_dashboard_connection():
+        acquired.append("pool")
+        return FakeConnection(FakeCursor(rows=[row]))
+
+    def fake_cloud_connection():
+        acquired.append("fresh")
+        return fresh_conn
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+    monkeypatch.setattr(prediction_history_store, "_cloud_connection", fake_cloud_connection)
+
+    result = prediction_history_store.get_prediction_lifecycle_aggregates()
+
+    assert result["latest_issue"] == "115040901"
+    assert result["query_count"] == 1
+    assert acquired == ["fresh"]
+    assert fresh_conn.closed is True
+
+
+def test_dashboard_aggregate_does_not_reuse_card_two_context_connection(monkeypatch):
+    row = (10, 9, 1, 8, 6, 6, 5, 6, 7, "115040901")
+    card_two_conn = FakeConnection(FakeCursor(error=AssertionError("card two connection should not be used")))
+    aggregate_conn = FakeConnection(FakeCursor(rows=[row]))
+    acquired = []
+
+    def fake_dashboard_connection():
+        acquired.append("pool")
+        return aggregate_conn
+
+    monkeypatch.setattr(prediction_history_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_query_sqlite",
+        lambda *args, **kwargs: pytest.fail("sqlite fallback should not be used"),
+    )
+
+    with prediction_history_store._diagnostic_shared_dashboard_connection(card_two_conn):
+        result = prediction_history_store.get_prediction_lifecycle_aggregates(
+            diagnostic_component="prediction_aggregates",
+            use_dashboard_read_pool=True,
+        )
+
+    assert result["latest_issue"] == "115040901"
+    assert acquired == ["pool"]
+    assert aggregate_conn.closed is True
+    assert card_two_conn.closed is False
+    assert result["db_timing"]["connection_hash"] != prediction_history_store._connection_hash(card_two_conn)
+
+
+def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_prediction_lifecycle_aggregates",
+        lambda **kwargs: captured.append(kwargs) or {},
+    )
+
+    def fake_submit(name, fn):
+        if name == "prediction_aggregates":
+            return _completed_future(fn()), "submitted"
+        if name == "card_two_history":
+            return _completed_future([]), "submitted"
+        return _completed_future({}), "submitted"
+
+    monkeypatch.setattr(player_dashboard, "_submit_component", fake_submit)
+    monkeypatch.setattr(player_dashboard, "get_player_card_one_snapshot", lambda **kwargs: {
+        "current": {"issue": "115040900"},
+        "official": {},
+        "next_prediction": {"based_on_issue": "115040900"},
+        "detected_latest_issue": "115040900",
+    })
+    monkeypatch.setattr(player_dashboard, "production_scope_payload", lambda: {})
+    monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: {})
+    monkeypatch.setattr(player_dashboard, "_card_two_from_record", lambda record, current, previous_target_issue: {})
+    monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
+
+    player_dashboard._build_player_dashboard_summary_payload(
+        total_start=time.perf_counter(),
+        deadline=time.monotonic() + player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS,
+        warnings=[],
+        timings=[],
+        generated_at="2026-09-16T00:00:00+00:00",
+        dashboard_generation_id="test",
+        component_metadata={},
+    )
+
+    assert captured == [
+        {
+            "diagnostic_component": "prediction_aggregates",
+            "use_dashboard_read_pool": True,
+        }
+    ]
+
+
 def test_prediction_history_stage_logging_is_dashboard_opt_in(monkeypatch, caplog):
     calls = []
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
@@ -1399,7 +1539,7 @@ def test_card_two_concurrency_culprit_benchmark_uses_real_component_conditions(m
     monkeypatch.setattr(
         player_dashboard,
         "get_prediction_lifecycle_aggregates",
-        lambda diagnostic_component=None: component_calls.append(("prediction_aggregates", diagnostic_component)) or {},
+        lambda diagnostic_component=None, **kwargs: component_calls.append(("prediction_aggregates", diagnostic_component, kwargs)) or {},
     )
     monkeypatch.setattr(
         player_dashboard,
@@ -1451,7 +1591,7 @@ def test_card_two_concurrency_culprit_benchmark_uses_real_component_conditions(m
     assert "prediction_aggregates" in submitted
     assert "previous_verification" in submitted
     assert ("card_two_history", 100, "card_two_history") in component_calls
-    assert ("prediction_aggregates", "prediction_aggregates") in component_calls
+    assert ("prediction_aggregates", "prediction_aggregates", {}) in component_calls
     assert ("previous_verification", "115040901") in component_calls
     assert "next_prediction_lookup" in component_calls
     assert "next_prediction_history" in component_calls

@@ -3003,7 +3003,10 @@ def _build_player_dashboard_summary_payload(
         lambda: _timed_component_stage(
             "prediction_aggregates",
             "prediction_lifecycle_aggregates",
-            lambda: get_prediction_lifecycle_aggregates(diagnostic_component="prediction_aggregates"),
+            lambda: get_prediction_lifecycle_aggregates(
+                diagnostic_component="prediction_aggregates",
+                use_dashboard_read_pool=True,
+            ),
         ),
     )
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)

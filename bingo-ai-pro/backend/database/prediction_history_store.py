@@ -785,13 +785,19 @@ def _record_connection_metadata(timing: dict[str, Any] | None, conn: Any, state:
         timing["backend_pid"] = None
 
 
-def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
+def _query_cloud(
+    sql: str,
+    params: tuple = (),
+    *,
+    connection_factory=None,
+    use_shared_connection: bool = True,
+) -> list[Any]:
     timing = _CARD_TWO_QUERY_TIMING.get()
     total_started = time.perf_counter() if timing is not None else None
     try:
         shared_state = _CARD_TWO_DASHBOARD_CONNECTION_STATE.get()
         shared_conn = _CARD_TWO_DASHBOARD_CONNECTION.get()
-        if shared_state is not None:
+        if use_shared_connection and shared_state is not None:
             if not shared_state.get("cloud_available", True) or shared_conn is None:
                 raise RuntimeError("dashboard read connection unavailable")
             _record_shared_connection_acquire_timing(timing, shared_state)
@@ -799,7 +805,7 @@ def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
             return _execute_cloud_query(shared_conn, sql, params, timing)
 
         connect_started = time.perf_counter()
-        conn_context = _cloud_connection()
+        conn_context = (connection_factory or _cloud_connection)()
         if timing is not None:
             timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
             timing["pool_acquire_ms"] = timing["connect_ms"]
@@ -2836,10 +2842,22 @@ def run_card_two_ordering_benchmark(repetitions: int = 5) -> dict[str, Any]:
     }
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    cloud_connection_factory=None,
+    use_shared_connection: bool = True,
+) -> list[Any]:
     if _cloud_enabled():
         try:
-            rows = _query_cloud(sql, params)
+            rows = _query_cloud(
+                sql,
+                params,
+                connection_factory=cloud_connection_factory,
+                use_shared_connection=use_shared_connection,
+            )
             return rows
         except Exception:
             logger.exception("cloud prediction_history query failed")
@@ -3774,10 +3792,26 @@ def _timed_prediction_query(
     *,
     query_tag: str | None = None,
     sqlite_sql: str | None = None,
+    cloud_connection_factory=None,
+    use_shared_connection: bool = True,
 ) -> tuple[list[Any], dict[str, Any]]:
     timing: dict[str, Any] = {"query_tag": query_tag} if query_tag else {}
     started = time.perf_counter()
-    rows = _with_card_two_query_timing(timing, lambda: _query_with_fallback(sql, params, sqlite_sql=sqlite_sql))
+    def run_query():
+        if cloud_connection_factory is None and use_shared_connection:
+            return _query_with_fallback(sql, params, sqlite_sql=sqlite_sql)
+        return _query_with_fallback(
+            sql,
+            params,
+            sqlite_sql=sqlite_sql,
+            cloud_connection_factory=cloud_connection_factory,
+            use_shared_connection=use_shared_connection,
+        )
+
+    rows = _with_card_two_query_timing(
+        timing,
+        run_query,
+    )
     timing.setdefault("total_ms", round((time.perf_counter() - started) * 1000, 2))
     timing["row_count"] = len(rows or [])
     return rows, timing
@@ -3884,7 +3918,12 @@ def get_previous_verification_summary_snapshot(target_issue: str) -> dict:
     return {"record": record, "draw": draw, "mode": mode, "db_timing": timing}
 
 
-def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = None) -> dict:
+def get_prediction_lifecycle_aggregates(
+    *,
+    diagnostic_component: str | None = None,
+    use_dashboard_read_pool: bool = False,
+) -> dict:
+    cloud_connection_factory = _dashboard_read_connection if use_dashboard_read_pool else None
     rows, db_timing = _maybe_timed_dashboard_stage(
         diagnostic_component,
         "prediction_lifecycle_aggregate_combined_query",
@@ -3981,6 +4020,8 @@ def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = No
                 production_generation=get_production_generation(),
             ),
             query_tag="prediction_aggregates.combined",
+            cloud_connection_factory=cloud_connection_factory,
+            use_shared_connection=not use_dashboard_read_pool,
             sqlite_sql="""
             with prediction_counts as (
                 select
