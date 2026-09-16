@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError
 from contextvars import ContextVar
 from copy import deepcopy
@@ -189,6 +190,11 @@ _PLAYER_RUNTIME_METRICS: dict[str, int] = {
     "stale_fallback_count": 0,
     "timeout_count": 0,
 }
+_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT = 20
+_PLAYER_COMPONENT_DIAGNOSTICS_LOCK = threading.RLock()
+_PLAYER_COMPONENT_DIAGNOSTICS: dict[str, deque[dict[str, Any]]] = {
+    "prediction_aggregates": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+}
 
 
 def _now() -> str:
@@ -321,6 +327,71 @@ def _load_component_cache(name: str, fallback=None):
     if name == "prediction_history" and isinstance(cached, list):
         cached = [item for item in cached if is_production_prediction(item)]
     return deepcopy(cached)
+
+
+def _tracked_component_lifecycle(name: str, submitted_at: float, dashboard_generation_id: str | None) -> dict[str, Any] | None:
+    if name not in _PLAYER_COMPONENT_DIAGNOSTICS:
+        return None
+    return {
+        "component": name,
+        "dashboard_generation_id": dashboard_generation_id,
+        "submitted_at": submitted_at,
+    }
+
+
+def _round_ms(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value * 1000, 2)
+
+
+def _component_lifecycle_fields(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    submitted_at = lifecycle.get("submitted_at")
+    execution_started_at = lifecycle.get("execution_started_at")
+    wait_started_at = lifecycle.get("wait_started_at")
+    wait_ended_at = lifecycle.get("wait_ended_at")
+    execution_completed_at = lifecycle.get("execution_completed_at")
+    fields = {
+        "component": lifecycle.get("component"),
+        "dashboard_generation_id": lifecycle.get("dashboard_generation_id"),
+        "submitted_at": round(submitted_at, 6) if submitted_at is not None else None,
+        "execution_started_at": round(execution_started_at, 6) if execution_started_at is not None else None,
+        "wait_started_at": round(wait_started_at, 6) if wait_started_at is not None else None,
+        "wait_ended_at": round(wait_ended_at, 6) if wait_ended_at is not None else None,
+        "execution_completed_at": round(execution_completed_at, 6) if execution_completed_at is not None else None,
+        "submit_to_start_ms": _round_ms(execution_started_at - submitted_at) if execution_started_at is not None and submitted_at is not None else None,
+        "submit_to_wait_ms": _round_ms(wait_started_at - submitted_at) if wait_started_at is not None and submitted_at is not None else None,
+        "wait_ms": _round_ms(wait_ended_at - wait_started_at) if wait_ended_at is not None and wait_started_at is not None else None,
+        "execution_ms": _round_ms(execution_completed_at - execution_started_at) if execution_completed_at is not None and execution_started_at is not None else None,
+        "completion_after_wait_ms": _round_ms(execution_completed_at - wait_ended_at) if execution_completed_at is not None and wait_ended_at is not None else None,
+    }
+    return fields
+
+
+def _record_component_diagnostic(lifecycle: dict[str, Any] | None, **updates: Any) -> dict[str, Any] | None:
+    if not lifecycle:
+        return None
+    component = lifecycle.get("component")
+    if component not in _PLAYER_COMPONENT_DIAGNOSTICS:
+        return None
+    with _PLAYER_COMPONENT_DIAGNOSTICS_LOCK:
+        record = lifecycle.get("diagnostic_record")
+        if record is None:
+            record = {}
+            lifecycle["diagnostic_record"] = record
+            _PLAYER_COMPONENT_DIAGNOSTICS[component].append(record)
+        record.update(_component_lifecycle_fields(lifecycle))
+        record.update({key: deepcopy(value) for key, value in updates.items() if value is not None})
+        return record
+
+
+def get_prediction_aggregate_component_diagnostics() -> dict:
+    with _PLAYER_COMPONENT_DIAGNOSTICS_LOCK:
+        records = list(_PLAYER_COMPONENT_DIAGNOSTICS["prediction_aggregates"])
+    return {
+        "limit": _PLAYER_COMPONENT_DIAGNOSTIC_LIMIT,
+        "recent": deepcopy(records),
+    }
 
 
 def _component_cache_issue(payload: Any) -> int | None:
@@ -501,9 +572,12 @@ def _public_step_name(name: str) -> str:
 def _submit_component(name: str, fn):
     submitted_at = time.perf_counter()
     dashboard_generation_id = _PLAYER_DASHBOARD_GENERATION_CONTEXT.get()
+    lifecycle = _tracked_component_lifecycle(name, submitted_at, dashboard_generation_id)
 
     def timed_fn():
         started_at = time.perf_counter()
+        if lifecycle is not None:
+            lifecycle["execution_started_at"] = started_at
         thread_id = threading.get_ident()
         with _PLAYER_ACTIVE_COMPONENTS_LOCK:
             _PLAYER_ACTIVE_COMPONENTS[thread_id] = {
@@ -520,7 +594,15 @@ def _submit_component(name: str, fn):
                     result = fn()
             else:
                 result = fn()
+            if lifecycle is not None:
+                lifecycle["execution_completed_at"] = time.perf_counter()
+                if isinstance(result, dict):
+                    lifecycle["db_timing"] = deepcopy(result.get("db_timing"))
+                    lifecycle["query_count"] = result.get("query_count")
         except Exception as exc:
+            if lifecycle is not None:
+                lifecycle["execution_completed_at"] = time.perf_counter()
+                lifecycle["error_type"] = type(exc).__name__
             logger.warning(
                 "dashboard_component_latency component=%s queue_ms=%s execution_ms=%s result=failed error_type=%s",
                 name,
@@ -548,6 +630,7 @@ def _submit_component(name: str, fn):
         generation = _PLAYER_CACHE_GENERATION
         future = _PLAYER_EXECUTOR.submit(timed_fn)
         future._dashboard_generation_id = dashboard_generation_id
+        future._dashboard_lifecycle = lifecycle
         _PLAYER_COMPONENT_IN_FLIGHT[name] = future
         _PLAYER_RUNTIME_METRICS["submitted_count"] += 1
     future.add_done_callback(
@@ -576,8 +659,32 @@ def _complete_component(
     try:
         result = future.result()
     except Exception:
+        lifecycle = getattr(future, "_dashboard_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.setdefault("execution_completed_at", time.perf_counter())
+            if lifecycle.get("initial_result") == "timeout":
+                _record_component_diagnostic(
+                    lifecycle,
+                    late_result="failed",
+                    late_error_type=lifecycle.get("error_type"),
+                    late_completion_ms=_round_ms(lifecycle.get("execution_completed_at") - lifecycle.get("submitted_at"))
+                    if lifecycle.get("execution_completed_at") is not None and lifecycle.get("submitted_at") is not None
+                    else None,
+                )
         logger.warning("player_dashboard_component_late_result_failed component=%s", name, exc_info=True)
         return
+    lifecycle = getattr(future, "_dashboard_lifecycle", None)
+    if lifecycle is not None:
+        lifecycle.setdefault("execution_completed_at", time.perf_counter())
+        if lifecycle.get("initial_result") == "timeout":
+            _record_component_diagnostic(
+                lifecycle,
+                late_result="success",
+                late_completion_ms=_round_ms(lifecycle.get("execution_completed_at") - lifecycle.get("submitted_at"))
+                if lifecycle.get("execution_completed_at") is not None and lifecycle.get("submitted_at") is not None
+                else None,
+                late_db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
+            )
     updated = _store_component_cache(name, result)
     logger.warning(
         "dashboard_late_component_completion component=%s generation_id=%s issue=%s elapsed_ms=%s cache_updated=%s cache_update_reason=%s",
@@ -603,6 +710,9 @@ def _component_result(
     dashboard_generation_id: str | None = None,
 ):
     started = time.perf_counter()
+    lifecycle = getattr(future, "_dashboard_lifecycle", None) if future is not None else None
+    if lifecycle is not None:
+        lifecycle["wait_started_at"] = started
     def remember(payload: Any, source: str, *, timed_out: bool = False, result: str = "ok") -> Any:
         if component_metadata is not None:
             component_metadata[name] = _component_metadata(
@@ -641,6 +751,10 @@ def _component_result(
 
     remaining = _deadline_remaining(deadline)
     if remaining <= 0:
+        if lifecycle is not None:
+            lifecycle["wait_ended_at"] = time.perf_counter()
+            lifecycle["initial_result"] = "skipped"
+            _record_component_diagnostic(lifecycle, source="last_good_cache", fallback_reason="budget_exhausted")
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         warnings.append(f"{name} skipped budget")
         timings.append(_timed_default(name, started, "skipped", "last_good_cache", reason="budget_exhausted"))
@@ -649,14 +763,40 @@ def _component_result(
     wait_seconds = max(0.0, min(timeout_seconds, remaining))
     try:
         result = future.result(timeout=wait_seconds)
+        if lifecycle is not None:
+            lifecycle["wait_ended_at"] = time.perf_counter()
+            lifecycle["initial_result"] = "ok"
+            _record_component_diagnostic(
+                lifecycle,
+                initial_result="ok",
+                source="fresh",
+                db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
+                query_count=result.get("query_count") if isinstance(result, dict) else None,
+            )
         _store_component_cache(name, result)
         timings.append(_timed_default(name, started, "ok", "fresh"))
         return remember(result, "live")
     except (TimeoutError, CancelledError) as exc:
+        if lifecycle is not None:
+            lifecycle["wait_ended_at"] = time.perf_counter()
+            lifecycle["initial_result"] = "timeout"
         _PLAYER_RUNTIME_METRICS["timeout_count"] += 1
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         cancel_requested = future.cancel()
         timed_out = isinstance(exc, TimeoutError)
+        if lifecycle is not None:
+            _record_component_diagnostic(
+                lifecycle,
+                source="last_good_cache",
+                timeout_seconds=round(wait_seconds, 3),
+                future_running_at_timeout=future.running(),
+                cancel_requested=cancel_requested,
+                cancelled=future.cancelled(),
+                timed_out=timed_out,
+                fallback_reason="timeout",
+                initial_result="timeout",
+                in_flight_count=_player_in_flight_count(),
+            )
         logger.warning(
             "player_dashboard_component_timeout component=%s timeout_seconds=%s fallback=last_good_cache future_running=%s cancel_requested=%s cancelled=%s",
             name,
@@ -682,6 +822,16 @@ def _component_result(
         )
         return remember(_load_component_cache(name, fallback), "cache", timed_out=True, result="timeout")
     except Exception as exc:
+        if lifecycle is not None:
+            lifecycle["wait_ended_at"] = time.perf_counter()
+            lifecycle["initial_result"] = "error"
+            _record_component_diagnostic(
+                lifecycle,
+                source="last_good_cache",
+                fallback_reason="error",
+                initial_result="error",
+                error_type=type(exc).__name__,
+            )
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         logger.warning("player_dashboard_component_failed component=%s fallback=last_good_cache", name, exc_info=True)
         warnings.append(f"{name} fallback cache")

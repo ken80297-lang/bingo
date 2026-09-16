@@ -5,6 +5,7 @@ import logging
 import pathlib
 import sqlite3
 import sys
+import threading
 import time
 from concurrent.futures import Future
 
@@ -27,6 +28,8 @@ def reset_player_dashboard_state():
     player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
     player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
     player_dashboard._PLAYER_ACTIVE_COMPONENTS.clear()
+    for records in player_dashboard._PLAYER_COMPONENT_DIAGNOSTICS.values():
+        records.clear()
     for key in player_dashboard._PLAYER_RUNTIME_METRICS:
         player_dashboard._PLAYER_RUNTIME_METRICS[key] = 0
     yield
@@ -34,6 +37,8 @@ def reset_player_dashboard_state():
     player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
     player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
     player_dashboard._PLAYER_ACTIVE_COMPONENTS.clear()
+    for records in player_dashboard._PLAYER_COMPONENT_DIAGNOSTICS.values():
+        records.clear()
 
 
 class FakeCursor:
@@ -359,6 +364,155 @@ def test_dashboard_component_timeout_fallback_behavior_unchanged():
     assert warnings == ["kuaishou fallback cache"]
     assert timings[0]["result"] == "timeout"
     assert timings[0]["timed_out"] is True
+
+
+def test_prediction_aggregate_success_records_lifecycle_diagnostics(monkeypatch):
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+
+    future, state = player_dashboard._submit_component(
+        "prediction_aggregates",
+        lambda: {"latest_issue": "115052401", "db_timing": {"connect_ms": 1.2, "execute_ms": 3.4, "fetch_ms": 0.5, "total_ms": 5.1}, "query_count": 1},
+    )
+
+    assert state == "submitted"
+    result = player_dashboard._component_result(
+        "prediction_aggregates",
+        future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+        fallback={},
+    )
+
+    diagnostics = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"]
+    assert result["latest_issue"] == "115052401"
+    assert diagnostics[-1]["initial_result"] == "ok"
+    assert diagnostics[-1]["submit_to_start_ms"] is not None
+    assert diagnostics[-1]["submit_to_wait_ms"] is not None
+    assert diagnostics[-1]["wait_ms"] is not None
+    assert diagnostics[-1]["execution_ms"] is not None
+    assert diagnostics[-1]["db_timing"]["execute_ms"] == 3.4
+    assert diagnostics[-1]["query_count"] == 1
+
+
+def test_prediction_aggregate_queued_component_records_submit_to_start(monkeypatch):
+    class DeferredExecutor:
+        def __init__(self):
+            self.fn = None
+            self.future = Future()
+
+        def submit(self, fn):
+            self.fn = fn
+            return self.future
+
+        def run(self):
+            self.future.set_result(self.fn())
+
+    clock_values = [10.0, 10.4, 10.7, 10.8, 10.9, 11.0, 11.1]
+    executor = DeferredExecutor()
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", executor.submit)
+    monkeypatch.setattr(player_dashboard.time, "perf_counter", lambda: clock_values.pop(0) if clock_values else 11.2)
+
+    future, state = player_dashboard._submit_component("prediction_aggregates", lambda: {"db_timing": {"total_ms": 1}, "query_count": 1})
+    executor.run()
+    player_dashboard._component_result(
+        "prediction_aggregates",
+        future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+        fallback={},
+    )
+
+    diagnostics = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"]
+    assert state == "submitted"
+    assert diagnostics[-1]["submit_to_start_ms"] == 400.0
+
+
+def test_prediction_aggregate_timeout_records_late_completion_db_timing():
+    warnings: list[str] = []
+    timings: list[dict] = []
+    started = threading.Event()
+    release = threading.Event()
+    payload = {
+        "latest_issue": "115052402",
+        "db_timing": {"connect_ms": 11.0, "execute_ms": 22.0, "fetch_ms": 0.3, "total_ms": 35.0},
+        "query_count": 1,
+    }
+    player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {"latest_issue": "cached"}
+
+    def slow_aggregate():
+        started.set()
+        release.wait(timeout=5)
+        return payload
+
+    future, state = player_dashboard._submit_component("prediction_aggregates", slow_aggregate)
+    assert state == "submitted"
+    assert started.wait(timeout=2)
+
+    result = player_dashboard._component_result(
+        "prediction_aggregates",
+        future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=0.001,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+        component_metadata={},
+    )
+
+    assert result["latest_issue"] == "cached"
+    assert result["source"] == "cache"
+    assert result["stale"] is True
+    assert timings[0]["result"] == "timeout"
+    timeout_record = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"][-1]
+    assert timeout_record["initial_result"] == "timeout"
+    assert timeout_record["future_running_at_timeout"] is True
+    assert timeout_record["fallback_reason"] == "timeout"
+
+    release.set()
+    assert future.result(timeout=2) == payload
+    late_record = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"][-1]
+    assert late_record["late_result"] == "success"
+    assert late_record["completion_after_wait_ms"] is not None
+    assert late_record["late_completion_ms"] is not None
+    assert late_record["late_db_timing"]["connect_ms"] == 11.0
+    assert late_record["late_db_timing"]["execute_ms"] == 22.0
+    assert late_record["late_db_timing"]["fetch_ms"] == 0.3
+    assert late_record["late_db_timing"]["total_ms"] == 35.0
+    assert player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"]["latest_issue"] == "115052402"
+
+
+def test_prediction_aggregate_diagnostics_are_bounded(monkeypatch):
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+
+    for index in range(player_dashboard._PLAYER_COMPONENT_DIAGNOSTIC_LIMIT + 3):
+        future, _ = player_dashboard._submit_component(
+            "prediction_aggregates",
+            lambda index=index: {"latest_issue": str(index), "db_timing": {"total_ms": index}, "query_count": 1},
+        )
+        player_dashboard._component_result(
+            "prediction_aggregates",
+            future,
+            deadline=time.monotonic() + 1,
+            timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=[],
+            warnings=[],
+            fallback={},
+        )
+
+    diagnostics = player_dashboard.get_prediction_aggregate_component_diagnostics()
+    assert diagnostics["limit"] == player_dashboard._PLAYER_COMPONENT_DIAGNOSTIC_LIMIT
+    assert len(diagnostics["recent"]) == player_dashboard._PLAYER_COMPONENT_DIAGNOSTIC_LIMIT
+    assert diagnostics["recent"][-1]["db_timing"]["total_ms"] == player_dashboard._PLAYER_COMPONENT_DIAGNOSTIC_LIMIT + 2
+
+
+def test_prediction_aggregate_observability_does_not_change_timeout_constants():
+    assert player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS == 1.0
+    assert player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS == 4.5
+    assert getattr(player_dashboard._PLAYER_EXECUTOR, "_max_workers", None) == 6
 
 
 def test_dashboard_component_stage_latency_preserves_result(caplog):
