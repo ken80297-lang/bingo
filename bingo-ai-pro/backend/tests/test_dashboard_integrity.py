@@ -250,6 +250,8 @@ def test_prediction_aggregates_combined_query_count(monkeypatch):
         calls.append(sql)
         assert "with prediction_counts" in sql
         assert "learned_counts" in sql
+        assert "max(p.prediction_issue::bigint)::text as latest_issue" in sql
+        assert "p.prediction_issue::bigint = p.issue::bigint + 1" in sql
         return [(10, 9, 1, 8, 6, 6, 5, 6, 7, "115051970")]
 
     monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
@@ -296,6 +298,66 @@ def test_prediction_aggregates_combined_semantic_equivalence(monkeypatch):
 
     for key, value in old_flow.items():
         assert result[key] == value
+
+
+def test_prediction_aggregates_latest_issue_uses_numeric_production_ordering(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        create table prediction_history (
+            id integer primary key,
+            issue text,
+            prediction_issue text,
+            strategy text,
+            prediction_status text,
+            production_valid integer,
+            production_generation integer,
+            recommend_numbers text,
+            winning_numbers text,
+            matched_numbers text,
+            missed_numbers text,
+            verified_at text
+        )
+        """
+    )
+    conn.execute("create table official_draw_history (issue text, numbers text)")
+    conn.execute(
+        """
+        create table learning_history (
+            issue text,
+            target_issue text,
+            prediction_type text,
+            learned_status text
+        )
+        """
+    )
+    rows = [
+        (1, "120", "121", "HotCold", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+        (2, "999998", "999999", "ProductionFastPath", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+        (3, "115052182", "115052183", "ProductionFastPath", "verified", 1, 2, "[1]", "[1]", "[]", "[]", "2026-09-15T00:00:00+00:00"),
+        (4, "115052183", "115052184", "ProductionFastPath", "verified", 1, 2, "[1]", "[1]", "[]", "[]", "2026-09-15T00:00:00+00:00"),
+        (5, "115052184", "115052185", "ProductionFastPath", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+        (6, "TEST123", "TEST124", "ProductionFastPath", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+        (7, "invalid", "115052186", "ProductionFastPath", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+        (8, None, None, "ProductionFastPath", "waiting_draw", 1, 2, "[1]", None, None, None, None),
+    ]
+    conn.executemany("insert into prediction_history values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    calls = []
+
+    def fake_query(sql, params=(), sqlite_sql=None):
+        calls.append(sqlite_sql or sql)
+        return conn.execute(sqlite_sql or sql, params).fetchall()
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    result = prediction_history_store.get_prediction_lifecycle_aggregates()
+
+    assert result["latest_issue"] == "115052185"
+    assert isinstance(result["latest_issue"], str)
+    assert result["query_count"] == 1
+    assert len(calls) == 1
+    assert "cast(max(cast(p.prediction_issue as integer)) as text)" in calls[0]
 
 
 def test_previous_verification_combined_reader_shape(monkeypatch):

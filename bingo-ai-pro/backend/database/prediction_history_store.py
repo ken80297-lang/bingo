@@ -3916,9 +3916,34 @@ def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = No
                               and jsonb_array_length(winning_numbers) = 20
                               and jsonb_typeof(recommend_numbers) = 'array'
                               and jsonb_array_length(recommend_numbers) > 0
-                             then 1 else 0 end) as valid_sample_count,
-                    max(prediction_issue) filter (where prediction_issue ~ '^[0-9]+$') as latest_issue
+                             then 1 else 0 end) as valid_sample_count
                 from prediction_history
+            ),
+            latest_prediction_issue as (
+                select max(p.prediction_issue::bigint)::text as latest_issue
+                from prediction_history p
+                where p.issue is not null
+                  and p.prediction_issue is not null
+                  and p.issue ~ '^[0-9]+$'
+                  and p.prediction_issue ~ '^[0-9]+$'
+                  and length(p.issue) >= {min_issue_length}
+                  and length(p.prediction_issue) >= {min_issue_length}
+                  and p.issue::bigint >= {production_start_issue}
+                  and p.prediction_issue::bigint >= {production_start_issue}
+                  and p.issue not like '99%%'
+                  and p.prediction_issue not like '99%%'
+                  and upper(p.issue) not like 'TEST%%'
+                  and upper(p.prediction_issue) not like 'TEST%%'
+                  and p.prediction_issue::bigint = p.issue::bigint + 1
+                  and jsonb_typeof(p.recommend_numbers) = 'array'
+                  and jsonb_array_length(p.recommend_numbers) > 0
+                  and coalesce(p.production_valid, true) is true
+                  and (p.production_generation is null or p.production_generation = {production_generation})
+                  and coalesce(lower(p.strategy), '') not like '%%preview%%'
+                  and coalesce(lower(p.strategy), '') not like '%%simulation%%'
+                  and coalesce(lower(p.strategy), '') not like '%%test%%'
+                  and coalesce(lower(p.strategy), '') not like '%%fixture%%'
+                  and coalesce(lower(p.strategy), '') not like '%%synthetic%%'
             ),
             official_counts as (
                 select count(distinct p.prediction_issue) as has_official_result_count
@@ -3945,11 +3970,16 @@ def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = No
                    official_counts.has_official_result_count,
                    prediction_counts.valid_sample_count,
                    learned_counts.learned_distinct_target_count,
-                   prediction_counts.latest_issue
+                   latest_prediction_issue.latest_issue
             from prediction_counts
             cross join official_counts
             cross join learned_counts
-            """,
+            cross join latest_prediction_issue
+            """.format(
+                min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH,
+                production_start_issue=get_production_start_issue(),
+                production_generation=get_production_generation(),
+            ),
             query_tag="prediction_aggregates.combined",
             sqlite_sql="""
             with prediction_counts as (
@@ -3978,9 +4008,34 @@ def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = No
                               and winning_numbers not in ('', '[]')
                               and recommend_numbers is not null
                               and recommend_numbers not in ('', '[]')
-                             then 1 else 0 end) as valid_sample_count,
-                    max(prediction_issue) as latest_issue
+                             then 1 else 0 end) as valid_sample_count
                 from prediction_history
+            ),
+            latest_prediction_issue as (
+                select cast(max(cast(p.prediction_issue as integer)) as text) as latest_issue
+                from prediction_history p
+                where p.issue is not null
+                  and p.prediction_issue is not null
+                  and p.issue not glob '*[^0-9]*'
+                  and p.prediction_issue not glob '*[^0-9]*'
+                  and length(p.issue) >= {min_issue_length}
+                  and length(p.prediction_issue) >= {min_issue_length}
+                  and cast(p.issue as integer) >= {production_start_issue}
+                  and cast(p.prediction_issue as integer) >= {production_start_issue}
+                  and p.issue not like '99%'
+                  and p.prediction_issue not like '99%'
+                  and upper(p.issue) not like 'TEST%'
+                  and upper(p.prediction_issue) not like 'TEST%'
+                  and cast(p.prediction_issue as integer) = cast(p.issue as integer) + 1
+                  and p.recommend_numbers is not null
+                  and p.recommend_numbers not in ('', '[]')
+                  and coalesce(p.production_valid, 1) != 0
+                  and (p.production_generation is null or p.production_generation = {production_generation})
+                  and coalesce(lower(p.strategy), '') not like '%preview%'
+                  and coalesce(lower(p.strategy), '') not like '%simulation%'
+                  and coalesce(lower(p.strategy), '') not like '%test%'
+                  and coalesce(lower(p.strategy), '') not like '%fixture%'
+                  and coalesce(lower(p.strategy), '') not like '%synthetic%'
             ),
             official_counts as (
                 select count(distinct p.prediction_issue) as has_official_result_count
@@ -4007,11 +4062,16 @@ def get_prediction_lifecycle_aggregates(*, diagnostic_component: str | None = No
                    official_counts.has_official_result_count,
                    prediction_counts.valid_sample_count,
                    learned_counts.learned_distinct_target_count,
-                   prediction_counts.latest_issue
+                   latest_prediction_issue.latest_issue
             from prediction_counts
             cross join official_counts
             cross join learned_counts
-            """,
+            cross join latest_prediction_issue
+            """.format(
+                min_issue_length=MIN_PRODUCTION_ISSUE_LENGTH,
+                production_start_issue=get_production_start_issue(),
+                production_generation=get_production_generation(),
+            ),
         ),
     )
     row = rows[0] if rows else [0] * 10
