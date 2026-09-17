@@ -1525,6 +1525,58 @@ def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
     ]
 
 
+def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch):
+    submitted = []
+    original_submit = player_dashboard._submit_component
+
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+
+    def tracking_submit(name, fn):
+        submitted.append(name)
+        return original_submit(name, fn)
+
+    monkeypatch.setattr(player_dashboard, "_submit_component", tracking_submit)
+    monkeypatch.setattr(player_dashboard, "get_player_card_one_snapshot", lambda **kwargs: {
+        "current": {"issue": "115040900"},
+        "official": {},
+        "next_prediction": {"based_on_issue": "115040900"},
+        "detected_latest_issue": "115040900",
+    })
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit, diagnostic_component=None: [])
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_prediction_lifecycle_aggregates",
+        lambda **kwargs: {"latest_issue": "115040901", "db_timing": {"total_ms": 1}, "query_count": 1},
+    )
+    monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
+    monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
+    monkeypatch.setattr(player_dashboard, "production_scope_payload", lambda: {})
+    monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: {})
+    monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(player_dashboard, "_card_two_from_record", lambda record, current, previous_target_issue: {})
+
+    token = player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(1)
+    try:
+        player_dashboard._build_player_dashboard_summary_payload(
+            total_start=time.perf_counter(),
+            deadline=time.monotonic() + player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS,
+            warnings=[],
+            timings=[],
+            generated_at="2026-09-16T00:00:00+00:00",
+            dashboard_generation_id="test",
+            component_metadata={},
+        )
+    finally:
+        player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.reset(token)
+
+    assert submitted[:4] == ["card_two_history", "prediction_aggregates", "analysis", "active_release"]
+    diagnostics = player_dashboard.get_dashboard_component_diagnostics()["components"]
+    aggregate_wait = diagnostics["prediction_aggregates"][-1]["wait_order_position"]
+    card_two_history_wait = diagnostics["card_two_history"][-1]["wait_order_position"]
+    assert aggregate_wait < card_two_history_wait
+    assert diagnostics["prediction_aggregates"][-1]["query_count"] == 1
+
+
 def test_prediction_history_stage_logging_is_dashboard_opt_in(monkeypatch, caplog):
     calls = []
     monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)

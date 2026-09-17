@@ -3054,6 +3054,17 @@ def _build_player_dashboard_summary_payload(
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
     release_future, _ = _submit_component("active_release", get_current_release)
 
+    aggregates = _component_result(
+        "prediction_aggregates",
+        aggregates_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback={},
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
+    ) or {}
     card_two_history = _component_result(
         "card_two_history",
         card_two_history_future,
@@ -3067,17 +3078,6 @@ def _build_player_dashboard_summary_payload(
     ) or []
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
-    aggregates = _component_result(
-        "prediction_aggregates",
-        aggregates_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
     analysis = _component_result(
         "analysis",
         analysis_future,
