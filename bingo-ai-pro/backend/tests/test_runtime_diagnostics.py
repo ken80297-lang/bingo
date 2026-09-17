@@ -41,6 +41,9 @@ def test_runtime_diagnostics_returns_process_local_metadata(monkeypatch):
     }
     assert payload["prediction_aggregate_component_diagnostics"]["limit"] == 20
     assert isinstance(payload["prediction_aggregate_component_diagnostics"]["recent"], list)
+    assert payload["dashboard_component_diagnostics"]["limit"] == 20
+    assert "prediction_aggregates" in payload["dashboard_component_diagnostics"]["components"]
+    assert "card_two_history" in payload["dashboard_component_diagnostics"]["components"]
 
 
 def test_runtime_diagnostics_missing_render_metadata_is_null(monkeypatch):

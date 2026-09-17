@@ -32,6 +32,7 @@ def _render_metadata() -> dict[str, str | None]:
 
 @router.get("/runtime-diagnostics")
 def api_runtime_diagnostics(request: Request) -> dict:
+    from services.player_dashboard import get_dashboard_component_diagnostics
     from services.player_dashboard import get_prediction_aggregate_component_diagnostics
 
     return {
@@ -41,6 +42,7 @@ def api_runtime_diagnostics(request: Request) -> dict:
         "scheduler_flags": get_scheduler_runtime_flags(),
         "collector_db_path": get_collector_db_path_status(),
         "card_two_history_timing": get_card_two_history_timing_status(),
+        "dashboard_component_diagnostics": get_dashboard_component_diagnostics(),
         "prediction_aggregate_component_diagnostics": get_prediction_aggregate_component_diagnostics(),
     }
 

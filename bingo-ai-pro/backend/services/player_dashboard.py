@@ -193,8 +193,13 @@ _PLAYER_RUNTIME_METRICS: dict[str, int] = {
 _PLAYER_COMPONENT_DIAGNOSTIC_LIMIT = 20
 _PLAYER_COMPONENT_DIAGNOSTICS_LOCK = threading.RLock()
 _PLAYER_COMPONENT_DIAGNOSTICS: dict[str, deque[dict[str, Any]]] = {
+    "next_prediction_snapshot": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "card_two_history": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "prediction_aggregates": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "analysis": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "active_release": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
 }
+_PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT: ContextVar[int | None] = ContextVar("player_dashboard_wait_order", default=None)
 
 
 def _now() -> str:
@@ -383,6 +388,18 @@ def _record_component_diagnostic(lifecycle: dict[str, Any] | None, **updates: An
         record.update(_component_lifecycle_fields(lifecycle))
         record.update({key: deepcopy(value) for key, value in updates.items() if value is not None})
         return record
+
+
+def get_dashboard_component_diagnostics() -> dict:
+    with _PLAYER_COMPONENT_DIAGNOSTICS_LOCK:
+        records = {
+            component: list(component_records)
+            for component, component_records in _PLAYER_COMPONENT_DIAGNOSTICS.items()
+        }
+    return {
+        "limit": _PLAYER_COMPONENT_DIAGNOSTIC_LIMIT,
+        "components": deepcopy(records),
+    }
 
 
 def get_prediction_aggregate_component_diagnostics() -> dict:
@@ -711,8 +728,13 @@ def _component_result(
 ):
     started = time.perf_counter()
     lifecycle = getattr(future, "_dashboard_lifecycle", None) if future is not None else None
+    wait_order_position = _PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.get()
+    if wait_order_position is not None:
+        _PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(wait_order_position + 1)
     if lifecycle is not None:
         lifecycle["wait_started_at"] = started
+        if wait_order_position is not None:
+            lifecycle["wait_order_position"] = wait_order_position
     def remember(payload: Any, source: str, *, timed_out: bool = False, result: str = "ok") -> Any:
         if component_metadata is not None:
             component_metadata[name] = _component_metadata(
@@ -750,11 +772,20 @@ def _component_result(
         return remember(_load_component_cache(name, fallback), "cache", result="stale")
 
     remaining = _deadline_remaining(deadline)
+    future_done_at_wait = future.done()
+    remaining_budget_at_wait_ms = round(remaining * 1000, 2)
     if remaining <= 0:
         if lifecycle is not None:
             lifecycle["wait_ended_at"] = time.perf_counter()
             lifecycle["initial_result"] = "skipped"
-            _record_component_diagnostic(lifecycle, source="last_good_cache", fallback_reason="budget_exhausted")
+            _record_component_diagnostic(
+                lifecycle,
+                source="last_good_cache",
+                fallback_reason="budget_exhausted",
+                wait_order_position=wait_order_position,
+                remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
+                future_done_at_wait=future_done_at_wait,
+            )
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         warnings.append(f"{name} skipped budget")
         timings.append(_timed_default(name, started, "skipped", "last_good_cache", reason="budget_exhausted"))
@@ -770,6 +801,9 @@ def _component_result(
                 lifecycle,
                 initial_result="ok",
                 source="fresh",
+                wait_order_position=wait_order_position,
+                remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
+                future_done_at_wait=future_done_at_wait,
                 db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
                 query_count=result.get("query_count") if isinstance(result, dict) else None,
             )
@@ -789,6 +823,9 @@ def _component_result(
                 lifecycle,
                 source="last_good_cache",
                 timeout_seconds=round(wait_seconds, 3),
+                wait_order_position=wait_order_position,
+                remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
+                future_done_at_wait=future_done_at_wait,
                 future_running_at_timeout=future.running(),
                 cancel_requested=cancel_requested,
                 cancelled=future.cancelled(),
@@ -830,6 +867,9 @@ def _component_result(
                 source="last_good_cache",
                 fallback_reason="error",
                 initial_result="error",
+                wait_order_position=wait_order_position,
+                remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
+                future_done_at_wait=future_done_at_wait,
                 error_type=type(exc).__name__,
             )
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
@@ -2820,6 +2860,7 @@ def _build_player_dashboard_summary_uncached() -> dict:
     dashboard_generation_id = _dashboard_generation_id()
     component_metadata: dict[str, dict] = {}
     generation_token = _PLAYER_DASHBOARD_GENERATION_CONTEXT.set(dashboard_generation_id)
+    wait_order_token = _PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(1)
     try:
         return _build_player_dashboard_summary_payload(
             total_start=total_start,
@@ -2831,6 +2872,7 @@ def _build_player_dashboard_summary_uncached() -> dict:
             component_metadata=component_metadata,
         )
     finally:
+        _PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.reset(wait_order_token)
         _PLAYER_DASHBOARD_GENERATION_CONTEXT.reset(generation_token)
 
 

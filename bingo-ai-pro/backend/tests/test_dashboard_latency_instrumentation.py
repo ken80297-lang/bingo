@@ -392,8 +392,42 @@ def test_prediction_aggregate_success_records_lifecycle_diagnostics(monkeypatch)
     assert diagnostics[-1]["submit_to_wait_ms"] is not None
     assert diagnostics[-1]["wait_ms"] is not None
     assert diagnostics[-1]["execution_ms"] is not None
+    assert diagnostics[-1]["future_done_at_wait"] is True
+    assert diagnostics[-1]["remaining_budget_at_wait_ms"] is not None
     assert diagnostics[-1]["db_timing"]["execute_ms"] == 3.4
     assert diagnostics[-1]["query_count"] == 1
+
+
+def test_prediction_aggregate_budget_exhausted_records_wait_state(monkeypatch):
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+    player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {"latest_issue": "cached"}
+
+    future, state = player_dashboard._submit_component(
+        "prediction_aggregates",
+        lambda: {"latest_issue": "115052401", "db_timing": {"total_ms": 1}, "query_count": 1},
+    )
+
+    assert state == "submitted"
+    token = player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(4)
+    try:
+        result = player_dashboard._component_result(
+            "prediction_aggregates",
+            future,
+            deadline=time.monotonic() - 1,
+            timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=[],
+            warnings=[],
+            fallback={},
+        )
+    finally:
+        player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.reset(token)
+
+    diagnostics = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"]
+    assert result["latest_issue"] == "115052401"
+    assert diagnostics[-1]["fallback_reason"] == "budget_exhausted"
+    assert diagnostics[-1]["future_done_at_wait"] is True
+    assert diagnostics[-1]["remaining_budget_at_wait_ms"] == 0.0
+    assert diagnostics[-1]["wait_order_position"] == 4
 
 
 def test_prediction_aggregate_queued_component_records_submit_to_start(monkeypatch):
