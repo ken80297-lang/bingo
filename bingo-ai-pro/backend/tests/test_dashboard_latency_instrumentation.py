@@ -398,6 +398,52 @@ def test_prediction_aggregate_success_records_lifecycle_diagnostics(monkeypatch)
     assert diagnostics[-1]["query_count"] == 1
 
 
+def test_next_prediction_snapshot_records_nested_diagnostics(monkeypatch):
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+    payload = {
+        "target_issue": "115052001",
+        "diagnostics": {
+            "query_count": 1,
+            "transform_ms": 2.3,
+            "total_execution_observed_ms": 12.4,
+            "stages": [
+                {
+                    "stage": "latest_prediction_context_lookup",
+                    "duration_ms": 10.1,
+                    "db_timing": {"connect_ms": 1.0, "execute_ms": 8.0, "fetch_ms": 0.1, "total_ms": 9.5},
+                    "query_count": 1,
+                },
+                {
+                    "stage": "prediction_from_history",
+                    "duration_ms": 2.3,
+                    "db_timing": None,
+                    "query_count": 0,
+                },
+            ],
+        },
+    }
+
+    future, state = player_dashboard._submit_component("next_prediction_snapshot", lambda: payload)
+
+    assert state == "submitted"
+    player_dashboard._component_result(
+        "next_prediction_snapshot",
+        future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+        fallback={},
+    )
+
+    diagnostics = player_dashboard.get_dashboard_component_diagnostics()["components"]
+    record = diagnostics["next_prediction_snapshot"][-1]
+    assert record["initial_result"] == "ok"
+    assert record["diagnostics"]["query_count"] == 1
+    assert record["diagnostics"]["transform_ms"] == 2.3
+    assert record["diagnostics"]["stages"][0]["db_timing"]["execute_ms"] == 8.0
+
+
 def test_prediction_aggregate_budget_exhausted_records_wait_state(monkeypatch):
     monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
     player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {"latest_issue": "cached"}

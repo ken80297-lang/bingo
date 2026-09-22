@@ -615,6 +615,7 @@ def _submit_component(name: str, fn):
                 lifecycle["execution_completed_at"] = time.perf_counter()
                 if isinstance(result, dict):
                     lifecycle["db_timing"] = deepcopy(result.get("db_timing"))
+                    lifecycle["diagnostics"] = deepcopy(result.get("diagnostics"))
                     lifecycle["query_count"] = result.get("query_count")
         except Exception as exc:
             if lifecycle is not None:
@@ -701,6 +702,7 @@ def _complete_component(
                 if lifecycle.get("execution_completed_at") is not None and lifecycle.get("submitted_at") is not None
                 else None,
                 late_db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
+                late_diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
             )
     updated = _store_component_cache(name, result)
     logger.warning(
@@ -804,6 +806,7 @@ def _component_result(
                 wait_order_position=wait_order_position,
                 remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
                 future_done_at_wait=future_done_at_wait,
+                diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
                 db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
                 query_count=result.get("query_count") if isinstance(result, dict) else None,
             )
@@ -1599,6 +1602,29 @@ def _prediction_from_history(
         "history": {},
         "laowanjia": {},
     }
+
+
+def _attach_next_prediction_diagnostics(
+    payload: dict | None,
+    diagnostics: dict[str, Any],
+    transform_started: float,
+    diagnostic_started: float,
+) -> dict | None:
+    transform_ms = round((time.perf_counter() - transform_started) * 1000, 2)
+    diagnostics["transform_ms"] = transform_ms
+    diagnostics["total_execution_observed_ms"] = round((time.perf_counter() - diagnostic_started) * 1000, 2)
+    diagnostics["stages"].append(
+        {
+            "stage": "prediction_from_history",
+            "duration_ms": transform_ms,
+            "db_timing": None,
+            "query_count": 0,
+        }
+    )
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        payload["diagnostics"] = diagnostics
+    return payload
 
 
 def _alert_level(value: int) -> dict:
@@ -2665,10 +2691,27 @@ def get_player_card_one_snapshot(
     next_prediction = None
     if current:
         def build_next_snapshot():
+            diagnostic_started = time.perf_counter()
+            diagnostics: dict[str, Any] = {
+                "stages": [],
+                "query_count": 0,
+            }
+            context_started = time.perf_counter()
             context = _timed_component_stage(
                 "next_prediction_snapshot",
                 "latest_prediction_context_lookup",
-                lambda: get_latest_prediction_context(allow_fallback_lookup=False),
+                lambda: get_latest_prediction_context(allow_fallback_lookup=False, include_timing=True),
+            )
+            context_db_timing = (context or {}).get("db_timing") if isinstance(context, dict) else None
+            if context_db_timing:
+                diagnostics["query_count"] += int((context or {}).get("query_count") or 1)
+            diagnostics["stages"].append(
+                {
+                    "stage": "latest_prediction_context_lookup",
+                    "duration_ms": round((time.perf_counter() - context_started) * 1000, 2),
+                    "db_timing": deepcopy(context_db_timing),
+                    "query_count": (context or {}).get("query_count") if isinstance(context, dict) else None,
+                }
             )
             context_draw = (context or {}).get("draw") or current
             if str((context_draw or {}).get("issue") or "") != str((current or {}).get("issue") or ""):
@@ -2678,10 +2721,16 @@ def get_player_card_one_snapshot(
                 record = (context or {}).get("prediction")
             if record:
                 _store_component_cache("latest_prediction", record)
+            transform_started = time.perf_counter()
             return _timed_component_stage(
                 "next_prediction_snapshot",
                 "prediction_from_history",
-                lambda: _prediction_from_history(record, context_draw, detected_latest_issue, allow_slow_lookups=False),
+                lambda: _attach_next_prediction_diagnostics(
+                    _prediction_from_history(record, context_draw, detected_latest_issue, allow_slow_lookups=False),
+                    diagnostics,
+                    transform_started,
+                    diagnostic_started,
+                ),
             )
 
         prediction_future, _ = _submit_component(

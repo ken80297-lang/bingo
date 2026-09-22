@@ -4329,9 +4329,8 @@ def get_prediction_summary_for_source_target(source_issue: str, target_issue: st
     return record
 
 
-def get_latest_prediction_context(*, allow_fallback_lookup: bool = True) -> dict | None:
-    rows = _query_with_fallback(
-        """
+def get_latest_prediction_context(*, allow_fallback_lookup: bool = True, include_timing: bool = False) -> dict | None:
+    sql = """
         with latest as (
             select id, issue, draw_date, draw_time, numbers, open_order_numbers,
                    super_number, win_no_only, source, verification_status, fetched_at,
@@ -4360,8 +4359,8 @@ def get_latest_prediction_context(*, allow_fallback_lookup: bool = True) -> dict
         select latest.*, prediction.*
         from latest
         left join prediction on true
-        """.format(columns=PREDICTION_SELECT_COLUMNS),
-        sqlite_sql="""
+        """.format(columns=PREDICTION_SELECT_COLUMNS)
+    sqlite_sql = """
         with latest as (
             select id, issue, draw_date, draw_time, numbers, open_order_numbers,
                    super_number, win_no_only, source, verification_status, fetched_at,
@@ -4389,8 +4388,16 @@ def get_latest_prediction_context(*, allow_fallback_lookup: bool = True) -> dict
         select latest.*, prediction.*
         from latest
         left join prediction on 1 = 1
-        """.format(columns=PREDICTION_SELECT_COLUMNS),
-    )
+        """.format(columns=PREDICTION_SELECT_COLUMNS)
+    if include_timing:
+        rows, timing = _timed_prediction_query(
+            sql,
+            query_tag="next_prediction_snapshot.latest_prediction_context",
+            sqlite_sql=sqlite_sql,
+        )
+    else:
+        rows = _query_with_fallback(sql, sqlite_sql=sqlite_sql)
+        timing = None
     if not rows:
         return None
     from database.official_draw_store import _row_to_official
@@ -4402,11 +4409,15 @@ def get_latest_prediction_context(*, allow_fallback_lookup: bool = True) -> dict
     target_issue = str(int(source_issue) + 1) if source_issue else None
     if prediction is None and source_issue and target_issue and allow_fallback_lookup:
         prediction = get_prediction_for_source_target(source_issue, target_issue)
-    return {
+    result = {
         "draw": draw,
         "prediction": prediction,
         "target_issue": target_issue,
     }
+    if include_timing:
+        result["db_timing"] = timing
+        result["query_count"] = 1
+    return result
 
 
 def get_latest_verified_prediction_at_or_before(issue: str) -> dict | None:

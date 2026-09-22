@@ -515,3 +515,54 @@ def test_latest_prediction_context_can_skip_fallback_lookup(monkeypatch):
     assert result["draw"]["issue"] == "115051970"
     assert result["prediction"] is None
     assert result["target_issue"] == "115051971"
+
+
+def test_latest_prediction_context_include_timing_is_opt_in(monkeypatch):
+    row = (
+        55,
+        "115051970",
+        "2026-09-14",
+        "2026-09-14T00:05:00+00:00",
+        list(range(1, 21)),
+        list(range(1, 21)),
+        7,
+        False,
+        "official",
+        "verified",
+        None,
+        True,
+        {},
+        "2026-09-14T00:05:00+00:00",
+        "2026-09-14T00:05:00+00:00",
+    ) + (None,) * len(prediction_history_store.PREDICTION_SELECT_COLUMNS.split(","))
+    timing = {
+        "query_tag": "next_prediction_snapshot.latest_prediction_context",
+        "connect_ms": 1.2,
+        "execute_ms": 3.4,
+        "fetch_ms": 0.5,
+        "total_ms": 5.1,
+    }
+    calls = []
+
+    def fake_timed_query(sql, params=(), **kwargs):
+        calls.append(kwargs)
+        return [row], timing
+
+    monkeypatch.setattr(prediction_history_store, "_timed_prediction_query", fake_timed_query)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "get_prediction_for_source_target",
+        lambda source, target: pytest.fail("fallback lookup should be disabled"),
+    )
+
+    result = prediction_history_store.get_latest_prediction_context(
+        allow_fallback_lookup=False,
+        include_timing=True,
+    )
+
+    assert result["draw"]["issue"] == "115051970"
+    assert result["prediction"] is None
+    assert result["target_issue"] == "115051971"
+    assert result["db_timing"] == timing
+    assert result["query_count"] == 1
+    assert calls[-1]["query_tag"] == "next_prediction_snapshot.latest_prediction_context"
