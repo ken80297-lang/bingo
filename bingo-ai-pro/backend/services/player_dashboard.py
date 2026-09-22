@@ -577,6 +577,25 @@ def _timed_component_stage(component: str, stage: str, fn):
     return result
 
 
+def _record_prediction_transform_stage(
+    diagnostics: dict[str, Any] | None,
+    stage: str,
+    started: float,
+    *,
+    result: str = "ok",
+    **extra: Any,
+) -> None:
+    if diagnostics is None:
+        return
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    stage_record = {
+        "elapsed_ms": elapsed_ms,
+        "result": result,
+    }
+    stage_record.update({key: value for key, value in extra.items() if value is not None})
+    diagnostics.setdefault("transform_stages", {})[stage] = stage_record
+
+
 def _public_step_name(name: str) -> str:
     return {
         "prediction_history": "history",
@@ -1501,12 +1520,36 @@ def _prediction_from_history(
     detected_latest_issue: Any = None,
     *,
     allow_slow_lookups: bool = True,
+    transform_diagnostics: dict[str, Any] | None = None,
 ) -> dict | None:
+    transform_total_started = time.perf_counter()
     if not record:
+        if transform_diagnostics is not None:
+            transform_diagnostics["transform_total_ms"] = round((time.perf_counter() - transform_total_started) * 1000, 2)
+            transform_diagnostics["transform_accounted_ms"] = 0.0
+            transform_diagnostics["transform_unaccounted_ms"] = transform_diagnostics["transform_total_ms"]
         return None
+
+    stage_started = time.perf_counter()
     numbers = _as_int_list(record.get("recommend_numbers"))
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "prediction_number_parsing",
+        stage_started,
+        number_count=len(numbers),
+        io_type="python",
+        query_count=0,
+    )
     if not numbers:
+        if transform_diagnostics is not None:
+            total_ms = round((time.perf_counter() - transform_total_started) * 1000, 2)
+            accounted_ms = round(sum(stage.get("elapsed_ms") or 0 for stage in transform_diagnostics.get("transform_stages", {}).values()), 2)
+            transform_diagnostics["transform_total_ms"] = total_ms
+            transform_diagnostics["transform_accounted_ms"] = accounted_ms
+            transform_diagnostics["transform_unaccounted_ms"] = round(max(total_ms - accounted_ms, 0.0), 2)
         return None
+
+    stage_started = time.perf_counter()
     database_latest_issue = (current_draw or {}).get("issue")
     current_issue = detected_latest_issue or database_latest_issue
     based_on_issue = (
@@ -1517,6 +1560,15 @@ def _prediction_from_history(
         record.get("prediction_issue")
         or record.get("target_issue")
     )
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "record_context_normalization",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
     if _valid_production_issue(target_issue):
         target_issue_source = "stored"
     else:
@@ -1525,10 +1577,36 @@ def _prediction_from_history(
         target_issue_source = "derived_from_source_issue" if derived else "unavailable"
     status = _target_status(target_issue, current_issue)
     freshness = _dashboard_prediction_freshness(target_issue, current_issue)
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "issue_status_freshness",
+        stage_started,
+        target_issue_source=target_issue_source,
+        io_type="python",
+        query_count=0,
+    )
     if freshness.get("lag_issues") is not None and freshness.get("lag_issues") > 1:
+        if transform_diagnostics is not None:
+            total_ms = round((time.perf_counter() - transform_total_started) * 1000, 2)
+            accounted_ms = round(sum(stage.get("elapsed_ms") or 0 for stage in transform_diagnostics.get("transform_stages", {}).values()), 2)
+            transform_diagnostics["transform_total_ms"] = total_ms
+            transform_diagnostics["transform_accounted_ms"] = accounted_ms
+            transform_diagnostics["transform_unaccounted_ms"] = round(max(total_ms - accounted_ms, 0.0), 2)
         return None
+
+    stage_started = time.perf_counter()
     refresh = prediction_refresh_status(current_draw, record)
     expected_time, expected_source = _expected_draw_time(record, current_draw)
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "verification_status_processing",
+        stage_started,
+        helper_calls=["prediction_refresh_status", "_expected_draw_time"],
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
     if based_on_issue and str(based_on_issue) == str((current_draw or {}).get("issue") or ""):
         based_draw = current_draw
     else:
@@ -1543,10 +1621,87 @@ def _prediction_from_history(
         "based_on_draw_time": _format_draw_time(record.get("based_on_draw_time") or record.get("source_draw_time")),
         "based_on_time_source": "snapshot" if (record.get("based_on_draw_time") or record.get("source_draw_time")) else "unavailable",
     }
+    hidden_lookup_count = int(
+        bool(based_on_issue and str(based_on_issue) != str((current_draw or {}).get("issue") or "") and allow_slow_lookups)
+    )
+    operation_event_lookup_count = int(bool(can_resolve_based_time and based_on_issue and not (based_draw or {}).get("draw_time")))
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "based_on_time_lookup",
+        stage_started,
+        helper_calls=["get_official_draw_by_issue", "_based_on_time", "get_latest_operation_event"],
+        hidden_db_lookup_count=hidden_lookup_count + operation_event_lookup_count,
+        slow_lookup_allowed=allow_slow_lookups,
+        io_type="db_possible" if hidden_lookup_count or operation_event_lookup_count else "python",
+        query_count=hidden_lookup_count + operation_event_lookup_count,
+    )
+
+    stage_started = time.perf_counter()
     recommendation_warning = None
     if len(numbers) < 20:
         recommendation_warning = f"目前僅產生 {len(numbers)} 個有效推薦號碼"
-    return {
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "recommendation_warning",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
+    metadata_payload = {
+        "super_number": record.get("super_number"),
+        "confidence": record.get("confidence") or 0,
+        "release_version": record.get("release_version"),
+        "git_commit_hash": record.get("git_commit_hash"),
+        "production_generation": record.get("production_generation"),
+        "feature_version": record.get("feature_version"),
+        "model_scores": record.get("model_scores") or {},
+        "winning_model": record.get("winning_model"),
+        "source": record.get("source") or "production_history",
+        "trigger": record.get("trigger") or "production_read_layer",
+        "production_valid": is_production_prediction(record),
+        "read_layer": record.get("read_layer") or {},
+        "reasons": record.get("reasons") or [],
+    }
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "metadata_extraction",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
+    twins = _twins(numbers)
+    consecutive = record.get("consecutive") or _pairs(numbers, 1)
+    patch_numbers = record.get("patch_numbers") or _patch_numbers(numbers)
+    tails = record.get("tails") or _tails(numbers)
+    tail_groups = _tail_groups(numbers)
+    big_small = record.get("big_small") or _big_small(numbers)
+    odd_even = record.get("odd_even") or _odd_even(numbers)
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "rule_strategy_processing",
+        stage_started,
+        helper_calls=["_twins", "_pairs", "_patch_numbers", "_tails", "_tail_groups", "_big_small", "_odd_even"],
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
+    alerts = _alerts(numbers, metadata_payload["super_number"])
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "alert_processing",
+        stage_started,
+        helper_calls=["_alerts", "_pairs", "_patch_numbers"],
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
+    payload = {
         "target_issue": target_issue,
         "prediction_issue": target_issue,
         "target_issue_source": target_issue_source,
@@ -1577,31 +1732,33 @@ def _prediction_from_history(
         "recommend_numbers": numbers,
         "recommendation_warning": recommendation_warning,
         "backup_numbers": [],
-        "super_number": record.get("super_number"),
-        "twins": _twins(numbers),
-        "consecutive": record.get("consecutive") or _pairs(numbers, 1),
-        "patch_numbers": record.get("patch_numbers") or _patch_numbers(numbers),
-        "tails": record.get("tails") or _tails(numbers),
-        "tail_groups": _tail_groups(numbers),
-        "big_small": record.get("big_small") or _big_small(numbers),
-        "odd_even": record.get("odd_even") or _odd_even(numbers),
-        "confidence": record.get("confidence") or 0,
+        "twins": twins,
+        "consecutive": consecutive,
+        "patch_numbers": patch_numbers,
+        "tails": tails,
+        "tail_groups": tail_groups,
+        "big_small": big_small,
+        "odd_even": odd_even,
         "model_version": "V7",
-        "release_version": record.get("release_version"),
-        "git_commit_hash": record.get("git_commit_hash"),
-        "production_generation": record.get("production_generation"),
-        "feature_version": record.get("feature_version"),
-        "model_scores": record.get("model_scores") or {},
-        "winning_model": record.get("winning_model"),
-        "source": record.get("source") or "production_history",
-        "trigger": record.get("trigger") or "production_read_layer",
-        "production_valid": is_production_prediction(record),
-        "read_layer": record.get("read_layer") or {},
-        "reasons": record.get("reasons") or [],
-        "alerts": _alerts(numbers, record.get("super_number")),
+        "alerts": alerts,
         "history": {},
         "laowanjia": {},
+        **metadata_payload,
     }
+    _record_prediction_transform_stage(
+        transform_diagnostics,
+        "final_payload_construction",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+    if transform_diagnostics is not None:
+        total_ms = round((time.perf_counter() - transform_total_started) * 1000, 2)
+        accounted_ms = round(sum(stage.get("elapsed_ms") or 0 for stage in transform_diagnostics.get("transform_stages", {}).values()), 2)
+        transform_diagnostics["transform_total_ms"] = total_ms
+        transform_diagnostics["transform_accounted_ms"] = accounted_ms
+        transform_diagnostics["transform_unaccounted_ms"] = round(max(total_ms - accounted_ms, 0.0), 2)
+    return payload
 
 
 def _attach_next_prediction_diagnostics(
@@ -1612,6 +1769,11 @@ def _attach_next_prediction_diagnostics(
 ) -> dict | None:
     transform_ms = round((time.perf_counter() - transform_started) * 1000, 2)
     diagnostics["transform_ms"] = transform_ms
+    diagnostics.setdefault("transform_total_ms", transform_ms)
+    transform_stages = diagnostics.get("transform_stages") or {}
+    accounted_ms = round(sum(stage.get("elapsed_ms") or 0 for stage in transform_stages.values()), 2)
+    diagnostics.setdefault("transform_accounted_ms", accounted_ms)
+    diagnostics.setdefault("transform_unaccounted_ms", round(max(diagnostics["transform_total_ms"] - diagnostics["transform_accounted_ms"], 0.0), 2))
     diagnostics["total_execution_observed_ms"] = round((time.perf_counter() - diagnostic_started) * 1000, 2)
     diagnostics["stages"].append(
         {
@@ -2730,7 +2892,13 @@ def get_player_card_one_snapshot(
                 "next_prediction_snapshot",
                 "prediction_from_history",
                 lambda: _attach_next_prediction_diagnostics(
-                    _prediction_from_history(record, context_draw, detected_latest_issue, allow_slow_lookups=False),
+                    _prediction_from_history(
+                        record,
+                        context_draw,
+                        detected_latest_issue,
+                        allow_slow_lookups=False,
+                        transform_diagnostics=diagnostics,
+                    ),
                     diagnostics,
                     transform_started,
                     diagnostic_started,
