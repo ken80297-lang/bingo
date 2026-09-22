@@ -507,9 +507,94 @@ def test_prediction_from_history_records_stage_diagnostics_without_hidden_io(mon
     assert all((stage.get("query_count") or 0) == 0 for stage in diagnostics["transform_stages"].values())
 
 
+def test_prediction_from_history_fast_path_uses_loaded_collected_at_without_operation_event(monkeypatch):
+    current = {
+        "issue": "115052000",
+        "draw_time": None,
+        "collected_at": "2026-09-22T10:05:00+00:00",
+        "numbers": list(range(1, 21)),
+    }
+    record = {
+        "issue": "115052000",
+        "prediction_issue": "115052001",
+        "recommend_numbers": list(range(1, 21)),
+        "super_number": 7,
+        "confidence": 62,
+        "production_valid": True,
+        "production_generation": 2,
+    }
+    diagnostics = {"stages": [], "query_count": 0}
+
+    def unexpected_lookup(*args, **kwargs):
+        raise AssertionError("allow_slow_lookups=False must not read operation events")
+
+    monkeypatch.setattr(player_dashboard, "get_latest_operation_event", unexpected_lookup)
+
+    payload = player_dashboard._prediction_from_history(
+        record,
+        current,
+        "115052000",
+        allow_slow_lookups=False,
+        transform_diagnostics=diagnostics,
+    )
+
+    assert payload["prediction_issue"] == "115052001"
+    assert payload["recommend_numbers"] == list(range(1, 21))
+    assert payload["based_on_draw_time"] == "2026/09/22 10:05:00"
+    assert payload["based_on_time_source"] == "official_draw_collected_at"
+    based_stage = diagnostics["transform_stages"]["based_on_time_lookup"]
+    assert based_stage["query_count"] == 0
+    assert based_stage["hidden_db_lookup_count"] == 0
+    assert based_stage["io_type"] == "python"
+    assert based_stage["helper_calls"] == ["_snapshot_based_on_time"]
+
+
+def test_prediction_from_history_slow_path_keeps_operation_event_fallback(monkeypatch):
+    current = {
+        "issue": "115052000",
+        "draw_time": None,
+        "numbers": list(range(1, 21)),
+    }
+    record = {
+        "issue": "115052000",
+        "prediction_issue": "115052001",
+        "recommend_numbers": list(range(1, 21)),
+        "super_number": 7,
+        "confidence": 62,
+        "production_valid": True,
+        "production_generation": 2,
+    }
+    diagnostics = {"stages": [], "query_count": 0}
+    calls = []
+
+    def fake_event(event_type, issue):
+        calls.append((event_type, issue))
+        return {"created_at": "2026-09-22T10:06:00+00:00"}
+
+    monkeypatch.setattr(player_dashboard, "get_latest_operation_event", fake_event)
+
+    payload = player_dashboard._prediction_from_history(
+        record,
+        current,
+        "115052000",
+        allow_slow_lookups=True,
+        transform_diagnostics=diagnostics,
+    )
+
+    assert calls == [("official_draw_saved", "115052000")]
+    assert payload["based_on_draw_time"] == "2026/09/22 10:06:00"
+    assert payload["based_on_time_source"] == "official_draw_saved_event"
+    assert payload["recommend_numbers"] == list(range(1, 21))
+    based_stage = diagnostics["transform_stages"]["based_on_time_lookup"]
+    assert based_stage["query_count"] == 1
+    assert based_stage["hidden_db_lookup_count"] == 1
+    assert based_stage["io_type"] == "db_possible"
+    assert "get_latest_operation_event" in based_stage["helper_calls"]
+
+
 def test_card_one_next_prediction_context_uses_dashboard_read_pool(monkeypatch):
     captured = []
-    current = {"issue": "115052000", "draw_time": "2026-09-22T10:00:00+00:00", "numbers": list(range(1, 21))}
+    current = {"issue": "115052000", "draw_time": None, "collected_at": "2026-09-22T10:00:00+00:00", "numbers": list(range(1, 21))}
     record = {
         "issue": "115052000",
         "prediction_issue": "115052001",
@@ -544,6 +629,8 @@ def test_card_one_next_prediction_context_uses_dashboard_read_pool(monkeypatch):
     next_diagnostics = snapshot["next_prediction"]["diagnostics"]
     assert "transform_stages" in next_diagnostics
     assert next_diagnostics["transform_stages"]["based_on_time_lookup"]["query_count"] == 0
+    assert next_diagnostics["transform_stages"]["based_on_time_lookup"]["hidden_db_lookup_count"] == 0
+    assert snapshot["next_prediction"]["based_on_time_source"] == "official_draw_collected_at"
     assert next_diagnostics["transform_accounted_ms"] + next_diagnostics["transform_unaccounted_ms"] >= next_diagnostics["transform_total_ms"] - 0.02
     assert captured == [
         {

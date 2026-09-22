@@ -1362,6 +1362,37 @@ def _based_on_time(based_on_issue: Any, based_draw: dict | None) -> dict:
     }
 
 
+def _snapshot_based_on_time(record: dict, based_draw: dict | None) -> dict:
+    stored = record.get("based_on_draw_time") or record.get("source_draw_time")
+    stored_time = _format_draw_time(stored)
+    if stored_time:
+        return {
+            "based_on_draw_time": stored_time,
+            "based_on_time_source": "snapshot",
+        }
+    draw_time = _format_draw_time((based_draw or {}).get("draw_time"))
+    if draw_time:
+        return {
+            "based_on_draw_time": draw_time,
+            "based_on_time_source": "official_draw_time",
+        }
+    collected_at = (
+        (based_draw or {}).get("collected_at")
+        or (based_draw or {}).get("updated_at")
+        or (based_draw or {}).get("created_at")
+    )
+    collected_time = _format_draw_time(collected_at)
+    if collected_time:
+        return {
+            "based_on_draw_time": collected_time,
+            "based_on_time_source": "official_draw_collected_at",
+        }
+    return {
+        "based_on_draw_time": None,
+        "based_on_time_source": "unavailable",
+    }
+
+
 def _expected_draw_time(next_data: dict, current_draw: dict | None) -> tuple[str | None, str]:
     stored = (
         next_data.get("expected_draw_time")
@@ -1617,23 +1648,30 @@ def _prediction_from_history(
         or bool((based_draw or {}).get("draw_time"))
         or bool((based_draw or {}).get("collected_at"))
     )
-    based_time = _based_on_time(based_on_issue, based_draw) if can_resolve_based_time else {
-        "based_on_draw_time": _format_draw_time(record.get("based_on_draw_time") or record.get("source_draw_time")),
-        "based_on_time_source": "snapshot" if (record.get("based_on_draw_time") or record.get("source_draw_time")) else "unavailable",
-    }
-    hidden_lookup_count = int(
-        bool(based_on_issue and str(based_on_issue) != str((current_draw or {}).get("issue") or "") and allow_slow_lookups)
-    )
-    operation_event_lookup_count = int(bool(can_resolve_based_time and based_on_issue and not (based_draw or {}).get("draw_time")))
+    if allow_slow_lookups:
+        based_time = _based_on_time(based_on_issue, based_draw) if can_resolve_based_time else _snapshot_based_on_time(record, based_draw)
+        hidden_lookup_count = int(
+            bool(based_on_issue and str(based_on_issue) != str((current_draw or {}).get("issue") or "") and allow_slow_lookups)
+        )
+        operation_event_lookup_count = int(bool(can_resolve_based_time and based_on_issue and not (based_draw or {}).get("draw_time")))
+        based_time_query_count = hidden_lookup_count + operation_event_lookup_count
+        based_time_io_type = "db_possible" if based_time_query_count else "python"
+        based_time_helpers = ["get_official_draw_by_issue", "_based_on_time", "get_latest_operation_event"]
+    else:
+        based_time = _snapshot_based_on_time(record, based_draw)
+        based_time_query_count = 0
+        based_time_io_type = "python"
+        based_time_helpers = ["_snapshot_based_on_time"]
     _record_prediction_transform_stage(
         transform_diagnostics,
         "based_on_time_lookup",
         stage_started,
-        helper_calls=["get_official_draw_by_issue", "_based_on_time", "get_latest_operation_event"],
-        hidden_db_lookup_count=hidden_lookup_count + operation_event_lookup_count,
+        helper_calls=based_time_helpers,
+        hidden_db_lookup_count=based_time_query_count,
         slow_lookup_allowed=allow_slow_lookups,
-        io_type="db_possible" if hidden_lookup_count or operation_event_lookup_count else "python",
-        query_count=hidden_lookup_count + operation_event_lookup_count,
+        time_source=based_time["based_on_time_source"],
+        io_type=based_time_io_type,
+        query_count=based_time_query_count,
     )
 
     stage_started = time.perf_counter()
