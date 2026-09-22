@@ -444,6 +444,49 @@ def test_next_prediction_snapshot_records_nested_diagnostics(monkeypatch):
     assert record["diagnostics"]["stages"][0]["db_timing"]["execute_ms"] == 8.0
 
 
+def test_card_one_next_prediction_context_uses_dashboard_read_pool(monkeypatch):
+    captured = []
+    current = {"issue": "115052000", "numbers": list(range(1, 21))}
+    record = {
+        "issue": "115052000",
+        "prediction_issue": "115052001",
+        "recommend_numbers": list(range(1, 21)),
+        "super_number": 7,
+        "confidence": 62,
+    }
+
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+    monkeypatch.setattr(player_dashboard, "get_latest_official_draw", lambda: current)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: {})
+
+    def fake_context(**kwargs):
+        captured.append(kwargs)
+        return {
+            "draw": current,
+            "prediction": record,
+            "target_issue": "115052001",
+            "db_timing": {"connect_ms": 0.01, "pool_acquire_ms": 0.01, "execute_ms": 1.0, "fetch_ms": 0.01, "total_ms": 1.5},
+            "query_count": 1,
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_latest_prediction_context", fake_context)
+
+    snapshot = player_dashboard.get_player_card_one_snapshot(
+        deadline=time.monotonic() + player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS,
+        timings=[],
+        warnings=[],
+    )
+
+    assert snapshot["next_prediction"]["prediction_issue"] == "115052001"
+    assert captured == [
+        {
+            "allow_fallback_lookup": False,
+            "include_timing": True,
+            "use_dashboard_read_pool": True,
+        }
+    ]
+
+
 def test_prediction_aggregate_budget_exhausted_records_wait_state(monkeypatch):
     monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
     player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {"latest_issue": "cached"}

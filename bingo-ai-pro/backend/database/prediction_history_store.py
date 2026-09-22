@@ -4329,7 +4329,12 @@ def get_prediction_summary_for_source_target(source_issue: str, target_issue: st
     return record
 
 
-def get_latest_prediction_context(*, allow_fallback_lookup: bool = True, include_timing: bool = False) -> dict | None:
+def get_latest_prediction_context(
+    *,
+    allow_fallback_lookup: bool = True,
+    include_timing: bool = False,
+    use_dashboard_read_pool: bool = False,
+) -> dict | None:
     sql = """
         with latest as (
             select id, issue, draw_date, draw_time, numbers, open_order_numbers,
@@ -4389,14 +4394,26 @@ def get_latest_prediction_context(*, allow_fallback_lookup: bool = True, include
         from latest
         left join prediction on 1 = 1
         """.format(columns=PREDICTION_SELECT_COLUMNS)
+    cloud_connection_factory = _dashboard_read_connection if use_dashboard_read_pool else None
+    use_shared_connection = not use_dashboard_read_pool
     if include_timing:
         rows, timing = _timed_prediction_query(
             sql,
             query_tag="next_prediction_snapshot.latest_prediction_context",
             sqlite_sql=sqlite_sql,
+            cloud_connection_factory=cloud_connection_factory,
+            use_shared_connection=use_shared_connection,
         )
     else:
-        rows = _query_with_fallback(sql, sqlite_sql=sqlite_sql)
+        if cloud_connection_factory is None and use_shared_connection:
+            rows = _query_with_fallback(sql, sqlite_sql=sqlite_sql)
+        else:
+            rows = _query_with_fallback(
+                sql,
+                sqlite_sql=sqlite_sql,
+                cloud_connection_factory=cloud_connection_factory,
+                use_shared_connection=use_shared_connection,
+            )
         timing = None
     if not rows:
         return None

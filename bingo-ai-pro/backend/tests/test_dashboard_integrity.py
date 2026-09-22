@@ -566,3 +566,62 @@ def test_latest_prediction_context_include_timing_is_opt_in(monkeypatch):
     assert result["db_timing"] == timing
     assert result["query_count"] == 1
     assert calls[-1]["query_tag"] == "next_prediction_snapshot.latest_prediction_context"
+    assert calls[-1]["cloud_connection_factory"] is None
+    assert calls[-1]["use_shared_connection"] is True
+
+
+def test_latest_prediction_context_can_use_dashboard_read_pool(monkeypatch):
+    row = (
+        55,
+        "115051970",
+        "2026-09-14",
+        "2026-09-14T00:05:00+00:00",
+        list(range(1, 21)),
+        list(range(1, 21)),
+        7,
+        False,
+        "official",
+        "verified",
+        None,
+        True,
+        {},
+        "2026-09-14T00:05:00+00:00",
+        "2026-09-14T00:05:00+00:00",
+    ) + (None,) * len(prediction_history_store.PREDICTION_SELECT_COLUMNS.split(","))
+    timing = {
+        "query_tag": "next_prediction_snapshot.latest_prediction_context",
+        "connect_ms": 0.01,
+        "pool_acquire_ms": 0.01,
+        "connection_reused": True,
+        "execute_ms": 3.4,
+        "fetch_ms": 0.5,
+        "total_ms": 5.1,
+    }
+    calls = []
+
+    def fake_dashboard_connection():
+        raise AssertionError("factory should be passed, not called by context assembly")
+
+    def fake_timed_query(sql, params=(), **kwargs):
+        calls.append(kwargs)
+        return [row], timing
+
+    monkeypatch.setattr(prediction_history_store, "_dashboard_read_connection", fake_dashboard_connection)
+    monkeypatch.setattr(prediction_history_store, "_timed_prediction_query", fake_timed_query)
+    monkeypatch.setattr(
+        prediction_history_store,
+        "get_prediction_for_source_target",
+        lambda source, target: pytest.fail("fallback lookup should be disabled"),
+    )
+
+    result = prediction_history_store.get_latest_prediction_context(
+        allow_fallback_lookup=False,
+        include_timing=True,
+        use_dashboard_read_pool=True,
+    )
+
+    assert result["draw"]["issue"] == "115051970"
+    assert result["db_timing"] == timing
+    assert result["query_count"] == 1
+    assert calls[-1]["cloud_connection_factory"] is fake_dashboard_connection
+    assert calls[-1]["use_shared_connection"] is False

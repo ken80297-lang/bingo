@@ -2700,7 +2700,11 @@ def get_player_card_one_snapshot(
             context = _timed_component_stage(
                 "next_prediction_snapshot",
                 "latest_prediction_context_lookup",
-                lambda: get_latest_prediction_context(allow_fallback_lookup=False, include_timing=True),
+                lambda: get_latest_prediction_context(
+                    allow_fallback_lookup=False,
+                    include_timing=True,
+                    use_dashboard_read_pool=True,
+                ),
             )
             context_db_timing = (context or {}).get("db_timing") if isinstance(context, dict) else None
             if context_db_timing:
