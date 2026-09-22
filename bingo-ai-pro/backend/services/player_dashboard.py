@@ -193,11 +193,15 @@ _PLAYER_RUNTIME_METRICS: dict[str, int] = {
 _PLAYER_COMPONENT_DIAGNOSTIC_LIMIT = 20
 _PLAYER_COMPONENT_DIAGNOSTICS_LOCK = threading.RLock()
 _PLAYER_COMPONENT_DIAGNOSTICS: dict[str, deque[dict[str, Any]]] = {
+    "official_draw": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "kuaishou": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "next_prediction_snapshot": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "card_two_history": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "prediction_aggregates": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "analysis": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
     "active_release": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "previous_verification": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
+    "card_two": deque(maxlen=_PLAYER_COMPONENT_DIAGNOSTIC_LIMIT),
 }
 _PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT: ContextVar[int | None] = ContextVar("player_dashboard_wait_order", default=None)
 
@@ -388,6 +392,22 @@ def _record_component_diagnostic(lifecycle: dict[str, Any] | None, **updates: An
         record.update(_component_lifecycle_fields(lifecycle))
         record.update({key: deepcopy(value) for key, value in updates.items() if value is not None})
         return record
+
+
+def _component_wait_classification(lifecycle: dict[str, Any] | None, future_done_at_wait: bool, fallback_reason: str | None = None) -> str | None:
+    if future_done_at_wait:
+        return "completed_before_wait"
+    if not lifecycle or lifecycle.get("execution_started_at") is None:
+        if fallback_reason == "budget_exhausted":
+            return "not_started_budget_exhausted"
+        return "not_started"
+    if lifecycle.get("execution_completed_at") is not None:
+        return "completed_after_wait_started"
+    if fallback_reason == "budget_exhausted":
+        return "running_budget_exhausted"
+    if fallback_reason == "timeout":
+        return "running_timeout"
+    return "running"
 
 
 def get_dashboard_component_diagnostics() -> dict:
@@ -699,7 +719,7 @@ def _complete_component(
         lifecycle = getattr(future, "_dashboard_lifecycle", None)
         if lifecycle is not None:
             lifecycle.setdefault("execution_completed_at", time.perf_counter())
-            if lifecycle.get("initial_result") == "timeout":
+            if lifecycle.get("initial_result") in {"timeout", "skipped"}:
                 _record_component_diagnostic(
                     lifecycle,
                     late_result="failed",
@@ -713,7 +733,7 @@ def _complete_component(
     lifecycle = getattr(future, "_dashboard_lifecycle", None)
     if lifecycle is not None:
         lifecycle.setdefault("execution_completed_at", time.perf_counter())
-        if lifecycle.get("initial_result") == "timeout":
+        if lifecycle.get("initial_result") in {"timeout", "skipped"}:
             _record_component_diagnostic(
                 lifecycle,
                 late_result="success",
@@ -756,6 +776,7 @@ def _component_result(
         lifecycle["wait_started_at"] = started
         if wait_order_position is not None:
             lifecycle["wait_order_position"] = wait_order_position
+        lifecycle["timeout_requested_ms"] = round(timeout_seconds * 1000, 2)
     def remember(payload: Any, source: str, *, timed_out: bool = False, result: str = "ok") -> Any:
         if component_metadata is not None:
             component_metadata[name] = _component_metadata(
@@ -801,8 +822,14 @@ def _component_result(
             lifecycle["initial_result"] = "skipped"
             _record_component_diagnostic(
                 lifecycle,
+                initial_result="skipped",
                 source="last_good_cache",
                 fallback_reason="budget_exhausted",
+                skip_reason="budget_exhausted",
+                timeout_requested_ms=round(timeout_seconds * 1000, 2),
+                timeout_effective_ms=0.0,
+                status="skipped",
+                wait_classification=_component_wait_classification(lifecycle, future_done_at_wait, "budget_exhausted"),
                 wait_order_position=wait_order_position,
                 remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
                 future_done_at_wait=future_done_at_wait,
@@ -813,6 +840,7 @@ def _component_result(
         return remember(_load_component_cache(name, fallback), "fallback", result="skipped")
 
     wait_seconds = max(0.0, min(timeout_seconds, remaining))
+    timeout_effective_ms = round(wait_seconds * 1000, 2)
     try:
         result = future.result(timeout=wait_seconds)
         if lifecycle is not None:
@@ -825,6 +853,10 @@ def _component_result(
                 wait_order_position=wait_order_position,
                 remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
                 future_done_at_wait=future_done_at_wait,
+                timeout_requested_ms=round(timeout_seconds * 1000, 2),
+                timeout_effective_ms=timeout_effective_ms,
+                status="ok",
+                wait_classification=_component_wait_classification(lifecycle, future_done_at_wait),
                 diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
                 db_timing=deepcopy(result.get("db_timing")) if isinstance(result, dict) else None,
                 query_count=result.get("query_count") if isinstance(result, dict) else None,
@@ -853,6 +885,11 @@ def _component_result(
                 cancelled=future.cancelled(),
                 timed_out=timed_out,
                 fallback_reason="timeout",
+                timeout_reason="component_timeout",
+                timeout_requested_ms=round(timeout_seconds * 1000, 2),
+                timeout_effective_ms=timeout_effective_ms,
+                status="timeout",
+                wait_classification=_component_wait_classification(lifecycle, future_done_at_wait, "timeout"),
                 initial_result="timeout",
                 in_flight_count=_player_in_flight_count(),
             )
@@ -889,6 +926,10 @@ def _component_result(
                 source="last_good_cache",
                 fallback_reason="error",
                 initial_result="error",
+                timeout_requested_ms=round(timeout_seconds * 1000, 2),
+                timeout_effective_ms=timeout_effective_ms,
+                status="error",
+                wait_classification=_component_wait_classification(lifecycle, future_done_at_wait, "error"),
                 wait_order_position=wait_order_position,
                 remaining_budget_at_wait_ms=remaining_budget_at_wait_ms,
                 future_done_at_wait=future_done_at_wait,

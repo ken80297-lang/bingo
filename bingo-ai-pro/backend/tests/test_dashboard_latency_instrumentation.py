@@ -394,8 +394,42 @@ def test_prediction_aggregate_success_records_lifecycle_diagnostics(monkeypatch)
     assert diagnostics[-1]["execution_ms"] is not None
     assert diagnostics[-1]["future_done_at_wait"] is True
     assert diagnostics[-1]["remaining_budget_at_wait_ms"] is not None
+    assert diagnostics[-1]["timeout_requested_ms"] == player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS * 1000
+    assert diagnostics[-1]["timeout_effective_ms"] > 0
+    assert diagnostics[-1]["status"] == "ok"
+    assert diagnostics[-1]["wait_classification"] == "completed_before_wait"
     assert diagnostics[-1]["db_timing"]["execute_ms"] == 3.4
     assert diagnostics[-1]["query_count"] == 1
+
+
+def test_previous_verification_and_card_two_have_component_diagnostics(monkeypatch):
+    monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
+
+    previous_future, _ = player_dashboard._submit_component("previous_verification", lambda: {"target_issue": "115052000"})
+    card_two_future, _ = player_dashboard._submit_component("card_two", lambda: {"target_issue": "115052000"})
+
+    player_dashboard._component_result(
+        "previous_verification",
+        previous_future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+    )
+    player_dashboard._component_result(
+        "card_two",
+        card_two_future,
+        deadline=time.monotonic() + 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+    )
+
+    diagnostics = player_dashboard.get_dashboard_component_diagnostics()["components"]
+    assert diagnostics["previous_verification"][-1]["initial_result"] == "ok"
+    assert diagnostics["previous_verification"][-1]["status"] == "ok"
+    assert diagnostics["card_two"][-1]["initial_result"] == "ok"
+    assert diagnostics["card_two"][-1]["timeout_requested_ms"] == player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS * 1000
 
 
 def test_next_prediction_snapshot_records_nested_diagnostics(monkeypatch):
@@ -671,6 +705,11 @@ def test_prediction_aggregate_budget_exhausted_records_wait_state(monkeypatch):
     assert diagnostics[-1]["future_done_at_wait"] is True
     assert diagnostics[-1]["remaining_budget_at_wait_ms"] == 0.0
     assert diagnostics[-1]["wait_order_position"] == 4
+    assert diagnostics[-1]["timeout_requested_ms"] == player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS * 1000
+    assert diagnostics[-1]["timeout_effective_ms"] == 0.0
+    assert diagnostics[-1]["status"] == "skipped"
+    assert diagnostics[-1]["skip_reason"] == "budget_exhausted"
+    assert diagnostics[-1]["wait_classification"] == "completed_before_wait"
 
 
 def test_prediction_aggregate_queued_component_records_submit_to_start(monkeypatch):
@@ -748,6 +787,11 @@ def test_prediction_aggregate_timeout_records_late_completion_db_timing():
     assert timeout_record["initial_result"] == "timeout"
     assert timeout_record["future_running_at_timeout"] is True
     assert timeout_record["fallback_reason"] == "timeout"
+    assert timeout_record["timeout_reason"] == "component_timeout"
+    assert timeout_record["timeout_requested_ms"] == 1.0
+    assert timeout_record["timeout_effective_ms"] == 1.0
+    assert timeout_record["status"] == "timeout"
+    assert timeout_record["wait_classification"] == "running_timeout"
 
     release.set()
     assert future.result(timeout=2) == payload
@@ -760,6 +804,50 @@ def test_prediction_aggregate_timeout_records_late_completion_db_timing():
     assert late_record["late_db_timing"]["fetch_ms"] == 0.3
     assert late_record["late_db_timing"]["total_ms"] == 35.0
     assert player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"]["latest_issue"] == "115052402"
+
+
+def test_budget_exhausted_running_future_records_late_completion():
+    started = threading.Event()
+    release = threading.Event()
+    payload = {
+        "latest_issue": "115052403",
+        "db_timing": {"connect_ms": 1.0, "execute_ms": 2.0, "fetch_ms": 0.1, "total_ms": 3.1},
+        "query_count": 1,
+    }
+    player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {"latest_issue": "cached"}
+
+    def slow_aggregate():
+        started.set()
+        release.wait(timeout=5)
+        return payload
+
+    future, state = player_dashboard._submit_component("prediction_aggregates", slow_aggregate)
+    assert state == "submitted"
+    assert started.wait(timeout=2)
+
+    result = player_dashboard._component_result(
+        "prediction_aggregates",
+        future,
+        deadline=time.monotonic() - 1,
+        timeout_seconds=player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timings=[],
+        warnings=[],
+        fallback={},
+        component_metadata={},
+    )
+
+    assert result["latest_issue"] == "cached"
+    skipped_record = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"][-1]
+    assert skipped_record["initial_result"] == "skipped"
+    assert skipped_record["wait_classification"] == "running_budget_exhausted"
+    assert skipped_record["future_done_at_wait"] is False
+
+    release.set()
+    assert future.result(timeout=2) == payload
+    late_record = player_dashboard.get_prediction_aggregate_component_diagnostics()["recent"][-1]
+    assert late_record["late_result"] == "success"
+    assert late_record["late_db_timing"]["execute_ms"] == 2.0
+    assert late_record["execution_completed_at"] is not None
 
 
 def test_prediction_aggregate_diagnostics_are_bounded(monkeypatch):
