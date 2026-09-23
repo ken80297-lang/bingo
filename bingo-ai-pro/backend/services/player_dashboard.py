@@ -2040,20 +2040,68 @@ def _unavailable_previous_result(requested_target_issue: Any) -> dict:
     }
 
 
-def _verification(record: dict | None, draw: dict | None) -> dict | None:
+def _verification(
+    record: dict | None,
+    draw: dict | None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict | None:
     if not record:
         return None
+    stage_started = time.perf_counter()
     predicted = _as_int_list(record.get("recommend_numbers"))
     draw_numbers = _as_int_list(record.get("winning_numbers") or (draw or {}).get("numbers"))
+    _record_prediction_transform_stage(
+        diagnostics,
+        "prediction_number_processing",
+        stage_started,
+        predicted_count=len(predicted),
+        draw_count=len(draw_numbers),
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
     matched_set = set(draw_numbers)
     matched = [number for number in predicted if number in matched_set]
     missed = [number for number in predicted if number not in matched_set]
+    _record_prediction_transform_stage(
+        diagnostics,
+        "matching_comparison",
+        stage_started,
+        matched_count=len(matched),
+        missed_count=len(missed),
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
     predicted_super = _as_int(record.get("super_number"))
     actual_super = _as_int((draw or {}).get("super_number"))
     if actual_super is None:
         actual_super = _as_int(record.get("actual_super"))
+    _record_prediction_transform_stage(
+        diagnostics,
+        "super_number_processing",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+
+    stage_started = time.perf_counter()
     draw_time_payload = _based_on_time(record.get("prediction_issue"), draw)
-    return {
+    _record_prediction_transform_stage(
+        diagnostics,
+        "based_on_time_helper",
+        stage_started,
+        helper_calls=["_based_on_time", "get_latest_operation_event"],
+        hidden_db_lookup_count=int(bool(record.get("prediction_issue") and not (draw or {}).get("draw_time"))),
+        time_source=draw_time_payload.get("based_on_time_source"),
+        io_type="db_possible" if record.get("prediction_issue") and not (draw or {}).get("draw_time") else "python",
+        query_count=int(bool(record.get("prediction_issue") and not (draw or {}).get("draw_time"))),
+    )
+
+    stage_started = time.perf_counter()
+    payload = {
         "target_issue": record.get("prediction_issue"),
         "prediction_status": record.get("prediction_status"),
         "prediction_created_at": record.get("predict_time") or record.get("created_at"),
@@ -2086,6 +2134,14 @@ def _verification(record: dict | None, draw: dict | None) -> dict | None:
         "production_valid": is_production_prediction(record),
         "verification_status": "verified" if draw_numbers else "pending",
     }
+    _record_prediction_transform_stage(
+        diagnostics,
+        "result_build",
+        stage_started,
+        io_type="python",
+        query_count=0,
+    )
+    return payload
 
 
 def _history_item(record: dict) -> dict:
@@ -3032,20 +3088,114 @@ def get_player_card_one_snapshot(
 
 
 def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
+    total_started = time.perf_counter()
+    diagnostics: dict[str, Any] = {
+        "query_count": 0,
+        "sql_execute_count": 0,
+        "db_checkout_count": 0,
+        "hidden_db_round_trips": 0,
+        "transform_stages": {},
+    }
+    combined_started = time.perf_counter()
     combined = _timed_component_stage(
         "previous_verification",
         "previous_verification_combined_lookup",
         lambda: get_previous_verification_summary_snapshot(str(previous_target_issue)),
     )
+    combined_elapsed_ms = round((time.perf_counter() - combined_started) * 1000, 2)
+    db_timing = combined.get("db_timing") or {}
+    db_total_ms = db_timing.get("total_ms") if isinstance(db_timing.get("total_ms"), (int, float)) else 0.0
+    diagnostics["transform_stages"]["combined_lookup"] = {
+        "elapsed_ms": combined_elapsed_ms,
+        "io_type": "db",
+        "query_count": 1,
+        "db_checkout_count": 1,
+    }
+    diagnostics["transform_stages"]["db_query"] = {
+        "elapsed_ms": round(float(db_total_ms or 0.0), 2),
+        "io_type": "db",
+        "query_count": 1,
+        "db_checkout_count": 1,
+        "connect_ms": db_timing.get("connect_ms"),
+        "pool_acquire_ms": db_timing.get("pool_acquire_ms"),
+        "execute_ms": db_timing.get("execute_ms"),
+        "fetch_ms": db_timing.get("fetch_ms"),
+        "connection_release_ms": db_timing.get("connection_release_ms"),
+        "connection_hash": db_timing.get("connection_hash"),
+    }
+    diagnostics["transform_stages"]["store_row_transform"] = {
+        "elapsed_ms": round(max(combined_elapsed_ms - float(db_total_ms or 0.0), 0.0), 2),
+        "io_type": "python",
+        "query_count": 0,
+    }
+    diagnostics["query_count"] = 1
+    diagnostics["sql_execute_count"] = 1
+    diagnostics["db_checkout_count"] = 1
+    diagnostics["connection_hash"] = db_timing.get("connection_hash")
     verified_record = combined.get("record")
     previous_result_mode = combined.get("mode") or "unavailable"
     displayed_target_issue = (verified_record or {}).get("prediction_issue")
     verification_draw = combined.get("draw")
-    previous_verification = _verification(verified_record, verification_draw) if verified_record else _unavailable_previous_result(previous_target_issue)
+    verification_started = time.perf_counter()
+    verification_diagnostics: dict[str, Any] = {"transform_stages": {}}
+    previous_verification = (
+        _verification(verified_record, verification_draw, verification_diagnostics)
+        if verified_record
+        else _unavailable_previous_result(previous_target_issue)
+    )
+    verification_elapsed_ms = round((time.perf_counter() - verification_started) * 1000, 2)
+    diagnostics["transform_stages"]["verification_payload"] = {
+        "elapsed_ms": verification_elapsed_ms,
+        "io_type": "python",
+        "query_count": sum(
+            int(stage.get("query_count") or 0)
+            for stage in (verification_diagnostics.get("transform_stages") or {}).values()
+        ),
+    }
+    for stage_name, stage in (verification_diagnostics.get("transform_stages") or {}).items():
+        diagnostics["transform_stages"][stage_name] = stage
+    hidden_db_round_trips = sum(
+        int(stage.get("hidden_db_lookup_count") or 0)
+        for stage in diagnostics["transform_stages"].values()
+    )
+    diagnostics["hidden_db_round_trips"] = hidden_db_round_trips
+    diagnostics["query_count"] = 1 + hidden_db_round_trips
+    diagnostics["sql_execute_count"] = 1 + hidden_db_round_trips
+    diagnostics["db_checkout_count"] = 1 + hidden_db_round_trips
+    total_ms = round((time.perf_counter() - total_started) * 1000, 2)
+    accounted_ms = round(
+        (db_timing.get("connect_ms") or db_timing.get("pool_acquire_ms") or 0)
+        + (db_timing.get("execute_ms") or 0)
+        + (db_timing.get("fetch_ms") or 0)
+        + diagnostics["transform_stages"]["store_row_transform"]["elapsed_ms"]
+        + sum(
+            stage.get("elapsed_ms") or 0
+            for name, stage in diagnostics["transform_stages"].items()
+            if name
+            not in {
+                "combined_lookup",
+                "db_query",
+                "store_row_transform",
+                "verification_payload",
+            }
+        ),
+        2,
+    )
+    diagnostics["total_execution_observed_ms"] = total_ms
+    diagnostics["post_db_ms"] = round(
+        diagnostics["transform_stages"]["store_row_transform"]["elapsed_ms"] + verification_elapsed_ms,
+        2,
+    )
+    diagnostics["accounted_ms"] = accounted_ms
+    diagnostics["unaccounted_ms"] = round(max(total_ms - accounted_ms, 0.0), 2)
     previous_verification["previous_result_mode"] = previous_result_mode
     previous_verification["requested_target_issue"] = previous_target_issue
     previous_verification["displayed_target_issue"] = displayed_target_issue
-    previous_verification["db_timing"] = combined.get("db_timing") or {}
+    previous_verification["db_timing"] = db_timing
+    previous_verification["diagnostics"] = {
+        "previous_verification_execution": diagnostics,
+    }
+    previous_verification["query_count"] = diagnostics["query_count"]
     return previous_verification
 
 

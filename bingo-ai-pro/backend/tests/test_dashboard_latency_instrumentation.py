@@ -432,6 +432,60 @@ def test_previous_verification_and_card_two_have_component_diagnostics(monkeypat
     assert diagnostics["card_two"][-1]["timeout_requested_ms"] == player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS * 1000
 
 
+def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
+    def fake_summary(target_issue):
+        return {
+            "mode": "exact_previous",
+            "record": {
+                "prediction_issue": target_issue,
+                "prediction_status": "verified",
+                "recommend_numbers": [1, 2, 3, 4, 5],
+                "winning_numbers": [1, 3, 5, 7, 9],
+                "super_number": 7,
+                "actual_super": 9,
+                "production_generation": 2,
+                "production_valid": True,
+            },
+            "draw": {
+                "issue": target_issue,
+                "numbers": [1, 3, 5, 7, 9],
+                "super_number": 9,
+                "draw_time": "2026-09-23T00:00:00+00:00",
+            },
+            "db_timing": {
+                "query_tag": "previous_verification.combined",
+                "connect_ms": 10.0,
+                "pool_acquire_ms": 10.0,
+                "execute_ms": 20.0,
+                "fetch_ms": 1.0,
+                "total_ms": 35.0,
+                "row_count": 1,
+                "connection_hash": "abc123",
+            },
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_previous_verification_summary_snapshot", fake_summary)
+
+    payload = player_dashboard._build_previous_verification_snapshot("115052000")
+
+    execution = payload["diagnostics"]["previous_verification_execution"]
+    stages = execution["transform_stages"]
+    assert payload["query_count"] == 1
+    assert execution["sql_execute_count"] == 1
+    assert execution["db_checkout_count"] == 1
+    assert execution["hidden_db_round_trips"] == 0
+    assert execution["connection_hash"] == "abc123"
+    assert stages["db_query"]["connect_ms"] == 10.0
+    assert stages["db_query"]["execute_ms"] == 20.0
+    assert stages["db_query"]["fetch_ms"] == 1.0
+    assert stages["prediction_number_processing"]["predicted_count"] == 5
+    assert stages["matching_comparison"]["matched_count"] == 3
+    assert stages["based_on_time_helper"]["query_count"] == 0
+    assert stages["result_build"]["query_count"] == 0
+    assert execution["post_db_ms"] >= 0
+    assert execution["unaccounted_ms"] >= 0
+
+
 def test_next_prediction_snapshot_records_nested_diagnostics(monkeypatch):
     monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
     payload = {
