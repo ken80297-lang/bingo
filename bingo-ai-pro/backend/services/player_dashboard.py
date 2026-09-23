@@ -2044,6 +2044,8 @@ def _verification(
     record: dict | None,
     draw: dict | None,
     diagnostics: dict[str, Any] | None = None,
+    *,
+    allow_slow_lookups: bool = True,
 ) -> dict | None:
     if not record:
         return None
@@ -2088,16 +2090,26 @@ def _verification(
     )
 
     stage_started = time.perf_counter()
-    draw_time_payload = _based_on_time(record.get("prediction_issue"), draw)
+    draw_time_payload = (
+        _based_on_time(record.get("prediction_issue"), draw)
+        if allow_slow_lookups
+        else _snapshot_based_on_time(record, draw)
+    )
+    hidden_time_lookup = bool(
+        allow_slow_lookups
+        and record.get("prediction_issue")
+        and not (draw or {}).get("draw_time")
+    )
     _record_prediction_transform_stage(
         diagnostics,
         "based_on_time_helper",
         stage_started,
-        helper_calls=["_based_on_time", "get_latest_operation_event"],
-        hidden_db_lookup_count=int(bool(record.get("prediction_issue") and not (draw or {}).get("draw_time"))),
+        helper_calls=["_based_on_time", "get_latest_operation_event"] if allow_slow_lookups else ["_snapshot_based_on_time"],
+        hidden_db_lookup_count=int(hidden_time_lookup),
+        slow_lookup_allowed=allow_slow_lookups,
         time_source=draw_time_payload.get("based_on_time_source"),
-        io_type="db_possible" if record.get("prediction_issue") and not (draw or {}).get("draw_time") else "python",
-        query_count=int(bool(record.get("prediction_issue") and not (draw or {}).get("draw_time"))),
+        io_type="db_possible" if hidden_time_lookup else "python",
+        query_count=int(hidden_time_lookup),
     )
 
     stage_started = time.perf_counter()
@@ -3139,7 +3151,12 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
     verification_started = time.perf_counter()
     verification_diagnostics: dict[str, Any] = {"transform_stages": {}}
     previous_verification = (
-        _verification(verified_record, verification_draw, verification_diagnostics)
+        _verification(
+            verified_record,
+            verification_draw,
+            verification_diagnostics,
+            allow_slow_lookups=False,
+        )
         if verified_record
         else _unavailable_previous_result(previous_target_issue)
     )

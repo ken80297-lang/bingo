@@ -486,6 +486,117 @@ def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
     assert execution["unaccounted_ms"] >= 0
 
 
+def test_dashboard_previous_verification_uses_snapshot_time_without_hidden_lookup(monkeypatch):
+    def fail_operation_lookup(*args, **kwargs):
+        raise AssertionError("dashboard previous_verification must not query operation_events")
+
+    def fake_summary(target_issue):
+        return {
+            "mode": "exact_previous",
+            "record": {
+                "prediction_issue": target_issue,
+                "prediction_status": "verified",
+                "recommend_numbers": [1, 2, 3, 4, 5],
+                "winning_numbers": [1, 3, 5, 7, 9],
+                "production_generation": 2,
+                "production_valid": True,
+            },
+            "draw": {
+                "issue": target_issue,
+                "numbers": [1, 3, 5, 7, 9],
+                "super_number": 9,
+                "created_at": "2026-09-23T00:00:00+00:00",
+            },
+            "db_timing": {
+                "query_tag": "previous_verification.combined",
+                "connect_ms": 10.0,
+                "pool_acquire_ms": 10.0,
+                "execute_ms": 20.0,
+                "fetch_ms": 1.0,
+                "total_ms": 35.0,
+                "row_count": 1,
+                "connection_hash": "abc123",
+            },
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_latest_operation_event", fail_operation_lookup)
+    monkeypatch.setattr(player_dashboard, "get_previous_verification_summary_snapshot", fake_summary)
+
+    payload = player_dashboard._build_previous_verification_snapshot("115052000")
+
+    execution = payload["diagnostics"]["previous_verification_execution"]
+    based_on_stage = execution["transform_stages"]["based_on_time_helper"]
+    assert payload["draw_time"] == "2026/09/23 00:00:00"
+    assert payload["draw_time_source"] == "official_draw_collected_at"
+    assert based_on_stage["slow_lookup_allowed"] is False
+    assert based_on_stage["hidden_db_lookup_count"] == 0
+    assert based_on_stage["query_count"] == 0
+    assert based_on_stage["time_source"] == "official_draw_collected_at"
+    assert execution["hidden_db_round_trips"] == 0
+    assert execution["query_count"] == 1
+    assert execution["sql_execute_count"] == 1
+    assert execution["db_checkout_count"] == 1
+
+
+def test_verification_slow_lookup_default_is_preserved(monkeypatch):
+    calls = []
+
+    def fake_operation_lookup(event_type, issue):
+        calls.append((event_type, issue))
+        return {"created_at": "2026-09-23T00:01:00+00:00"}
+
+    record = {
+        "prediction_issue": "115052000",
+        "prediction_status": "verified",
+        "recommend_numbers": [1, 2, 3],
+        "winning_numbers": [1, 3, 5],
+        "production_generation": 2,
+        "production_valid": True,
+    }
+    draw = {"issue": "115052000", "numbers": [1, 3, 5], "super_number": 9}
+    diagnostics = {"transform_stages": {}}
+
+    monkeypatch.setattr(player_dashboard, "get_latest_operation_event", fake_operation_lookup)
+
+    payload = player_dashboard._verification(record, draw, diagnostics)
+
+    assert calls == [("official_draw_saved", "115052000")]
+    assert payload["draw_time"] == "2026/09/23 00:01:00"
+    assert payload["draw_time_source"] == "official_draw_saved_event"
+    assert diagnostics["transform_stages"]["based_on_time_helper"]["hidden_db_lookup_count"] == 1
+    assert diagnostics["transform_stages"]["based_on_time_helper"]["query_count"] == 1
+
+
+def test_verification_snapshot_time_matches_slow_path_when_draw_time_loaded(monkeypatch):
+    def fail_operation_lookup(*args, **kwargs):
+        raise AssertionError("draw_time should avoid operation_events")
+
+    record = {
+        "prediction_issue": "115052000",
+        "prediction_status": "verified",
+        "recommend_numbers": [1, 2, 3],
+        "winning_numbers": [1, 3, 5],
+        "super_number": 7,
+        "actual_super": 9,
+        "production_generation": 2,
+        "production_valid": True,
+    }
+    draw = {
+        "issue": "115052000",
+        "numbers": [1, 3, 5],
+        "super_number": 9,
+        "draw_time": "2026-09-23T00:02:00+00:00",
+    }
+
+    monkeypatch.setattr(player_dashboard, "get_latest_operation_event", fail_operation_lookup)
+
+    slow_payload = player_dashboard._verification(record, draw)
+    fast_payload = player_dashboard._verification(record, draw, allow_slow_lookups=False)
+
+    assert fast_payload == slow_payload
+    assert fast_payload["draw_time_source"] == "official_draw_time"
+
+
 def test_next_prediction_snapshot_records_nested_diagnostics(monkeypatch):
     monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
     payload = {
