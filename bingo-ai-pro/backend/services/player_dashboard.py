@@ -3204,6 +3204,13 @@ def _build_player_dashboard_summary_payload(
             f"Production sync stale: database latest issue {(current or {}).get('issue')} "
             f"is behind detected issue {detected_latest_issue}."
         )
+    previous_target_issue = next_prediction.get("based_on_issue")
+    previous_future = None
+    if current and previous_target_issue:
+        previous_future, _ = _submit_component(
+            "previous_verification",
+            lambda: _build_previous_verification_snapshot(previous_target_issue),
+        )
 
     if not current:
         stale_steps = [
@@ -3424,12 +3431,7 @@ def _build_player_dashboard_summary_payload(
     next_prediction["rule_library"] = rule_library
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
 
-    previous_target_issue = next_prediction.get("based_on_issue")
-    if previous_target_issue:
-        previous_future, _ = _submit_component(
-            "previous_verification",
-            lambda: _build_previous_verification_snapshot(previous_target_issue),
-        )
+    if previous_future is not None:
         previous_verification = _component_result(
             "previous_verification",
             previous_future,

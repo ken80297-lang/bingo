@@ -1858,6 +1858,7 @@ def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
 
 def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch):
     submitted = []
+    previous_targets = []
     original_submit = player_dashboard._submit_component
 
     monkeypatch.setattr(player_dashboard._PLAYER_EXECUTOR, "submit", lambda fn: _completed_future(fn()))
@@ -1882,7 +1883,7 @@ def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch)
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
     monkeypatch.setattr(player_dashboard, "production_scope_payload", lambda: {})
-    monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: {})
+    monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: previous_targets.append(issue) or {})
     monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(player_dashboard, "_card_two_from_record", lambda record, current, previous_target_issue: {})
 
@@ -1900,11 +1901,17 @@ def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch)
     finally:
         player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.reset(token)
 
-    assert submitted[:4] == ["card_two_history", "prediction_aggregates", "analysis", "active_release"]
+    assert submitted[:5] == ["previous_verification", "card_two_history", "prediction_aggregates", "analysis", "active_release"]
+    assert previous_targets == ["115040900"]
     diagnostics = player_dashboard.get_dashboard_component_diagnostics()["components"]
     aggregate_wait = diagnostics["prediction_aggregates"][-1]["wait_order_position"]
     card_two_history_wait = diagnostics["card_two_history"][-1]["wait_order_position"]
+    analysis_wait = diagnostics["analysis"][-1]["wait_order_position"]
+    release_wait = diagnostics["active_release"][-1]["wait_order_position"]
+    previous_wait = diagnostics["previous_verification"][-1]["wait_order_position"]
+    card_two_wait = diagnostics["card_two"][-1]["wait_order_position"]
     assert aggregate_wait < card_two_history_wait
+    assert card_two_history_wait < analysis_wait < release_wait < previous_wait < card_two_wait
     assert diagnostics["prediction_aggregates"][-1]["query_count"] == 1
 
 
