@@ -3116,7 +3116,13 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
     )
     combined_elapsed_ms = round((time.perf_counter() - combined_started) * 1000, 2)
     db_timing = combined.get("db_timing") or {}
+    row_transform_diagnostics = combined.get("row_transform_diagnostics") or {}
     db_total_ms = db_timing.get("total_ms") if isinstance(db_timing.get("total_ms"), (int, float)) else 0.0
+    store_transform_ms = (
+        row_transform_diagnostics.get("total_ms")
+        if isinstance(row_transform_diagnostics.get("total_ms"), (int, float))
+        else round(max(combined_elapsed_ms - float(db_total_ms or 0.0), 0.0), 2)
+    )
     diagnostics["transform_stages"]["combined_lookup"] = {
         "elapsed_ms": combined_elapsed_ms,
         "io_type": "db",
@@ -3136,10 +3142,19 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
         "connection_hash": db_timing.get("connection_hash"),
     }
     diagnostics["transform_stages"]["store_row_transform"] = {
-        "elapsed_ms": round(max(combined_elapsed_ms - float(db_total_ms or 0.0), 0.0), 2),
+        "elapsed_ms": store_transform_ms,
         "io_type": "python",
         "query_count": 0,
+        "returned_row_count": row_transform_diagnostics.get("returned_row_count"),
+        "transformed_row_count": row_transform_diagnostics.get("transformed_row_count"),
+        "json_decode_count": row_transform_diagnostics.get("json_decode_count"),
+        "json_load_call_count": row_transform_diagnostics.get("json_load_call_count"),
+        "number_processing_call_count": row_transform_diagnostics.get("number_processing_call_count"),
+        "helper_counts": row_transform_diagnostics.get("helper_counts"),
     }
+    for stage_name, stage in (row_transform_diagnostics.get("stages") or {}).items():
+        diagnostics["transform_stages"][f"store_row_transform.{stage_name}"] = stage
+    diagnostics["row_transform_diagnostics"] = row_transform_diagnostics
     diagnostics["query_count"] = 1
     diagnostics["sql_execute_count"] = 1
     diagnostics["db_checkout_count"] = 1

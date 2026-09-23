@@ -430,6 +430,16 @@ def test_previous_verification_combined_reader_shape(monkeypatch):
     assert result["record"]["prediction_issue"] == "115051970"
     assert result["draw"]["issue"] == "115051970"
     assert result["db_timing"]["target_issue"] == "115051970"
+    transform = result["row_transform_diagnostics"]
+    assert transform["returned_row_count"] == 1
+    assert transform["transformed_row_count"] == 1
+    assert transform["json_load_call_count"] >= 1
+    assert transform["number_processing_call_count"] >= 1
+    assert transform["helper_counts"]["prediction_row_mapping"] == 1
+    assert transform["helper_counts"]["official_draw_mapping"] == 1
+    assert transform["stages"]["prediction_row_mapping"]["elapsed_ms"] >= 0
+    assert transform["stages"]["official_draw_mapping"]["elapsed_ms"] >= 0
+    assert transform["unaccounted_ms"] >= 0
 
 
 def test_previous_verification_old_new_semantic_equivalence(monkeypatch):

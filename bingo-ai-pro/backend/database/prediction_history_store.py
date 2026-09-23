@@ -65,6 +65,10 @@ _DIAGNOSTIC_CARD_TWO_TIMING_EVENTS: ContextVar[list[dict[str, Any]] | None] = Co
     "diagnostic_card_two_timing_events",
     default=None,
 )
+_PREVIOUS_VERIFICATION_ROW_TRANSFORM_DIAGNOSTICS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "previous_verification_row_transform_diagnostics",
+    default=None,
+)
 
 LIFECYCLE_COLUMNS = {
     "prediction_status": ("text default 'waiting_draw'", "text default 'waiting_draw'"),
@@ -103,15 +107,50 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _row_transform_diagnostics_add(stage: str, elapsed_ms: float, **counts: Any) -> None:
+    diagnostics = _PREVIOUS_VERIFICATION_ROW_TRANSFORM_DIAGNOSTICS.get()
+    if diagnostics is None:
+        return
+    stages = diagnostics.setdefault("stages", {})
+    stage_record = stages.setdefault(stage, {"elapsed_ms": 0.0})
+    stage_record["elapsed_ms"] = round((stage_record.get("elapsed_ms") or 0.0) + elapsed_ms, 2)
+    for key, value in counts.items():
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            stage_record[key] = stage_record.get(key, 0) + value
+        else:
+            stage_record[key] = value
+
+
+def _timed_row_transform_stage(stage: str, fn, **counts: Any):
+    started = time.perf_counter()
+    result = fn()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    _row_transform_diagnostics_add(stage, elapsed_ms, **counts)
+    return result
+
+
 def _json_loads(value: Any) -> Any:
+    started = time.perf_counter()
+    attempted_decode = not (value in (None, "") or isinstance(value, (dict, list)))
     if value in (None, ""):
-        return None
-    if isinstance(value, (dict, list)):
-        return value
-    try:
-        return json.loads(value)
-    except Exception:
-        return value
+        result = None
+    elif isinstance(value, (dict, list)):
+        result = value
+    else:
+        try:
+            result = json.loads(value)
+        except Exception:
+            result = value
+    _row_transform_diagnostics_add(
+        "json_decode",
+        round((time.perf_counter() - started) * 1000, 2),
+        call_count=1,
+        decode_count=1 if attempted_decode else 0,
+    )
+    return result
+
 
 def _prediction_status(value: Any, has_winning_numbers: bool = False) -> str:
     if has_winning_numbers:
@@ -121,11 +160,14 @@ def _prediction_status(value: Any, has_winning_numbers: bool = False) -> str:
 
 
 def _normalize_numbers(values: Any, limit: int | None = None) -> list[int]:
+    started = time.perf_counter()
     numbers: list[int] = []
     if isinstance(values, str):
         parsed = _json_loads(values)
         values = parsed if isinstance(parsed, list) else [values]
+    input_count = 0
     for value in values or []:
+        input_count += 1
         try:
             number = int(value)
         except Exception:
@@ -133,7 +175,15 @@ def _normalize_numbers(values: Any, limit: int | None = None) -> list[int]:
         if 1 <= number <= 80 and number not in numbers:
             numbers.append(number)
     numbers.sort()
-    return numbers[:limit] if limit else numbers
+    result = numbers[:limit] if limit else numbers
+    _row_transform_diagnostics_add(
+        "number_processing",
+        round((time.perf_counter() - started) * 1000, 2),
+        call_count=1,
+        input_count=input_count,
+        output_count=len(result),
+    )
+    return result
 
 
 def _valid_issue(value: Any) -> str | None:
@@ -3899,23 +3949,99 @@ def get_previous_verification_summary_snapshot(target_issue: str) -> dict:
     timing["returned_issue"] = rows[0][2] if rows else None
     timing["target_issue"] = target
     if not rows:
-        return {"record": None, "draw": None, "mode": "unavailable", "db_timing": timing}
-    from database.official_draw_store import _row_to_official
+        return {
+            "record": None,
+            "draw": None,
+            "mode": "unavailable",
+            "db_timing": timing,
+            "row_transform_diagnostics": {
+                "total_ms": 0.0,
+                "returned_row_count": 0,
+                "transformed_row_count": 0,
+                "stages": {},
+                "unaccounted_ms": 0.0,
+            },
+        }
 
-    prediction_width = len(PREDICTION_SUMMARY_COLUMNS)
-    row = rows[0]
-    record = _row_to_prediction_summary(row[:prediction_width])
-    record["read_layer"] = {
-        "data_source": "database",
-        "table_name": "prediction_history",
-        "query_name": "previous_verification_combined_v1",
-        "production_filtered": True,
+    transform_started = time.perf_counter()
+    transform_diagnostics: dict[str, Any] = {
+        "returned_row_count": len(rows),
+        "transformed_row_count": 0,
+        "stages": {},
+        "helper_counts": {},
     }
-    record = _enrich_prediction_metadata(record)
-    mode = row[prediction_width + 1] or "unavailable"
-    draw_offset = prediction_width + 2
-    draw = _row_to_official(row[draw_offset:draw_offset + 15]) if row[draw_offset] is not None else None
-    return {"record": record, "draw": draw, "mode": mode, "db_timing": timing}
+    token = _PREVIOUS_VERIFICATION_ROW_TRANSFORM_DIAGNOSTICS.set(transform_diagnostics)
+    prediction_width = len(PREDICTION_SUMMARY_COLUMNS)
+    try:
+        row = _timed_row_transform_stage("row_selection", lambda: rows[0], row_count=len(rows))
+        prediction_row = _timed_row_transform_stage(
+            "row_extraction",
+            lambda: row[:prediction_width],
+            column_count=prediction_width,
+        )
+        record = _timed_row_transform_stage(
+            "prediction_row_mapping",
+            lambda: _row_to_prediction_summary(prediction_row),
+            helper="_row_to_prediction_summary",
+        )
+        _timed_row_transform_stage(
+            "read_layer_payload",
+            lambda: record.__setitem__(
+                "read_layer",
+                {
+                    "data_source": "database",
+                    "table_name": "prediction_history",
+                    "query_name": "previous_verification_combined_v1",
+                    "production_filtered": True,
+                },
+            ),
+        )
+        record = _timed_row_transform_stage(
+            "metadata_enrichment",
+            lambda: _enrich_prediction_metadata(record),
+            helper="_enrich_prediction_metadata",
+        )
+        mode = _timed_row_transform_stage(
+            "mode_extraction",
+            lambda: row[prediction_width + 1] or "unavailable",
+        )
+        draw_offset = prediction_width + 2
+
+        def official_draw_transform():
+            if row[draw_offset] is None:
+                return None
+            from database.official_draw_store import _row_to_official
+
+            return _row_to_official(row[draw_offset:draw_offset + 15])
+
+        draw = _timed_row_transform_stage(
+            "official_draw_mapping",
+            official_draw_transform,
+            helper="_row_to_official",
+        )
+        payload = _timed_row_transform_stage(
+            "payload_build",
+            lambda: {"record": record, "draw": draw, "mode": mode, "db_timing": timing},
+        )
+        transform_diagnostics["transformed_row_count"] = 1
+    finally:
+        _PREVIOUS_VERIFICATION_ROW_TRANSFORM_DIAGNOSTICS.reset(token)
+    total_ms = round((time.perf_counter() - transform_started) * 1000, 2)
+    stages = transform_diagnostics.get("stages") or {}
+    stage_total_ms = round(sum((stage.get("elapsed_ms") or 0.0) for stage in stages.values()), 2)
+    transform_diagnostics["total_ms"] = total_ms
+    transform_diagnostics["accounted_ms"] = stage_total_ms
+    transform_diagnostics["unaccounted_ms"] = round(max(total_ms - stage_total_ms, 0.0), 2)
+    transform_diagnostics["json_decode_count"] = (stages.get("json_decode") or {}).get("decode_count", 0)
+    transform_diagnostics["json_load_call_count"] = (stages.get("json_decode") or {}).get("call_count", 0)
+    transform_diagnostics["number_processing_call_count"] = (stages.get("number_processing") or {}).get("call_count", 0)
+    transform_diagnostics["helper_counts"] = {
+        "prediction_row_mapping": 1,
+        "metadata_enrichment": 1,
+        "official_draw_mapping": 1 if draw is not None else 0,
+    }
+    payload["row_transform_diagnostics"] = transform_diagnostics
+    return payload
 
 
 def get_prediction_lifecycle_aggregates(

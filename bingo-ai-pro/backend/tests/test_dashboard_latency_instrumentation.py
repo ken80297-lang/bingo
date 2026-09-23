@@ -462,6 +462,26 @@ def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
                 "row_count": 1,
                 "connection_hash": "abc123",
             },
+            "row_transform_diagnostics": {
+                "total_ms": 2.5,
+                "returned_row_count": 1,
+                "transformed_row_count": 1,
+                "json_decode_count": 3,
+                "json_load_call_count": 8,
+                "number_processing_call_count": 4,
+                "helper_counts": {
+                    "prediction_row_mapping": 1,
+                    "metadata_enrichment": 1,
+                    "official_draw_mapping": 1,
+                },
+                "stages": {
+                    "prediction_row_mapping": {"elapsed_ms": 1.2, "helper": "_row_to_prediction_summary"},
+                    "json_decode": {"elapsed_ms": 0.3, "call_count": 8, "decode_count": 3},
+                    "number_processing": {"elapsed_ms": 0.4, "call_count": 4},
+                    "official_draw_mapping": {"elapsed_ms": 0.5, "helper": "_row_to_official"},
+                },
+                "unaccounted_ms": 0.1,
+            },
         }
 
     monkeypatch.setattr(player_dashboard, "get_previous_verification_summary_snapshot", fake_summary)
@@ -478,6 +498,11 @@ def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
     assert stages["db_query"]["connect_ms"] == 10.0
     assert stages["db_query"]["execute_ms"] == 20.0
     assert stages["db_query"]["fetch_ms"] == 1.0
+    assert stages["store_row_transform"]["elapsed_ms"] == 2.5
+    assert stages["store_row_transform"]["returned_row_count"] == 1
+    assert stages["store_row_transform"]["json_decode_count"] == 3
+    assert stages["store_row_transform.prediction_row_mapping"]["elapsed_ms"] == 1.2
+    assert stages["store_row_transform.official_draw_mapping"]["elapsed_ms"] == 0.5
     assert stages["prediction_number_processing"]["predicted_count"] == 5
     assert stages["matching_comparison"]["matched_count"] == 3
     assert stages["based_on_time_helper"]["query_count"] == 0
