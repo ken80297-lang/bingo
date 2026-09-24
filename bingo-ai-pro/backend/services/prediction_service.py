@@ -497,7 +497,14 @@ def create_for_official_draw(
             force = True
 
         from database.analysis_store import get_analysis_history
+        mark = time.perf_counter()
         learning_analysis_history = get_analysis_history(100)
+        _stage_done(
+            stages,
+            "learning_history_load",
+            mark,
+            records=len(learning_analysis_history or []),
+        )
 
         recommendation_context = {
             "source": source,
