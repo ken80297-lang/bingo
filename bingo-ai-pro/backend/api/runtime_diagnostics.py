@@ -148,6 +148,28 @@ def api_learning_history_cache_benchmark() -> dict:
     }
 
 
+@router.get("/runtime-diagnostics/adaptive-voting-readonly")
+def api_adaptive_voting_readonly() -> dict:
+    """Read-only proof that persisted adaptive state is schema-compatible and safely gated."""
+    from database.adaptive_weight_store import get_active_adaptive_weights
+    from services.voting_engine import _adaptive_multiplier, V7_ADAPTIVE_WEIGHT_KEYS
+
+    adaptive = get_active_adaptive_weights()
+    strategy = (adaptive or {}).get("strategy")
+    multipliers = {name: _adaptive_multiplier(name, adaptive) for name in V7_ADAPTIVE_WEIGHT_KEYS}
+    return {
+        "status": "ok",
+        "read_only": True,
+        "record_found": bool(adaptive),
+        "strategy": strategy,
+        "v7_enabled": strategy == "v7_models",
+        "version": (adaptive or {}).get("version"),
+        "missing_weight": (adaptive or {}).get("missing_weight"),
+        "pattern_weight": (adaptive or {}).get("pattern_weight"),
+        "multipliers": multipliers,
+    }
+
+
 @router.api_route("/runtime-diagnostics/learning-compute-benchmark", methods=["GET", "POST"])
 def api_learning_compute_benchmark() -> dict:
     """Read-only benchmark for the V7 learning input load and model computation."""
