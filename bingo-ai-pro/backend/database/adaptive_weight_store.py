@@ -192,14 +192,14 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(\n    sql: str,\n    params: tuple = (),\n    sqlite_sql: str | None = None,\n    sqlite_params: tuple | None = None,\n) -> list[Any]:
     try:
         return _query_cloud(sql, params)
     except Exception:
         logger.exception("cloud adaptive weights query failed")
 
     try:
-        return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
+        return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params if sqlite_params is None else sqlite_params)
     except Exception:
         logger.exception("sqlite adaptive weights query failed")
         return []
