@@ -154,8 +154,8 @@ def model_e_balance(draws: list[dict]) -> dict:
     return _model_payload("balance", candidates, 72, "Balance 模型平衡大小、單雙、區間與尾數分布。")
 
 
-def run_all_models(limit: int = 100) -> dict:
-    draws = _recent_draws(limit)
+def run_all_models(limit: int = 100, draws: list[dict] | None = None) -> dict:
+    draws = draws if draws is not None else _recent_draws(limit)
     models = [
         model_a_laowanjia(draws),
         model_b_hotcold(draws),
