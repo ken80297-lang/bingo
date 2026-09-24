@@ -334,3 +334,98 @@ def test_fast_path_learning_capture_does_not_change_production_numbers(monkeypat
     assert recommendation["results"][0]["numbers"] == expected_numbers
     assert recommendation["production_fast_path"]["candidate_numbers"] == expected_numbers
     assert recommendation["model_voting"]["final_candidates"] != expected_numbers
+
+
+def _complete_snapshot_records():
+    recommendation = _recommendation()
+    saved = []
+    original_upsert = learning_engine.upsert_learning_record
+    return recommendation, saved, original_upsert
+
+
+def test_full_snapshot_verification_learning_closed_loop(monkeypatch):
+    store = {}
+    learning_used = []
+
+    monkeypatch.setattr(learning_engine, "_resolve_pending_snapshot", lambda *args: None)
+    monkeypatch.setattr(learning_engine, "_analysis_by_issue", lambda issue: {"issue": issue})
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: list(store.get(str(issue), [])))
+
+    def upsert(row):
+        issue = str(row["issue"])
+        bucket = store.setdefault(issue, [])
+        key = (row.get("model_name"), row.get("top_n"))
+        bucket[:] = [existing for existing in bucket if (existing.get("model_name"), existing.get("top_n")) != key]
+        bucket.append(dict(row))
+        return dict(row)
+
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", upsert)
+    monkeypatch.setattr(
+        learning_engine,
+        "get_official_draw_by_issue",
+        lambda issue, verified_only=False: {"issue": issue, "numbers": list(range(1, 21)), "draw_time": "2026-09-24T00:05:00"},
+    )
+    monkeypatch.setattr(learning_engine, "record_operation_event", lambda **kwargs: None)
+    monkeypatch.setattr(learning_engine, "invalidate_learning_status_cache", lambda: None)
+
+    import database.prediction_history_store as prediction_history_store
+    monkeypatch.setattr(
+        prediction_history_store,
+        "mark_prediction_learning_used",
+        lambda issue, used: learning_used.append((str(issue), used)) or {"status": "ok"},
+    )
+
+    created = learning_engine.save_live_prediction_snapshot(_recommendation())
+    assert created["status"] == "ok"
+    assert created["records"] == 18
+    pending = store["115099901"]
+    assert len(pending) == 18
+    assert all(row["learned_status"] == "pending" for row in pending)
+
+    evaluated = learning_engine.evaluate_verified_issue("115099901")
+    assert evaluated["status"] == "ok", evaluated
+    learned = store["115099901"]
+    assert len(learned) == 18
+    assert all(row["verification_status"] == "verified" for row in learned)
+    assert all(row["learned_status"] == "learned" for row in learned)
+    assert all(row["learned_at"] for row in learned)
+    assert learning_used == [("115099901", True)]
+
+
+def test_17_of_18_snapshot_cannot_mark_learning_used(monkeypatch):
+    complete = []
+    for model in learning_engine.EXPECTED_LIVE_MODELS:
+        for top_n in learning_engine.EXPECTED_TOP_N:
+            complete.append({
+                "issue": "115099901",
+                "source_issue": "115099900",
+                "target_issue": "115099901",
+                "model_name": model,
+                "top_n": top_n,
+                "predicted_count": top_n,
+                "predicted_numbers": list(range(1, top_n + 1)),
+                "prediction_snapshot": {"source_issue": "115099900"},
+                "analysis_snapshot": {"issue": "115099900"},
+                "learned_status": "pending",
+                "verification_status": "pending_official",
+            })
+    partial = complete[:-1]
+    learning_used = []
+    saved = []
+
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: list(partial))
+    monkeypatch.setattr(learning_engine, "_latest_prediction_for_issue", lambda issue: None)
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", lambda row: saved.append(row) or row)
+
+    import database.prediction_history_store as prediction_history_store
+    monkeypatch.setattr(
+        prediction_history_store,
+        "mark_prediction_learning_used",
+        lambda issue, used: learning_used.append((str(issue), used)) or {"status": "ok"},
+    )
+
+    result = learning_engine.evaluate_verified_issue("115099901")
+    assert result["status"] == "missing_snapshot", result
+    assert learning_used == []
+    assert len(saved) == 1
+    assert saved[0]["learned_status"] == "missing_snapshot"
