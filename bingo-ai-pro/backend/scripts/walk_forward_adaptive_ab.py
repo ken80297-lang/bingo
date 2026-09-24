@@ -80,10 +80,23 @@ def run(draws,warmup=100,seed=20260925):
         return mean(r[key] for r in holdout) if holdout else 0
     core3_d=[r["core3"]-r["off20"] for r in holdout]
     core3_r=[r["core3"]-r["random20"] for r in holdout]
+    segments=[]
+    for start in range(0,len(rows),100):
+        seg=rows[start:start+100]
+        if not seg: continue
+        diffs_full=[r["core3"]-r["off20"] for r in seg]
+        diffs_random=[r["core3"]-r["random20"] for r in seg]
+        segments.append({"start_issue":seg[0]["issue"],"end_issue":seg[-1]["issue"],"issues":len(seg),
+          "core3_top20":mean(r["core3"] for r in seg),"full5_top20":mean(r["off20"] for r in seg),
+          "random20":mean(r["random20"] for r in seg),"core3_minus_full5":mean(diffs_full),
+          "core3_minus_random":mean(diffs_random)})
     weight_summary={m:(mean(r["adaptive_weights"][KEYS[m]] for r in adaptive_rows) if adaptive_rows else 1.0) for m in MODELS}
     return {"summary":{"issues":len(rows),"warmup":warmup,"adaptive_active_issues":sum(r["adaptive_enabled"] for r in rows),
       "model_performance":model_summary,"mean_adaptive_multipliers":weight_summary,
       "candidate_subset_top20":{"hotcold_missing_balance":avg("core3"),"no_pattern":avg("core4_no_pattern"),"no_laowanjia":avg("core4_no_laowanjia")},
+      "rolling_100":{"segments":segments,
+        "positive_vs_full5":sum(s["core3_minus_full5"]>0 for s in segments),
+        "positive_vs_random":sum(s["core3_minus_random"]>0 for s in segments)},
       "chronological_holdout":{"issues":len(holdout),"start_issue":holdout[0]["issue"] if holdout else None,"end_issue":holdout[-1]["issue"] if holdout else None,
         "core3_top20":havg("core3"),"full5_top20":havg("off20"),"random20":havg("random20"),
         "core3_minus_full5":ci(core3_d),"core3_minus_random":ci(core3_r)},
