@@ -710,9 +710,13 @@ def create_for_official_draw(
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
+            snapshot_ok = (
+                snapshot_result.get("status") == "ok"
+                and int(snapshot_result.get("records") or 0) == 18
+            )
             _record_event(
                 event_type="prediction_created",
-                status="ok",
+                status="ok" if snapshot_ok else "warning",
                 based_on_issue=based_on,
                 target_issue=target,
                 source=source,
@@ -736,6 +740,8 @@ def create_for_official_draw(
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,
                 "learning_snapshot": snapshot_result,
+                "learning_snapshot_complete": snapshot_ok,
+                "learning_snapshot_warning": None if snapshot_ok else "learning_snapshot_incomplete",
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"
