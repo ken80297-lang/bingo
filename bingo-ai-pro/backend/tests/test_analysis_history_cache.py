@@ -73,3 +73,22 @@ def test_incomplete_cache_falls_back_to_database(monkeypatch):
     assert meta["source"] == "database"
     assert meta["cache_reason"] == "cold_or_incomplete"
     assert calls == [100]
+
+
+def test_sqlite_fallback_does_not_promote_degraded_write_into_prediction_cache(monkeypatch):
+    rows = [_record(str(200 - i)) for i in range(100)]
+    monkeypatch.setattr(analysis_store, "get_analysis_history", lambda limit: rows[:limit])
+    analysis_store.get_cached_analysis_history(100, based_on_issue="200")
+
+    monkeypatch.setattr(analysis_store, "build_analysis_record", lambda draw: _record("201"))
+    monkeypatch.setattr(analysis_store, "_save_cloud", lambda record: (_ for _ in ()).throw(RuntimeError("cloud down")))
+    monkeypatch.setattr(analysis_store, "_save_sqlite", lambda record: None)
+
+    result = analysis_store.save_analysis_history({"issue": "201"})
+    cached, meta = analysis_store.get_cached_analysis_history(100, based_on_issue="200")
+
+    assert result["status"] == "ok"
+    assert result["storage"] == "sqlite"
+    assert meta["source"] == "memory"
+    assert cached[0]["issue"] == "200"
+    assert all(row["issue"] != "201" for row in cached)
