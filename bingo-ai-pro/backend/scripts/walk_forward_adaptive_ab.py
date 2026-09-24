@@ -53,7 +53,7 @@ def run(draws,warmup=100,seed=20260925):
       "off20":avg("off20"),"on20":avg("on20"),"random20":avg("random20"),
       "off5":avg("off5"),"on5":avg("on5"),"random5":avg("random5"),
       "paired_on_minus_off_20":ci([r["on20"]-r["off20"] for r in rows]),
-      "paired_on_minus_off_5":ci([r["on5"]-r["off5"] for r in rows])},"rows":rows}
+      "paired_on_minus_off_5":ci([r["on5"]-r["off5"] for r in rows]),\n      "model_top20":{m:(mean(perf[m]) if perf[m] else 0) for m in MODELS},\n      "model_recent100_top20":{m:(mean(perf[m][-100:]) if perf[m] else 0) for m in MODELS},\n      "final_adaptive_weights":weights(perf,version+1)},"rows":rows}
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--limit",type=int,default=2000);p.add_argument("--warmup",type=int,default=100);a=p.parse_args()
