@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,12 @@ def _cloud_connection():
     from database import get_connection
 
     return get_connection()
+
+
+def _dashboard_read_connection():
+    from database.postgres import dashboard_read_connection
+
+    return dashboard_read_connection()
 
 
 def _sqlite_connection() -> sqlite3.Connection:
@@ -185,6 +192,97 @@ def get_rule_snapshot(
     except Exception:
         logger.exception("sqlite rule_snapshots query failed")
         return None
+
+
+def get_rule_snapshot_with_timing(
+    *,
+    source_issue: str | None = None,
+    target_issue: str | None = None,
+    rule_library_version: str | None = None,
+    use_dashboard_read_pool: bool = False,
+) -> tuple[dict | None, dict[str, Any]]:
+    filters = {
+        "source_issue": _string_or_none(source_issue),
+        "target_issue": _string_or_none(target_issue),
+        "rule_library_version": _string_or_none(rule_library_version),
+    }
+    timing: dict[str, Any] = {
+        "query_tag": "rule_snapshots.by_source_target",
+        "query_count": 1,
+        "db_calls": 1,
+        "connection_path": "dashboard_read_pool" if use_dashboard_read_pool else "direct_connection",
+        "backend": "cloud",
+    }
+    if _cloud_enabled():
+        connect_started = time.perf_counter()
+        try:
+            connection_factory = _dashboard_read_connection if use_dashboard_read_pool else _cloud_connection
+            where, params = _where_clause(filters, placeholder="%s")
+            with connection_factory() as conn:
+                timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+                timing["pool_acquire_ms"] = timing["connect_ms"] if use_dashboard_read_pool else None
+                cursor_started = time.perf_counter()
+                with conn.cursor() as cur:
+                    timing["cursor_ms"] = round((time.perf_counter() - cursor_started) * 1000, 2)
+                    execute_started = time.perf_counter()
+                    cur.execute(
+                        f"""
+                        select id, source_issue, target_issue, rule_library_version,
+                               snapshot_json, generated_at, created_at, updated_at
+                        from rule_snapshots
+                        {where}
+                        order by updated_at desc, id desc
+                        limit 1
+                        """,
+                        params,
+                    )
+                    timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+                    fetch_started = time.perf_counter()
+                    row = cur.fetchone()
+                    timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
+            transform_started = time.perf_counter()
+            record = _row_to_record(row) if row else None
+            timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000, 2)
+            timing["row_count"] = 1 if row else 0
+            timing["total_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+            return record, timing
+        except Exception as exc:
+            timing["cloud_error_type"] = type(exc).__name__
+            logger.exception("cloud rule_snapshots query failed")
+
+    sqlite_started = time.perf_counter()
+    try:
+        timing["backend"] = "sqlite"
+        timing["connection_path"] = "sqlite"
+        where, params = _where_clause(filters, placeholder="?")
+        with _sqlite_connection() as conn:
+            timing["connect_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+            execute_started = time.perf_counter()
+            row = conn.execute(
+                f"""
+                select id, source_issue, target_issue, rule_library_version,
+                       snapshot_json, generated_at, created_at, updated_at
+                from rule_snapshots
+                {where}
+                order by updated_at desc, id desc
+                limit 1
+                """,
+                params,
+            ).fetchone()
+            timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+        transform_started = time.perf_counter()
+        record = _row_to_record(row) if row else None
+        timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000, 2)
+        timing["fetch_ms"] = 0.0
+        timing["row_count"] = 1 if row else 0
+        timing["total_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+        return record, timing
+    except Exception as exc:
+        timing["sqlite_error_type"] = type(exc).__name__
+        logger.exception("sqlite rule_snapshots query failed")
+        timing["row_count"] = 0
+        timing["total_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+        return None, timing
 
 
 def get_latest_rule_snapshot() -> dict | None:

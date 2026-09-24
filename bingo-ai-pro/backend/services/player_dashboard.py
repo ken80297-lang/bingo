@@ -38,9 +38,10 @@ from services.dashboard_card_schema import (
 from services.prediction_refresh import prediction_refresh_status
 
 try:
-    from database.rule_snapshot_store import get_rule_snapshot
+    from database.rule_snapshot_store import get_rule_snapshot, get_rule_snapshot_with_timing
 except ModuleNotFoundError:  # pragma: no cover - deployed Phase 30 can run without pending rule snapshot files.
     get_rule_snapshot = None
+    get_rule_snapshot_with_timing = None
 
 try:
     from services.rule_snapshot import build_rule_snapshot, get_rule_registry
@@ -2292,7 +2293,11 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
     }
 
 
-def _rule_snapshot_for_dashboard(analysis: dict, prediction: dict) -> dict:
+def _rule_snapshot_for_dashboard(
+    analysis: dict,
+    prediction: dict,
+    diagnostics: dict | None = None,
+) -> dict:
     source_issue = _valid_production_issue(
         analysis.get("issue") or prediction.get("issue") or prediction.get("based_on_issue")
     )
@@ -2300,19 +2305,63 @@ def _rule_snapshot_for_dashboard(analysis: dict, prediction: dict) -> dict:
         prediction.get("prediction_issue") or prediction.get("target_issue")
     )
     if source_issue and get_rule_snapshot is not None:
+        lookup_started = time.perf_counter()
+        lookup_timing: dict[str, Any] = {"query_count": 1, "db_calls": 1, "connection_path": "direct_connection"}
+        stored = None
         try:
-            stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
+            if diagnostics is not None and callable(get_rule_snapshot_with_timing):
+                stored, lookup_timing = get_rule_snapshot_with_timing(
+                    source_issue=source_issue,
+                    target_issue=target_issue,
+                    use_dashboard_read_pool=False,
+                )
+            else:
+                stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
             snapshot = (stored or {}).get("snapshot_json") if isinstance(stored, dict) else None
+            _card_two_diag_stage(
+                diagnostics,
+                "_card_two_rules.rule_snapshot_lookup",
+                lookup_started,
+                **dict(lookup_timing or {}),
+                found=bool(stored),
+                snapshot_valid=isinstance(snapshot, dict) and bool(snapshot.get("rules")),
+                source_issue=source_issue,
+                target_issue=target_issue,
+                hidden_db_calls=int((lookup_timing or {}).get("db_calls") or 0),
+            )
             if isinstance(snapshot, dict) and snapshot.get("rules"):
                 return snapshot
         except Exception:
             logger.exception("dashboard rule snapshot lookup failed")
-    return build_rule_snapshot(
+            _card_two_diag_stage(
+                diagnostics,
+                "_card_two_rules.rule_snapshot_lookup",
+                lookup_started,
+                **dict(lookup_timing or {}),
+                found=False,
+                snapshot_valid=False,
+                source_issue=source_issue,
+                target_issue=target_issue,
+                error=True,
+            )
+    build_started = time.perf_counter()
+    snapshot = build_rule_snapshot(
         analysis,
         prediction,
         source_issue=source_issue,
         target_issue=target_issue,
     )
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.rule_snapshot_build_fallback",
+        build_started,
+        query_count=0,
+        db_calls=0,
+        rule_count=len((snapshot or {}).get("rules") or []),
+        source_issue=source_issue,
+        target_issue=target_issue,
+    )
+    return snapshot
 
 
 def _card_two_empty(requested_issue: Any = None) -> dict:
@@ -2430,25 +2479,91 @@ def _card_two_rule_item(item: dict, official_numbers: list[int]) -> dict | None:
     }
 
 
-def _card_two_rules(analysis: dict | None, prediction: dict, official_numbers: list[int]) -> list[dict]:
+def _card_two_rules(
+    analysis: dict | None,
+    prediction: dict,
+    official_numbers: list[int],
+    diagnostics: dict | None = None,
+) -> list[dict]:
+    total_started = time.perf_counter()
     try:
-        snapshot = _rule_snapshot_for_dashboard(analysis or {}, prediction)
+        try:
+            snapshot = _rule_snapshot_for_dashboard(analysis or {}, prediction, diagnostics=diagnostics)
+        except TypeError as exc:
+            if "diagnostics" not in str(exc):
+                raise
+            snapshot = _rule_snapshot_for_dashboard(analysis or {}, prediction)
     except Exception:
         logger.exception("dashboard card two rule snapshot failed")
+        _card_two_diag_stage(diagnostics, "_card_two_rules.total", total_started, query_count=0, db_calls=0, error=True)
         return []
+    parse_started = time.perf_counter()
     by_key = {
         (item.get("rule_key") or item.get("key")): item
         for item in (snapshot.get("rules") or [])
         if isinstance(item, dict)
     }
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.rule_parsing",
+        parse_started,
+        rule_count=len((snapshot.get("rules") or [])),
+        keyed_rule_count=len(by_key),
+        query_count=0,
+        db_calls=0,
+    )
     rules: list[dict] = []
+    selection_ms = 0.0
+    evaluation_ms = 0.0
+    format_ms = 0.0
     for key, label in CARD_TWO_RULE_ORDER:
+        selection_started = time.perf_counter()
         item = by_key.get(key)
         if not item:
+            selection_ms += (time.perf_counter() - selection_started) * 1000
             continue
+        selection_ms += (time.perf_counter() - selection_started) * 1000
+        evaluation_started = time.perf_counter()
         converted = _card_two_rule_item({**item, "rule_name_zh": item.get("label") or label}, official_numbers)
+        evaluation_ms += (time.perf_counter() - evaluation_started) * 1000
         if converted:
+            format_started = time.perf_counter()
             rules.append(converted)
+            format_ms += (time.perf_counter() - format_started) * 1000
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.rule_selection_filtering",
+        time.perf_counter(),
+        elapsed_ms=round(selection_ms, 2),
+        selected_rule_count=len(rules),
+        query_count=0,
+        db_calls=0,
+    )
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.rule_evaluation",
+        time.perf_counter(),
+        elapsed_ms=round(evaluation_ms, 2),
+        query_count=0,
+        db_calls=0,
+    )
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.format_payload",
+        time.perf_counter(),
+        elapsed_ms=round(format_ms, 2),
+        query_count=0,
+        db_calls=0,
+    )
+    snapshot_stage = ((diagnostics or {}).get("stages") or {}).get("_card_two_rules.rule_snapshot_lookup") or {}
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_rules.total",
+        total_started,
+        query_count=int(snapshot_stage.get("query_count") or 0),
+        db_calls=int(snapshot_stage.get("db_calls") or 0),
+        rule_count=len(rules),
+    )
     return rules
 
 
@@ -2779,7 +2894,7 @@ def _card_two_from_record(
         **dict(analysis_timing or {}),
     )
     rules_started = time.perf_counter()
-    rules = _card_two_rules(analysis, record, official_numbers)
+    rules = _card_two_rules(analysis, record, official_numbers, diagnostics=diagnostics)
     _card_two_diag_stage(diagnostics, "_card_two_from_record.rule_processing", rules_started, rule_count=len(rules))
     payload_started = time.perf_counter()
     result = {
@@ -2816,8 +2931,16 @@ def _card_two_from_record(
     _card_two_diag_stage(diagnostics, "_card_two_from_record.payload_build", payload_started)
     if diagnostics is not None:
         stages = diagnostics.get("stages", {})
-        query_count = sum(int(stage.get("query_count") or 0) for stage in stages.values() if isinstance(stage, dict))
-        db_calls = sum(int(stage.get("db_calls") or 0) for stage in stages.values() if isinstance(stage, dict))
+        query_count = sum(
+            int(stage.get("query_count") or 0)
+            for name, stage in stages.items()
+            if isinstance(stage, dict) and not str(name).endswith(".total")
+        )
+        db_calls = sum(
+            int(stage.get("db_calls") or 0)
+            for name, stage in stages.items()
+            if isinstance(stage, dict) and not str(name).endswith(".total")
+        )
         _card_two_diag_stage(
             diagnostics,
             "_card_two_from_record.total",
