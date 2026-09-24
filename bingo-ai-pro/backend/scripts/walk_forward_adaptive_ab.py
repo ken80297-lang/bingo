@@ -31,10 +31,11 @@ def weights(perf,version):
     av={m:mean(perf[m][-100:]) for m in MODELS}; center=mean(av.values()) or 1
     return {"strategy":"v7_models","version":version,**{KEYS[m]:max(.5,min(1.5,av[m]/center)) for m in MODELS}}
 
-def _rank_without_model(model_scores, excluded):
+def _rank_subset(model_scores, included=None, excluded=None):
     votes=Counter()
     for model_key, payload in model_scores.items():
-        if model_key == excluded: continue
+        if included is not None and model_key not in included: continue
+        if excluded is not None and model_key == excluded: continue
         confidence=float(payload.get("confidence") or 0)
         weight=max(1, confidence/20)
         for rank, number in enumerate(payload.get("candidate_numbers") or []):
@@ -63,7 +64,10 @@ def run(draws,warmup=100,seed=20260925):
           "off20":hits(os[:20],official),"on20":hits(ns[:20],official),"random20":hits(rnd,official),
           "off5":hits(os[:5],official),"on5":hits(ns[:5],official),"random5":hits(rnd[:5],official),
           "model_hits":model_hits,"adaptive_weights":adaptive,
-          "leave_one_out":{m:hits(_rank_without_model(off.get("model_scores",{}),m),official) for m in MODELS}})
+          "leave_one_out":{m:hits(_rank_subset(off.get("model_scores",{}),excluded=m),official) for m in MODELS},
+          "core3":hits(_rank_subset(off.get("model_scores",{}),included={"hotcold","missing","balance"}),official),
+          "core4_no_pattern":hits(_rank_subset(off.get("model_scores",{}),included={"laowanjia","hotcold","missing","balance"}),official),
+          "core4_no_laowanjia":hits(_rank_subset(off.get("model_scores",{}),included={"hotcold","missing","pattern","balance"}),official)})
     avg=lambda k: mean(r[k] for r in rows) if rows else 0
     model_summary={m:{"hit20":mean(r["model_hits"][m]["hit20"] for r in rows) if rows else 0,
                       "hit5":mean(r["model_hits"][m]["hit5"] for r in rows) if rows else 0} for m in MODELS}
@@ -71,6 +75,7 @@ def run(draws,warmup=100,seed=20260925):
     weight_summary={m:(mean(r["adaptive_weights"][KEYS[m]] for r in adaptive_rows) if adaptive_rows else 1.0) for m in MODELS}
     return {"summary":{"issues":len(rows),"warmup":warmup,"adaptive_active_issues":sum(r["adaptive_enabled"] for r in rows),
       "model_performance":model_summary,"mean_adaptive_multipliers":weight_summary,
+      "candidate_subset_top20":{"hotcold_missing_balance":avg("core3"),"no_pattern":avg("core4_no_pattern"),"no_laowanjia":avg("core4_no_laowanjia")},
       "leave_one_out_top20":{m:mean(r["leave_one_out"][m] for r in rows) if rows else 0 for m in MODELS},
       "leave_one_out_delta_vs_full":{m:(mean(r["leave_one_out"][m] for r in rows)-avg("off20")) if rows else 0 for m in MODELS},
       "off20":avg("off20"),"on20":avg("on20"),"random20":avg("random20"),
