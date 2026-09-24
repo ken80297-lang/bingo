@@ -977,6 +977,20 @@ def evaluate_verified_issue(issue: str) -> dict:
             except Exception as exc:
                 logger.exception("prediction history learning queue update failed")
                 learning_queue = {"status": "error", "message": str(exc)}
+            if (
+                learning_queue.get("status") != "ok"
+                or learning_queue.get("storage") != "cloud"
+                or int(learning_queue.get("updated") or 0) < 1
+            ):
+                return {
+                    "status": "error",
+                    "reason": "learning_used_cloud_update_required",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": learning_queue,
+                    "adaptive_weights": adaptive_weights,
+                }
             invalidate_learning_status_cache()
         return {
             "status": status,
