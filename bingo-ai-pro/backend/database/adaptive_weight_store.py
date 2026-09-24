@@ -229,7 +229,11 @@ def _row_to_weights(row: Any) -> dict:
 
 def get_active_adaptive_weights() -> dict | None:
     # A V7 row is eligible to affect predictions only after its source issue's
-    # complete 18-row learning ledger has been marked weight_changed in cloud.
+    # current-generation 18-row learning ledger is complete, weight_changed is
+    # persisted, and the corresponding verified prediction has learning_used.
+    from config.production_scope import get_production_generation
+
+    generation = get_production_generation()
     rows = _query_with_fallback(
         """
         select aw.id, aw.version, aw.strategy, aw."window",
@@ -248,9 +252,19 @@ def get_active_adaptive_weights() -> dict | None:
                 and lh.verification_status = 'verified'
                 and lh.learned_status = 'learned'
                 and lh.weight_changed = true
+                and lh.production_generation = %s
                 and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
                 and lh.top_n in (5,10,20)
             ) = 18
+            and exists (
+              select 1
+              from prediction_history ph
+              where ph.prediction_issue = aw.source_evaluation_id::text
+                and ph.prediction_status = 'verified'
+                and ph.learning_used = true
+                and ph.production_generation = %s
+                and ph.production_valid = true
+            )
           )
         order by aw.updated_at desc, aw.id desc
         limit 1
@@ -272,13 +286,25 @@ def get_active_adaptive_weights() -> dict | None:
                 and lh.verification_status = 'verified'
                 and lh.learned_status = 'learned'
                 and lh.weight_changed = 1
+                and lh.production_generation = ?
                 and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
                 and lh.top_n in (5,10,20)
             ) = 18
+            and exists (
+              select 1
+              from prediction_history ph
+              where ph.prediction_issue = cast(aw.source_evaluation_id as text)
+                and ph.prediction_status = 'verified'
+                and ph.learning_used = 1
+                and ph.production_generation = ?
+                and ph.production_valid = 1
+            )
           )
         order by aw.updated_at desc, aw.id desc
         limit 1
         """,
+        (generation, generation),
+        sqlite_params=(generation, generation),
     )
     return _row_to_weights(rows[0]) if rows else None
 
