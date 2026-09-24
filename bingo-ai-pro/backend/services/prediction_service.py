@@ -508,6 +508,7 @@ def create_for_official_draw(
             "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
             "regenerated_reason": regenerated_reason,
             "previous_strategy_version": previous_strategy_version,
+            "learning_analysis_history": learning_analysis_history,
         }
         mark = time.perf_counter()
         recommendation_result = calculate_fast_recommendation(
