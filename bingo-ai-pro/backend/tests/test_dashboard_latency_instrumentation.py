@@ -433,7 +433,7 @@ def test_previous_verification_and_card_two_have_component_diagnostics(monkeypat
 
 
 def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
-    def fake_summary(target_issue):
+    def fake_summary(target_issue, *, include_metadata_lookup=True):
         return {
             "mode": "exact_previous",
             "record": {
@@ -469,15 +469,24 @@ def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
                 "json_decode_count": 3,
                 "json_load_call_count": 8,
                 "number_processing_call_count": 4,
+                "metadata_lookup_count": 0,
+                "metadata_lookup_skipped": True,
                 "helper_counts": {
                     "prediction_row_mapping": 1,
                     "metadata_enrichment": 1,
+                    "metadata_lookup": 0,
                     "official_draw_mapping": 1,
                 },
                 "stages": {
                     "prediction_row_mapping": {"elapsed_ms": 1.2, "helper": "_row_to_prediction_summary"},
                     "json_decode": {"elapsed_ms": 0.3, "call_count": 8, "decode_count": 3},
                     "number_processing": {"elapsed_ms": 0.4, "call_count": 4},
+                    "metadata_enrichment": {
+                        "elapsed_ms": 0.2,
+                        "helper": "_enrich_prediction_metadata_from_map",
+                        "metadata_lookup_count": 0,
+                        "skipped_metadata_lookup": True,
+                    },
                     "official_draw_mapping": {"elapsed_ms": 0.5, "helper": "_row_to_official"},
                 },
                 "unaccounted_ms": 0.1,
@@ -501,7 +510,10 @@ def test_previous_verification_records_execution_stage_diagnostics(monkeypatch):
     assert stages["store_row_transform"]["elapsed_ms"] == 2.5
     assert stages["store_row_transform"]["returned_row_count"] == 1
     assert stages["store_row_transform"]["json_decode_count"] == 3
+    assert stages["store_row_transform"]["metadata_lookup_count"] == 0
+    assert stages["store_row_transform"]["metadata_lookup_skipped"] is True
     assert stages["store_row_transform.prediction_row_mapping"]["elapsed_ms"] == 1.2
+    assert stages["store_row_transform.metadata_enrichment"]["metadata_lookup_count"] == 0
     assert stages["store_row_transform.official_draw_mapping"]["elapsed_ms"] == 0.5
     assert stages["prediction_number_processing"]["predicted_count"] == 5
     assert stages["matching_comparison"]["matched_count"] == 3
@@ -515,7 +527,8 @@ def test_dashboard_previous_verification_uses_snapshot_time_without_hidden_looku
     def fail_operation_lookup(*args, **kwargs):
         raise AssertionError("dashboard previous_verification must not query operation_events")
 
-    def fake_summary(target_issue):
+    def fake_summary(target_issue, *, include_metadata_lookup=True):
+        assert include_metadata_lookup is False
         return {
             "mode": "exact_previous",
             "record": {
@@ -559,6 +572,72 @@ def test_dashboard_previous_verification_uses_snapshot_time_without_hidden_looku
     assert based_on_stage["time_source"] == "official_draw_collected_at"
     assert execution["hidden_db_round_trips"] == 0
     assert execution["query_count"] == 1
+    assert execution["sql_execute_count"] == 1
+    assert execution["db_checkout_count"] == 1
+
+
+def test_dashboard_previous_verification_skips_metadata_lookup(monkeypatch):
+    def fake_summary(target_issue, *, include_metadata_lookup=True):
+        assert include_metadata_lookup is False
+        return {
+            "mode": "exact_previous",
+            "record": {
+                "prediction_issue": target_issue,
+                "prediction_status": "verified",
+                "recommend_numbers": [1, 2, 3],
+                "winning_numbers": [1, 3, 5],
+                "production_generation": 2,
+                "production_valid": True,
+                "source": "production_history",
+                "trigger": "production_read_layer",
+            },
+            "draw": {
+                "issue": target_issue,
+                "numbers": [1, 3, 5],
+                "created_at": "2026-09-23T00:00:00+00:00",
+            },
+            "db_timing": {
+                "query_tag": "previous_verification.combined",
+                "connect_ms": 1.0,
+                "pool_acquire_ms": 1.0,
+                "execute_ms": 2.0,
+                "fetch_ms": 0.1,
+                "total_ms": 3.2,
+                "row_count": 1,
+            },
+            "row_transform_diagnostics": {
+                "total_ms": 0.4,
+                "returned_row_count": 1,
+                "transformed_row_count": 1,
+                "metadata_lookup_count": 0,
+                "metadata_lookup_skipped": True,
+                "helper_counts": {
+                    "prediction_row_mapping": 1,
+                    "metadata_enrichment": 1,
+                    "metadata_lookup": 0,
+                    "official_draw_mapping": 1,
+                },
+                "stages": {
+                    "metadata_enrichment": {
+                        "elapsed_ms": 0.1,
+                        "metadata_lookup_count": 0,
+                        "skipped_metadata_lookup": True,
+                    },
+                },
+            },
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_previous_verification_summary_snapshot", fake_summary)
+
+    payload = player_dashboard._build_previous_verification_snapshot("115052000")
+
+    execution = payload["diagnostics"]["previous_verification_execution"]
+    assert payload["source"] == "production_history"
+    assert payload["trigger"] == "production_read_layer"
+    assert execution["row_transform_diagnostics"]["metadata_lookup_count"] == 0
+    assert execution["row_transform_diagnostics"]["metadata_lookup_skipped"] is True
+    assert execution["transform_stages"]["store_row_transform.metadata_enrichment"]["metadata_lookup_count"] == 0
+    assert execution["hidden_db_round_trips"] == 0
     assert execution["sql_execute_count"] == 1
     assert execution["db_checkout_count"] == 1
 

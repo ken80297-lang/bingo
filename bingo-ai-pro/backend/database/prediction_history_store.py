@@ -117,7 +117,9 @@ def _row_transform_diagnostics_add(stage: str, elapsed_ms: float, **counts: Any)
     for key, value in counts.items():
         if value is None:
             continue
-        if isinstance(value, (int, float)):
+        if isinstance(value, bool):
+            stage_record[key] = value
+        elif isinstance(value, (int, float)):
             stage_record[key] = stage_record.get(key, 0) + value
         else:
             stage_record[key] = value
@@ -3867,7 +3869,7 @@ def _timed_prediction_query(
     return rows, timing
 
 
-def get_previous_verification_summary_snapshot(target_issue: str) -> dict:
+def get_previous_verification_summary_snapshot(target_issue: str, *, include_metadata_lookup: bool = True) -> dict:
     _ensure_initialized()
     target = _valid_issue(target_issue)
     if not target:
@@ -3996,11 +3998,23 @@ def get_previous_verification_summary_snapshot(target_issue: str) -> dict:
                 },
             ),
         )
-        record = _timed_row_transform_stage(
-            "metadata_enrichment",
-            lambda: _enrich_prediction_metadata(record),
-            helper="_enrich_prediction_metadata",
-        )
+        if include_metadata_lookup:
+            record = _timed_row_transform_stage(
+                "metadata_enrichment",
+                lambda: _enrich_prediction_metadata(record),
+                helper="_enrich_prediction_metadata",
+                metadata_lookup_count=1,
+            )
+            metadata_lookup_count = 1
+        else:
+            record = _timed_row_transform_stage(
+                "metadata_enrichment",
+                lambda: _enrich_prediction_metadata_from_map(record, None),
+                helper="_enrich_prediction_metadata_from_map",
+                metadata_lookup_count=0,
+                skipped_metadata_lookup=True,
+            )
+            metadata_lookup_count = 0
         mode = _timed_row_transform_stage(
             "mode_extraction",
             lambda: row[prediction_width + 1] or "unavailable",
@@ -4038,8 +4052,11 @@ def get_previous_verification_summary_snapshot(target_issue: str) -> dict:
     transform_diagnostics["helper_counts"] = {
         "prediction_row_mapping": 1,
         "metadata_enrichment": 1,
+        "metadata_lookup": metadata_lookup_count,
         "official_draw_mapping": 1 if draw is not None else 0,
     }
+    transform_diagnostics["metadata_lookup_count"] = metadata_lookup_count
+    transform_diagnostics["metadata_lookup_skipped"] = not include_metadata_lookup
     payload["row_transform_diagnostics"] = transform_diagnostics
     return payload
 

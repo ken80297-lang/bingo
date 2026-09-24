@@ -74,7 +74,11 @@ def test_player_summary_fast_path_builds_from_isolated_dependencies(monkeypatch)
     monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
     monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
     monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
-    monkeypatch.setattr(player_dashboard, "get_previous_verification_summary_snapshot", lambda issue: {"record": None, "draw": None, "mode": "none"})
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue, *, include_metadata_lookup=True: {"record": None, "draw": None, "mode": "none"},
+    )
     monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
     monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", lambda: {})
 

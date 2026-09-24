@@ -3112,7 +3112,10 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
     combined = _timed_component_stage(
         "previous_verification",
         "previous_verification_combined_lookup",
-        lambda: get_previous_verification_summary_snapshot(str(previous_target_issue)),
+        lambda: get_previous_verification_summary_snapshot(
+            str(previous_target_issue),
+            include_metadata_lookup=False,
+        ),
     )
     combined_elapsed_ms = round((time.perf_counter() - combined_started) * 1000, 2)
     db_timing = combined.get("db_timing") or {}
@@ -3150,6 +3153,8 @@ def _build_previous_verification_snapshot(previous_target_issue: Any) -> dict:
         "json_decode_count": row_transform_diagnostics.get("json_decode_count"),
         "json_load_call_count": row_transform_diagnostics.get("json_load_call_count"),
         "number_processing_call_count": row_transform_diagnostics.get("number_processing_call_count"),
+        "metadata_lookup_count": row_transform_diagnostics.get("metadata_lookup_count"),
+        "metadata_lookup_skipped": row_transform_diagnostics.get("metadata_lookup_skipped"),
         "helper_counts": row_transform_diagnostics.get("helper_counts"),
     }
     for stage_name, stage in (row_transform_diagnostics.get("stages") or {}).items():

@@ -437,9 +437,94 @@ def test_previous_verification_combined_reader_shape(monkeypatch):
     assert transform["number_processing_call_count"] >= 1
     assert transform["helper_counts"]["prediction_row_mapping"] == 1
     assert transform["helper_counts"]["official_draw_mapping"] == 1
+    assert transform["helper_counts"]["metadata_lookup"] == 1
+    assert transform["metadata_lookup_count"] == 1
+    assert transform["metadata_lookup_skipped"] is False
     assert transform["stages"]["prediction_row_mapping"]["elapsed_ms"] >= 0
     assert transform["stages"]["official_draw_mapping"]["elapsed_ms"] >= 0
     assert transform["unaccounted_ms"] >= 0
+
+
+def test_previous_verification_combined_reader_can_skip_metadata_lookup(monkeypatch):
+    prediction_width = len(prediction_history_store.PREDICTION_SUMMARY_COLUMNS)
+    row = (
+        1,
+        "115051969",
+        "115051970",
+        "2026-09-14T00:00:00+00:00",
+        "production",
+        0.8,
+        list(range(1, 21)),
+        7,
+        [1, 2, 3],
+        [1, 2, 3, 4],
+        [],
+        [],
+        [],
+        [],
+        "small",
+        "odd",
+        list(range(10, 30)),
+        10,
+        True,
+        False,
+        False,
+        0.5,
+        "2026-09-14T00:00:00+00:00",
+        "2026-09-14T00:01:00+00:00",
+        "model",
+        "verified",
+        "115051970",
+        "2026-09-14T00:02:00+00:00",
+        list(range(10, 20)),
+        list(range(1, 10)),
+        20,
+        0.5,
+        True,
+        True,
+        0.9,
+        2,
+        True,
+        "v28",
+        0,
+        "exact_previous",
+        55,
+        "115051970",
+        "2026-09-14",
+        "2026-09-14T00:05:00+00:00",
+        list(range(10, 30)),
+        list(range(10, 30)),
+        7,
+        False,
+        "official",
+        "verified",
+        None,
+        True,
+        {},
+        "2026-09-14T00:05:00+00:00",
+        "2026-09-14T00:05:00+00:00",
+    )
+    assert len(row[:prediction_width]) == prediction_width
+    monkeypatch.setattr(prediction_history_store, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", lambda sql, params=(), sqlite_sql=None: [row])
+    monkeypatch.setattr(
+        prediction_history_store,
+        "_prediction_event_metadata",
+        lambda record: (_ for _ in ()).throw(AssertionError("metadata lookup should be skipped")),
+    )
+
+    result = prediction_history_store.get_previous_verification_summary_snapshot(
+        "115051970",
+        include_metadata_lookup=False,
+    )
+
+    assert result["record"]["source"] == "production_history"
+    assert result["record"]["trigger"] == "production_read_layer"
+    transform = result["row_transform_diagnostics"]
+    assert transform["metadata_lookup_count"] == 0
+    assert transform["metadata_lookup_skipped"] is True
+    assert transform["helper_counts"]["metadata_lookup"] == 0
+    assert transform["stages"]["metadata_enrichment"]["skipped_metadata_lookup"] is True
 
 
 def test_previous_verification_old_new_semantic_equivalence(monkeypatch):
@@ -475,7 +560,12 @@ def test_previous_verification_old_new_semantic_equivalence(monkeypatch):
     monkeypatch.setattr(
         player_dashboard,
         "get_previous_verification_summary_snapshot",
-        lambda issue: {"record": record, "draw": draw, "mode": "exact_previous", "db_timing": {"query_count": 1}},
+        lambda issue, *, include_metadata_lookup=True: {
+            "record": record,
+            "draw": draw,
+            "mode": "exact_previous",
+            "db_timing": {"query_count": 1},
+        },
     )
 
     new_payload = player_dashboard._build_previous_verification_snapshot("115051970")
