@@ -228,25 +228,51 @@ def _row_to_weights(row: Any) -> dict:
 
 
 def get_active_adaptive_weights() -> dict | None:
+    # A V7 row is eligible to affect predictions only after its source issue's
+    # complete 18-row learning ledger has been marked weight_changed in cloud.
     rows = _query_with_fallback(
         """
-        select id, version, strategy, "window",
-               laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
-               source_evaluation_id, is_active, created_at, updated_at
-        from adaptive_weights
-        where is_active = true
-        order by updated_at desc, id desc
+        select aw.id, aw.version, aw.strategy, aw."window",
+               aw.laowanjia_weight, aw.hot_cold_weight, aw.balance_weight,
+               aw.tail_weight, aw.random_weight, aw.missing_weight, aw.pattern_weight, aw.average_hits, aw.hit_rate,
+               aw.source_evaluation_id, aw.is_active, aw.created_at, aw.updated_at
+        from adaptive_weights aw
+        where aw.is_active = true
+          and (
+            aw.strategy <> 'v7_models'
+            or (
+              select count(*)
+              from learning_history lh
+              where lh.issue = aw.source_evaluation_id::text
+                and lh.prediction_type = 'live_prediction'
+                and lh.verification_status = 'verified'
+                and lh.learned_status = 'learned'
+                and lh.weight_changed = true
+            ) = 18
+          )
+        order by aw.updated_at desc, aw.id desc
         limit 1
         """,
         sqlite_sql="""
-        select id, version, strategy, "window",
-               laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
-               source_evaluation_id, is_active, created_at, updated_at
-        from adaptive_weights
-        where is_active = 1
-        order by updated_at desc, id desc
+        select aw.id, aw.version, aw.strategy, aw."window",
+               aw.laowanjia_weight, aw.hot_cold_weight, aw.balance_weight,
+               aw.tail_weight, aw.random_weight, aw.missing_weight, aw.pattern_weight, aw.average_hits, aw.hit_rate,
+               aw.source_evaluation_id, aw.is_active, aw.created_at, aw.updated_at
+        from adaptive_weights aw
+        where aw.is_active = 1
+          and (
+            aw.strategy <> 'v7_models'
+            or (
+              select count(*)
+              from learning_history lh
+              where lh.issue = cast(aw.source_evaluation_id as text)
+                and lh.prediction_type = 'live_prediction'
+                and lh.verification_status = 'verified'
+                and lh.learned_status = 'learned'
+                and lh.weight_changed = 1
+            ) = 18
+          )
+        order by aw.updated_at desc, aw.id desc
         limit 1
         """,
     )
