@@ -924,6 +924,21 @@ def evaluate_verified_issue(issue: str) -> dict:
                 "adaptive_weights": {"status": "skipped", "reason": "incomplete_learning_record_set"},
             }
         saved = [upsert_learning_record(record) for record in records]
+        if status == "ok":
+            cloud_saved = [
+                result for result in saved
+                if result.get("status") == "ok" and result.get("storage") == "cloud"
+            ]
+            if len(cloud_saved) != EXPECTED_RECORDS_PER_TARGET:
+                return {
+                    "status": "error",
+                    "reason": "learning_cloud_save_required",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": {"status": "skipped"},
+                    "adaptive_weights": {"status": "skipped", "reason": "learning_cloud_save_required"},
+                }
         record_operation_event(
             component="learning",
             event_type="learning_evaluation",
@@ -945,6 +960,16 @@ def evaluate_verified_issue(issue: str) -> dict:
         adaptive_weights = {"status": "skipped"}
         if status == "ok":
             adaptive_weights = update_v7_adaptive_weights(str(issue))
+            if adaptive_weights.get("status") == "error":
+                return {
+                    "status": "error",
+                    "reason": "adaptive_learning_failed",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": {"status": "skipped"},
+                    "adaptive_weights": adaptive_weights,
+                }
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
 
