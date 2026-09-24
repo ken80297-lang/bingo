@@ -45,6 +45,8 @@ def init_adaptive_weight_tables() -> dict:
                         balance_weight double precision,
                         tail_weight double precision,
                         random_weight double precision,
+                        missing_weight double precision,
+                        pattern_weight double precision,
                         average_hits double precision,
                         hit_rate double precision,
                         source_evaluation_id bigint,
@@ -99,6 +101,8 @@ def _weight_params(weights: dict) -> tuple:
         weights.get("balance_weight"),
         weights.get("tail_weight"),
         weights.get("random_weight"),
+        weights.get("missing_weight"),
+        weights.get("pattern_weight"),
         weights.get("average_hits"),
         weights.get("hit_rate"),
         weights.get("source_evaluation_id"),
@@ -116,10 +120,10 @@ def _save_cloud(weights: dict) -> int:
                 (
                     version, strategy, "window",
                     laowanjia_weight, hot_cold_weight, balance_weight,
-                    tail_weight, random_weight, average_hits, hit_rate,
+                    tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                     source_evaluation_id, is_active, updated_at
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 returning id
                 """,
                 _weight_params(weights),
@@ -138,10 +142,10 @@ def _save_sqlite(weights: dict) -> int:
             (
                 version, strategy, "window",
                 laowanjia_weight, hot_cold_weight, balance_weight,
-                tail_weight, random_weight, average_hits, hit_rate,
+                tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                 source_evaluation_id, is_active, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*_weight_params(weights), _now()),
         )
@@ -205,12 +209,14 @@ def _row_to_weights(row: Any) -> dict:
         "balance_weight": row[6],
         "tail_weight": row[7],
         "random_weight": row[8],
-        "average_hits": row[9],
-        "hit_rate": row[10],
-        "source_evaluation_id": row[11],
-        "is_active": bool(row[12]),
-        "created_at": str(row[13]) if row[13] is not None else None,
-        "updated_at": str(row[14]) if row[14] is not None else None,
+        "missing_weight": row[9],
+        "pattern_weight": row[10],
+        "average_hits": row[11],
+        "hit_rate": row[12],
+        "source_evaluation_id": row[13],
+        "is_active": bool(row[14]),
+        "created_at": str(row[15]) if row[15] is not None else None,
+        "updated_at": str(row[16]) if row[16] is not None else None,
     }
 
 
@@ -219,7 +225,7 @@ def get_active_adaptive_weights() -> dict | None:
         """
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         where is_active = true
@@ -229,7 +235,7 @@ def get_active_adaptive_weights() -> dict | None:
         sqlite_sql="""
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         where is_active = 1
@@ -245,7 +251,7 @@ def get_latest_adaptive_weights() -> dict | None:
         """
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc
@@ -260,7 +266,7 @@ def get_adaptive_weight_history(limit: int = 20) -> list[dict]:
         """
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc
@@ -270,7 +276,7 @@ def get_adaptive_weight_history(limit: int = 20) -> list[dict]:
         sqlite_sql="""
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc
