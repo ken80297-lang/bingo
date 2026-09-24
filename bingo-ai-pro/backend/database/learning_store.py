@@ -532,6 +532,59 @@ def _row_to_summary_record(row: Any) -> dict:
     }
 
 
+
+def mark_learning_weight_changed(issue: str, changed: bool = True) -> dict:
+    """Mark the strict learning ledger rows whose evaluation produced adaptive weights."""
+    generation = get_production_generation()
+    cloud_error = None
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update learning_history
+                        set weight_changed = %s, updated_at = now()
+                        where issue = %s
+                          and prediction_type = 'live_prediction'
+                          and verification_status = 'verified'
+                          and learned_status = 'learned'
+                          and production_generation = %s
+                        """,
+                        (bool(changed), str(issue), generation),
+                        prepare=False,
+                    )
+                    affected = int(cur.rowcount or 0)
+                conn.commit()
+            return {"status": "ok", "storage": "cloud", "updated": affected}
+        except Exception as exc:
+            logger.exception("cloud learning weight_changed update failed")
+            cloud_error = str(exc)
+
+    try:
+        with _sqlite_connection() as conn:
+            cursor = conn.execute(
+                """
+                update learning_history
+                set weight_changed = ?, updated_at = ?
+                where issue = ?
+                  and prediction_type = 'live_prediction'
+                  and verification_status = 'verified'
+                  and learned_status = 'learned'
+                  and production_generation = ?
+                """,
+                (1 if changed else 0, _now(), str(issue), generation),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "storage": "sqlite",
+                "updated": int(cursor.rowcount or 0),
+                "cloud_error": cloud_error,
+            }
+    except Exception as exc:
+        return {"status": "error", "storage": "none", "error": str(exc), "cloud_error": cloud_error}
+
 def get_learning_records(
     limit: int = 100,
     offset: int = 0,
