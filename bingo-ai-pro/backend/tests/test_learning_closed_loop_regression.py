@@ -225,7 +225,7 @@ def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
         target_issue="115000002",
     )
 
-    assert result["status"] == "created"
+    assert result["status"] == "created", result
     assert result["learning_snapshot_complete"] is True
     assert result["learning_snapshot_warning"] is None
     assert len(calls) == 1
@@ -280,7 +280,7 @@ def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
         target_issue="115000002",
     )
 
-    assert result["status"] == "created"
+    assert result["status"] == "created", result
     assert result["persisted"] is True
     assert result["learning_snapshot_complete"] is False
     assert result["learning_snapshot_warning"] == "learning_snapshot_incomplete"
