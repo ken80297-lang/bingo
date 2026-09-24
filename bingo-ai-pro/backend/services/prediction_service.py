@@ -671,7 +671,7 @@ def create_for_official_draw(
         record["model_version"] = MODEL_VERSION
         record["feature_version"] = FEATURE_VERSION
         model_scores = record.get("model_scores") if isinstance(record.get("model_scores"), dict) else {}
-        fast_path_scores = model_scores.get("production_fast_path") if isinstance(model_scores.get("production_fast_path"), dict) else {}
+        fast_path_scores = recommendation.get("production_fast_path") if isinstance(recommendation.get("production_fast_path"), dict) else {}
         fast_path_scores.update(
             {
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
@@ -679,8 +679,12 @@ def create_for_official_draw(
                 "previous_strategy_version": previous_strategy_version,
             }
         )
-        model_scores["production_fast_path"] = fast_path_scores
+        # Keep V7 model_scores clean for learning snapshots. Fast-path
+        # provenance is stored separately so it is not counted as a seventh
+        # learning model.
         record["model_scores"] = model_scores
+        record["fast_path_strategy_version"] = FAST_PATH_STRATEGY_VERSION
+        record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
