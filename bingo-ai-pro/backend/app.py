@@ -688,7 +688,7 @@ def startup_event() -> None:
             from database.analysis_store import get_analysis_history
             from scripts.walk_forward_adaptive_ab import run as run_adaptive_walk_forward_ab
 
-            history = get_analysis_history(600)
+            history = get_analysis_history(1000)
             if len(history) < 120:
                 print(
                     "ADAPTIVE_WALK_FORWARD_AB_ERROR "
