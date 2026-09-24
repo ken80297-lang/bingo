@@ -13,7 +13,15 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from database import analysis_store, collector_store, learning_store, official_draw_store, postgres, prediction_history_store
+from database import (
+    analysis_store,
+    collector_store,
+    learning_store,
+    official_draw_store,
+    postgres,
+    prediction_history_store,
+    rule_snapshot_store,
+)
 from services import player_dashboard
 
 
@@ -1253,6 +1261,154 @@ def test_analysis_history_timed_lookup_uses_dashboard_read_pool_only_when_reques
     analysis_store.get_analysis_history_by_issue_with_timing("115052000", use_dashboard_read_pool=True)
 
     assert used == ["direct", "pool"]
+
+
+def test_rule_snapshot_timed_lookup_records_direct_connection_timing(monkeypatch):
+    used = []
+    snapshot = {
+        "source_issue": "115052000",
+        "target_issue": "115052001",
+        "rule_library_version": "test",
+        "rules": [{"key": "hot", "label": "熱門", "status": "ready", "candidate_numbers": [1]}],
+    }
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=()):
+            self.sql = sql
+            self.params = params
+
+        def fetchone(self):
+            return (
+                7,
+                "115052000",
+                "115052001",
+                "test",
+                snapshot,
+                "2026-09-24T00:00:00+00:00",
+                "2026-09-24T00:00:00+00:00",
+                "2026-09-24T00:00:00+00:00",
+            )
+
+    class FakeConnection:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            used.append(self.name)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(rule_snapshot_store, "_cloud_enabled", lambda: True)
+    monkeypatch.setattr(rule_snapshot_store, "_cloud_connection", lambda: FakeConnection("direct"))
+    monkeypatch.setattr(rule_snapshot_store, "_dashboard_read_connection", lambda: FakeConnection("pool"))
+
+    record, timing = rule_snapshot_store.get_rule_snapshot_with_timing(
+        source_issue="115052000",
+        target_issue="115052001",
+    )
+    pooled_record, pooled_timing = rule_snapshot_store.get_rule_snapshot_with_timing(
+        source_issue="115052000",
+        target_issue="115052001",
+        use_dashboard_read_pool=True,
+    )
+
+    assert used == ["direct", "pool"]
+    assert record["snapshot_json"]["rules"][0]["key"] == "hot"
+    assert pooled_record["snapshot_json"]["rules"][0]["key"] == "hot"
+    assert timing["connection_path"] == "direct_connection"
+    assert timing["query_count"] == 1
+    assert timing["db_calls"] == 1
+    assert timing["row_count"] == 1
+    assert timing["execute_ms"] >= 0
+    assert timing["fetch_ms"] >= 0
+    assert timing["transform_ms"] >= 0
+    assert pooled_timing["connection_path"] == "dashboard_read_pool"
+    assert pooled_timing["pool_acquire_ms"] is not None
+
+
+def test_card_two_rule_processing_records_snapshot_breakdown(monkeypatch):
+    record = {
+        "id": 1,
+        "issue": "115052000",
+        "prediction_issue": "115052001",
+        "prediction_status": "verified",
+        "production_valid": True,
+        "production_generation": 2,
+        "strategy": "ProductionFastPath",
+        "recommend_numbers": list(range(1, 21)),
+        "winning_numbers": list(range(1, 21)),
+        "actual_super": 12,
+        "learning_used": True,
+        "big_small": "big",
+        "odd_even": "odd",
+    }
+    snapshot = {
+        "rules": [
+            {
+                "key": "hot",
+                "label": "熱門",
+                "status": "ready",
+                "score": 80,
+                "candidate_numbers": [1, 2, 80],
+            }
+        ]
+    }
+
+    def fake_rule_snapshot_lookup(**kwargs):
+        return (
+            {"snapshot_json": snapshot},
+            {
+                "query_count": 1,
+                "db_calls": 1,
+                "connection_path": "direct_connection",
+                "connect_ms": 9.0,
+                "execute_ms": 3.0,
+                "fetch_ms": 0.5,
+                "transform_ms": 0.2,
+                "total_ms": 12.7,
+            },
+        )
+
+    monkeypatch.setattr(player_dashboard, "get_rule_snapshot_with_timing", fake_rule_snapshot_lookup)
+    monkeypatch.setattr(
+        player_dashboard,
+        "_card_two_analysis_by_issue_with_timing",
+        lambda issue, *, use_dashboard_read_pool=False: ({"issue": issue}, {"query_count": 0, "db_calls": 0}),
+    )
+
+    diagnostics = {}
+    payload = player_dashboard._card_two_from_record(
+        record,
+        {"issue": "115052001"},
+        "115052001",
+        diagnostics=diagnostics,
+        use_dashboard_read_pool=True,
+    )
+
+    stages = payload["diagnostics"]["card_two_execution"]["stages"]
+    lookup = stages["_card_two_rules.rule_snapshot_lookup"]
+    assert payload["available"] is True
+    assert lookup["connection_path"] == "direct_connection"
+    assert lookup["query_count"] == 1
+    assert lookup["db_calls"] == 1
+    assert lookup["execute_ms"] == 3.0
+    assert stages["_card_two_rules.rule_parsing"]["rule_count"] == 1
+    assert stages["_card_two_rules.rule_selection_filtering"]["query_count"] == 0
+    assert stages["_card_two_rules.rule_evaluation"]["query_count"] == 0
+    assert stages["_card_two_rules.format_payload"]["query_count"] == 0
+    assert stages["_card_two_rules.total"]["query_count"] == 1
+    assert stages["_card_two_from_record.rule_processing"]["rule_count"] == 1
 
 
 def test_dashboard_component_stage_latency_preserves_exception(caplog):
