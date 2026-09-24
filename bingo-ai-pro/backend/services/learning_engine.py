@@ -831,6 +831,122 @@ def update_v7_adaptive_weights(source_issue: str) -> dict:
         "save": saved,
     }
 
+def evaluate_verified_issue(issue: str) -> dict:
+    start = time.perf_counter()
+    try:
+        snapshot = capture_prediction_snapshot(issue)
+        if snapshot.get("status") != "ok":
+            record = {
+                "issue": str(issue),
+                "draw_time": None,
+                "model_name": "unknown",
+                "model_version": DEFAULT_MODEL_VERSION,
+                "prediction_type": "live_prediction",
+                "predicted_numbers": [],
+                "predicted_scores": {},
+                "official_numbers": [],
+                "hit_numbers": [],
+                "predicted_count": 0,
+                "hit_count": 0,
+                "precision_score": 0,
+                "official_coverage": 0,
+                "rank_score": 0,
+                "top_n": 0,
+                "prediction_snapshot": {},
+                "analysis_snapshot": {},
+                "verification_status": "missing_prediction",
+                "learned_status": "missing_snapshot",
+                "learned_at": None,
+                "error_message": "prediction snapshot not found",
+            }
+            saved = upsert_learning_record(record)
+            return {"status": "missing_snapshot", "issue": issue, "saved": [saved]}
+
+        official = get_official_draw_by_issue(str(issue), verified_only=False)
+        existing_records = snapshot.get("learning_records") or []
+        if existing_records:
+            official_numbers = _as_int_list((official or {}).get("numbers"))
+            verification_status = "verified" if official and len(official_numbers) == 20 else "pending_official"
+            learned_status = "learned" if verification_status == "verified" else "pending"
+            learned_at = datetime.utcnow().isoformat() if learned_status == "learned" else None
+            records = []
+            for existing in existing_records:
+                result = calculate_model_result(existing.get("predicted_numbers") or [], official_numbers) if official_numbers else {
+                    "hit_numbers": [],
+                    "hit_count": 0,
+                    "predicted_count": len(existing.get("predicted_numbers") or []),
+                    "precision_score": 0,
+                    "official_coverage": 0,
+                }
+                updated = {
+                    **existing,
+                    "official_numbers": official_numbers,
+                    "hit_numbers": result["hit_numbers"],
+                    "predicted_count": result["predicted_count"],
+                    "hit_count": result["hit_count"],
+                    "precision_score": result["precision_score"],
+                    "official_coverage": result["official_coverage"],
+                    "rank_score": _rank_score(result["hit_count"], int(existing.get("top_n") or 0)),
+                    "verification_status": verification_status,
+                    "learned_status": learned_status,
+                    "learned_at": learned_at,
+                    "draw_time": (official or {}).get("draw_time") or existing.get("draw_time"),
+                    "error_message": None,
+                }
+                records.append(updated)
+        else:
+            return {"status": "missing_snapshot", "issue": issue, "saved": []}
+        saved = [upsert_learning_record(record) for record in records]
+        status = "ok" if official else "pending_official"
+        record_operation_event(
+            component="learning",
+            event_type="learning_evaluation",
+            status="ok" if status == "ok" else "warning",
+            issue=str(issue),
+            message=f"learning evaluation {status}",
+            duration_ms=_duration_ms(start),
+        )
+        if status == "ok":
+            record_operation_event(
+                component="learning",
+                event_type="learning_completed",
+                status="ok",
+                issue=str(issue),
+                message=f"learning completed for {issue}",
+                duration_ms=_duration_ms(start),
+            )
+        learning_queue = {"status": "skipped"}
+        if status == "ok":
+            try:
+                from database.prediction_history_store import mark_prediction_learning_used
+
+                learning_queue = mark_prediction_learning_used(str(issue), True)
+            except Exception as exc:
+                logger.exception("prediction history learning queue update failed")
+                learning_queue = {"status": "error", "message": str(exc)}
+            invalidate_learning_status_cache()
+        return {
+            "status": status,
+            "issue": issue,
+            "records": len(records),
+            "saved": saved,
+            "learning_queue": learning_queue,
+        }
+    except Exception as exc:
+        logger.exception("learning evaluation failed")
+        record_operation_event(
+            component="learning",
+            event_type="learning_evaluation",
+            status="error",
+            issue=str(issue),
+            message="learning evaluation failed",
+            duration_ms=_duration_ms(start),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return {"status": "error", "issue": issue, "error": str(exc)}
+
+
 def recalculate_issue(issue: str) -> dict:
     return evaluate_verified_issue(issue)
 
