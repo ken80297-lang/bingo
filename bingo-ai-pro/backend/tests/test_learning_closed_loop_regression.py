@@ -357,7 +357,7 @@ def test_full_snapshot_verification_learning_closed_loop(monkeypatch):
         key = (row.get("model_name"), row.get("top_n"))
         bucket[:] = [existing for existing in bucket if (existing.get("model_name"), existing.get("top_n")) != key]
         bucket.append(dict(row))
-        return dict(row)
+        return {"status": "ok", "storage": "cloud", **dict(row)}
 
     monkeypatch.setattr(learning_engine, "upsert_learning_record", upsert)
     monkeypatch.setattr(
