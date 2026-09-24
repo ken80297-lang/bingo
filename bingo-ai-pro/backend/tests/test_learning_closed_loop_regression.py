@@ -681,3 +681,29 @@ def test_existing_adaptive_weight_does_not_hide_failed_reconciliation(monkeypatc
     result = learning_engine.update_v7_adaptive_weights("115500001")
     assert result["status"] == "error"
     assert result["reason"] == "adaptive_weight_evidence_reconciliation_required"
+
+
+def test_complete_verified_issue_invokes_adaptive_updater_once(monkeypatch):
+    complete = _complete_learning_rows("115600001")
+    for row in complete:
+        row.update({
+            "source_issue": "115600000",
+            "target_issue": "115600001",
+            "predicted_numbers": list(range(1, int(row["top_n"]) + 1)),
+            "prediction_snapshot": {"source_issue": "115600000"},
+            "analysis_snapshot": {"issue": "115600000"},
+        })
+    monkeypatch.setattr(learning_engine, "capture_prediction_snapshot", lambda issue: {"status": "ok", "learning_records": complete})
+    monkeypatch.setattr(learning_engine, "get_official_draw_by_issue", lambda issue, verified_only=False: {"issue": issue, "numbers": list(range(1, 21)), "draw_time": "x"})
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", lambda row: {"status": "ok", "storage": "cloud"})
+    monkeypatch.setattr(learning_engine, "record_operation_event", lambda **kwargs: None)
+    adaptive = []
+    monkeypatch.setattr(learning_engine, "update_v7_adaptive_weights", lambda issue: adaptive.append(issue) or {"status": "ok"})
+    import database.prediction_history_store as phs
+    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: {"status": "ok"})
+
+    result = learning_engine.evaluate_verified_issue("115600001")
+    assert result["status"] == "ok"
+    assert result["records"] == 18
+    assert adaptive == ["115600001"]
+    assert result["adaptive_weights"]["status"] == "ok"
