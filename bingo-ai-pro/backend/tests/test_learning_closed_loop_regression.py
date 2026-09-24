@@ -728,8 +728,14 @@ def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch)
     assert "lh.verification_status = 'verified'" in cloud
     assert "lh.learned_status = 'learned'" in cloud
     assert "lh.weight_changed = true" in cloud
+    assert "count(distinct (lh.model_name, lh.top_n))" in cloud
+    assert "lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')" in cloud
+    assert "lh.top_n in (5,10,20)" in cloud
     assert ") = 18" in cloud
     assert "lh.weight_changed = 1" in sqlite
+    assert "count(distinct lh.model_name || ':' || cast(lh.top_n as text))" in sqlite
+    assert "lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')" in sqlite
+    assert "lh.top_n in (5,10,20)" in sqlite
     assert ") = 18" in sqlite
 
 
