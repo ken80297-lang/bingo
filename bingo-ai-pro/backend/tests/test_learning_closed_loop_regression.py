@@ -707,3 +707,27 @@ def test_complete_verified_issue_invokes_adaptive_updater_once(monkeypatch):
     assert result["records"] == 18
     assert adaptive == ["115600001"]
     assert result["adaptive_weights"]["status"] == "ok"
+
+
+def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch):
+    from database import adaptive_weight_store
+
+    captured = {}
+    def fake_query(sql, params=(), sqlite_sql=None):
+        captured["cloud"] = sql
+        captured["sqlite"] = sqlite_sql
+        return []
+
+    monkeypatch.setattr(adaptive_weight_store, "_query_with_fallback", fake_query)
+    assert adaptive_weight_store.get_active_adaptive_weights() is None
+
+    cloud = captured["cloud"]
+    sqlite = captured["sqlite"]
+    assert "aw.strategy <> 'v7_models'" in cloud
+    assert "lh.prediction_type = 'live_prediction'" in cloud
+    assert "lh.verification_status = 'verified'" in cloud
+    assert "lh.learned_status = 'learned'" in cloud
+    assert "lh.weight_changed = true" in cloud
+    assert ") = 18" in cloud
+    assert "lh.weight_changed = 1" in sqlite
+    assert ") = 18" in sqlite
