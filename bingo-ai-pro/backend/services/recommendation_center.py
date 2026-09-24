@@ -531,6 +531,8 @@ def calculate_fast_recommendation(
                 "model_scores": learning_model_scores,
                 "winning_model": learning_winning_model,
                 "models": learning_models,
+                "compute_ms": learning_models_compute_ms,
+                "history_records": len(context.get("learning_analysis_history") or []),
             },
             "recommendation_trace": trace,
             "recommendation_output": output,
