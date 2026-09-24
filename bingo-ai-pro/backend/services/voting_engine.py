@@ -3,8 +3,30 @@ from __future__ import annotations
 from collections import Counter
 
 from services.model_engine import MODEL_NAMES, model_hit_rates, run_all_models
+from database.adaptive_weight_store import get_active_adaptive_weights
 
 RECOMMENDATION_NUMBER_COUNT = 20
+
+V7_ADAPTIVE_WEIGHT_KEYS = {
+    "laowanjia": "laowanjia_weight",
+    "hotcold": "hot_cold_weight",
+    "missing": "missing_weight",
+    "pattern": "pattern_weight",
+    "balance": "balance_weight",
+}
+
+
+def _adaptive_multiplier(model_key: str, adaptive: dict | None) -> float:
+    if not adaptive or str(adaptive.get("strategy") or "") != "v7_models":
+        return 1.0
+    key = V7_ADAPTIVE_WEIGHT_KEYS.get(str(model_key or ""))
+    if not key:
+        return 1.0
+    try:
+        value = float(adaptive.get(key))
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.5, min(1.5, value))
 
 
 def _stars(confidence: float) -> str:
@@ -32,6 +54,7 @@ def build_voting_result(limit: int = 100) -> dict:
     model_scores: dict = {}
     trace: list[dict] = []
     total_model_candidates = 0
+    adaptive = get_active_adaptive_weights()
 
     for model in models:
         confidence = float(model.get("confidence") or 0)
@@ -56,7 +79,10 @@ def build_voting_result(limit: int = 100) -> dict:
             "reason": model.get("reason"),
             "candidate_numbers": model_candidates,
         }
-        weight = max(1, confidence / 20)
+        adaptive_multiplier = _adaptive_multiplier(model_key, adaptive)
+        weight = max(1, confidence / 20) * adaptive_multiplier
+        model_scores[model_key]["adaptive_multiplier"] = round(adaptive_multiplier, 4)
+        model_scores[model_key]["effective_vote_weight"] = round(weight, 4)
         for rank, number in enumerate(model_candidates):
             votes[number] += weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
         if model.get("reason"):
@@ -121,6 +147,11 @@ def build_voting_result(limit: int = 100) -> dict:
         "trace": trace,
         "confidence": round(max(1, min(100, confidence)), 2),
         "reason": reasons[:5],
+        "adaptive_learning": {
+            "enabled": bool(adaptive and str(adaptive.get("strategy") or "") == "v7_models"),
+            "weight_id": adaptive.get("id") if adaptive else None,
+            "version": adaptive.get("version") if adaptive else None,
+        },
     }
 
 
