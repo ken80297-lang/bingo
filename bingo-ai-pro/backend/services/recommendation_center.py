@@ -458,7 +458,9 @@ def calculate_fast_recommendation(
         # replacing the fast-path 20-number selection with V7 voting.
         from services.model_engine import run_all_models
 
+        learning_models_started = time.perf_counter()
         learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
+        learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
         learning_models = learning_models_payload.get("models") or []
         learning_model_scores = {
             str(model.get("model")): {
