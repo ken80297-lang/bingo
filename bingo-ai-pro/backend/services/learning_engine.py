@@ -449,7 +449,18 @@ def capture_prediction_snapshot(issue: str | None = None) -> dict:
             and int(record.get("predicted_count") or len(record.get("predicted_numbers") or [])) > 0
             and bool(record.get("prediction_snapshot"))
         ]
-        if valid_records:
+        valid_combos = {
+            (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
+            for record in valid_records
+            if str(record.get("model_name") or "") in EXPECTED_LIVE_MODELS
+            and int(record.get("top_n") or 0) in EXPECTED_TOP_N
+        }
+        expected_combos = {
+            (model_name, top_n)
+            for model_name in EXPECTED_LIVE_MODELS
+            for top_n in EXPECTED_TOP_N
+        }
+        if valid_combos == expected_combos and len(valid_records) == EXPECTED_RECORDS_PER_TARGET:
             first = valid_records[0]
             return {
                 "status": "ok",
