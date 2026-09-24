@@ -4,6 +4,7 @@ from collections import defaultdict
 from statistics import mean
 from database.collector_store import get_draw_history
 from services.voting_engine import build_voting_candidates_from_draws
+from collections import Counter
 
 MODELS=("laowanjia","hotcold","missing","pattern","balance")
 KEYS={"laowanjia":"laowanjia_weight","hotcold":"hot_cold_weight","missing":"missing_weight","pattern":"pattern_weight","balance":"balance_weight"}
@@ -30,6 +31,16 @@ def weights(perf,version):
     av={m:mean(perf[m][-100:]) for m in MODELS}; center=mean(av.values()) or 1
     return {"strategy":"v7_models","version":version,**{KEYS[m]:max(.5,min(1.5,av[m]/center)) for m in MODELS}}
 
+def _rank_without_model(model_scores, excluded):
+    votes=Counter()
+    for model_key, payload in model_scores.items():
+        if model_key == excluded: continue
+        confidence=float(payload.get("confidence") or 0)
+        weight=max(1, confidence/20)
+        for rank, number in enumerate(payload.get("candidate_numbers") or []):
+            votes[number] += weight + max(0, 20-rank)*0.15
+    return [number for number,_ in votes.most_common(20)]
+
 def run(draws,warmup=100,seed=20260925):
     clean=[{**d,"issue":str(d.get("issue")),"numbers":nums(d)} for d in draws if len(nums(d))==20 and str(d.get("issue") or "").isdigit()]
     clean.sort(key=lambda d:int(d["issue"]))
@@ -51,7 +62,8 @@ def run(draws,warmup=100,seed=20260925):
         rows.append({"issue":target["issue"],"adaptive_enabled":adaptive is not None,
           "off20":hits(os[:20],official),"on20":hits(ns[:20],official),"random20":hits(rnd,official),
           "off5":hits(os[:5],official),"on5":hits(ns[:5],official),"random5":hits(rnd[:5],official),
-          "model_hits":model_hits,"adaptive_weights":adaptive})
+          "model_hits":model_hits,"adaptive_weights":adaptive,
+          "leave_one_out":{m:hits(_rank_without_model(off.get("model_scores",{}),m),official) for m in MODELS}})
     avg=lambda k: mean(r[k] for r in rows) if rows else 0
     model_summary={m:{"hit20":mean(r["model_hits"][m]["hit20"] for r in rows) if rows else 0,
                       "hit5":mean(r["model_hits"][m]["hit5"] for r in rows) if rows else 0} for m in MODELS}
@@ -59,6 +71,8 @@ def run(draws,warmup=100,seed=20260925):
     weight_summary={m:(mean(r["adaptive_weights"][KEYS[m]] for r in adaptive_rows) if adaptive_rows else 1.0) for m in MODELS}
     return {"summary":{"issues":len(rows),"warmup":warmup,"adaptive_active_issues":sum(r["adaptive_enabled"] for r in rows),
       "model_performance":model_summary,"mean_adaptive_multipliers":weight_summary,
+      "leave_one_out_top20":{m:mean(r["leave_one_out"][m] for r in rows) if rows else 0 for m in MODELS},
+      "leave_one_out_delta_vs_full":{m:(mean(r["leave_one_out"][m] for r in rows)-avg("off20")) if rows else 0 for m in MODELS},
       "off20":avg("off20"),"on20":avg("on20"),"random20":avg("random20"),
       "off5":avg("off5"),"on5":avg("on5"),"random5":avg("random5"),
       "paired_on_minus_off_20":ci([r["on20"]-r["off20"] for r in rows]),
