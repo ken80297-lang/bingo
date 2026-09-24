@@ -56,6 +56,8 @@ def init_adaptive_weight_tables() -> dict:
                     )
                     """
                 )
+                cur.execute("alter table adaptive_weights add column if not exists missing_weight double precision")
+                cur.execute("alter table adaptive_weights add column if not exists pattern_weight double precision")
             conn.commit()
         results["cloud"] = "available"
     except Exception:
@@ -84,6 +86,11 @@ def init_adaptive_weight_tables() -> dict:
                 )
                 """
             )
+            existing = {row[1] for row in conn.execute("pragma table_info(adaptive_weights)").fetchall()}
+            if "missing_weight" not in existing:
+                conn.execute("alter table adaptive_weights add column missing_weight real")
+            if "pattern_weight" not in existing:
+                conn.execute("alter table adaptive_weights add column pattern_weight real")
         results["sqlite"] = "available"
     except Exception:
         logger.exception("failed to initialize sqlite adaptive_weights table")
