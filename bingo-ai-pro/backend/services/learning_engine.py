@@ -19,6 +19,7 @@ from database.learning_store import (
     get_learning_records,
     get_learning_summary_records,
     get_learning_status_counts,
+    mark_learning_weight_changed,
     upsert_learning_record,
 )
 from database.official_draw_store import get_official_draw_by_issue
@@ -818,6 +819,14 @@ def update_v7_adaptive_weights(source_issue: str) -> dict:
     saved = save_adaptive_weights(payload)
     if saved.get("status") != "ok" or saved.get("storage") != "cloud":
         return {"status": "error", "reason": "adaptive_weight_cloud_save_required", "save": saved}
+    evidence = mark_learning_weight_changed(str(source_issue), True)
+    if evidence.get("status") != "ok" or evidence.get("storage") != "cloud" or int(evidence.get("updated") or 0) != EXPECTED_RECORDS_PER_TARGET:
+        return {
+            "status": "error",
+            "reason": "adaptive_weight_evidence_update_required",
+            "save": saved,
+            "evidence": evidence,
+        }
     return {
         "status": "ok",
         "source_issue": str(source_issue),
@@ -825,6 +834,7 @@ def update_v7_adaptive_weights(source_issue: str) -> dict:
         "complete_targets": len(complete_issues),
         "weights": weights,
         "save": saved,
+        "evidence": evidence,
     }
 
 def evaluate_verified_issue(issue: str) -> dict:
