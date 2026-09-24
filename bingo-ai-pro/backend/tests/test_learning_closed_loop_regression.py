@@ -175,3 +175,108 @@ def test_prediction_history_recovery_requires_and_builds_18_records():
         "laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"
     }
     assert {row["top_n"] for row in records} == {5, 10, 20}
+
+
+def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
+    from services import prediction_service
+
+    monkeypatch.setattr(prediction_service, "_acquire_prediction_lock", lambda owner: (True, {"status": "ok", "lock_token": "t"}))
+    monkeypatch.setattr(prediction_service, "_release_prediction_lock", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prediction_service, "_existing_prediction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+    monkeypatch.setattr(prediction_service, "get_production_generation", lambda: 2)
+
+    recommendation = {
+        "issue": "115000001",
+        "target_issue": "115000002",
+        "recommended_numbers": list(range(1, 21)),
+        "recommend_numbers": list(range(1, 21)),
+        "model_scores": {},
+    }
+    monkeypatch.setattr(
+        prediction_service,
+        "calculate_fast_recommendation",
+        lambda *args, **kwargs: {"status": "ok", "recommendation": dict(recommendation)},
+    )
+    monkeypatch.setattr(
+        prediction_service,
+        "build_prediction_history_record",
+        lambda rec: {"recommend_numbers": list(range(1, 21)), "model_scores": {}},
+    )
+    monkeypatch.setattr(
+        prediction_service,
+        "save_prediction_history",
+        lambda *args, **kwargs: {"status": "ok", "id": 99, "storage": "test"},
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        learning_engine,
+        "save_live_prediction_snapshot",
+        lambda rec: calls.append(dict(rec)) or {"status": "ok", "records": 18},
+    )
+
+    result = prediction_service.create_for_official_draw(
+        "115000001",
+        source="test",
+        trigger="regression",
+        target_issue="115000002",
+    )
+
+    assert result["status"] == "created"
+    assert result["learning_snapshot_complete"] is True
+    assert result["learning_snapshot_warning"] is None
+    assert len(calls) == 1
+    assert calls[0]["issue"] == "115000001"
+    assert calls[0]["target_issue"] == "115000002"
+
+
+def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
+    from services import prediction_service
+
+    monkeypatch.setattr(prediction_service, "_acquire_prediction_lock", lambda owner: (True, {"status": "ok", "lock_token": "t"}))
+    monkeypatch.setattr(prediction_service, "_release_prediction_lock", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prediction_service, "_existing_prediction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+    monkeypatch.setattr(prediction_service, "get_production_generation", lambda: 2)
+    monkeypatch.setattr(
+        prediction_service,
+        "calculate_fast_recommendation",
+        lambda *args, **kwargs: {
+            "status": "ok",
+            "recommendation": {
+                "issue": "115000001",
+                "target_issue": "115000002",
+                "recommended_numbers": list(range(1, 21)),
+                "recommend_numbers": list(range(1, 21)),
+                "model_scores": {},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        prediction_service,
+        "build_prediction_history_record",
+        lambda rec: {"recommend_numbers": list(range(1, 21)), "model_scores": {}},
+    )
+    monkeypatch.setattr(
+        prediction_service,
+        "save_prediction_history",
+        lambda *args, **kwargs: {"status": "ok", "id": 100, "storage": "test"},
+    )
+    monkeypatch.setattr(
+        learning_engine,
+        "save_live_prediction_snapshot",
+        lambda rec: {"status": "ok", "records": 3},
+    )
+
+    result = prediction_service.create_for_official_draw(
+        "115000001",
+        source="test",
+        trigger="regression",
+        target_issue="115000002",
+    )
+
+    assert result["status"] == "created"
+    assert result["persisted"] is True
+    assert result["learning_snapshot_complete"] is False
+    assert result["learning_snapshot_warning"] == "learning_snapshot_incomplete"
