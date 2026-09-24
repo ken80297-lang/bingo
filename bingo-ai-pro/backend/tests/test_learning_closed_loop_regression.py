@@ -286,3 +286,51 @@ def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
     assert result["persisted"] is True
     assert result["learning_snapshot_complete"] is False
     assert result["learning_snapshot_warning"] == "learning_snapshot_incomplete"
+
+
+def test_fast_path_learning_capture_does_not_change_production_numbers(monkeypatch):
+    from services import recommendation_center
+
+    analysis = {
+        "issue": "115099900",
+        "numbers": list(range(1, 21)),
+        "super_number": 1,
+    }
+    expected_numbers = list(range(21, 41))
+    monkeypatch.setattr(recommendation_center, "get_latest_analysis_history", lambda: analysis)
+    monkeypatch.setattr(
+        recommendation_center,
+        "_build_fast_path_numbers",
+        lambda *args, **kwargs: (list(expected_numbers), {"overlap": 0}),
+    )
+
+    from services import model_engine
+    monkeypatch.setattr(
+        model_engine,
+        "run_all_models",
+        lambda limit=100: {
+            "status": "ok",
+            "models": [
+                {
+                    "model": name,
+                    "label": name,
+                    "confidence": 99,
+                    "reason": "learning-only",
+                    "candidate_numbers": list(range(41, 61)),
+                }
+                for name in ("laowanjia", "hotcold", "missing", "pattern", "balance")
+            ],
+        },
+    )
+
+    result = recommendation_center.calculate_fast_recommendation(
+        "115099900",
+        "115099901",
+        context={},
+    )
+
+    assert result["status"] == "ok"
+    recommendation = result["recommendation"]
+    assert recommendation["results"][0]["numbers"] == expected_numbers
+    assert recommendation["production_fast_path"]["candidate_numbers"] == expected_numbers
+    assert recommendation["model_voting"]["final_candidates"] != expected_numbers
