@@ -135,6 +135,12 @@ def api_learning_compute_benchmark() -> dict:
     payload = run_all_models(100, draws=draws)
     models_ms = round((time.perf_counter() - models_started) * 1000.0, 2)
     models = payload.get("models") or []
+    total_ms = round((time.perf_counter() - started) * 1000.0, 2)
+    print(
+        f"LEARNING_COMPUTE_BENCHMARK read_only=true history_records={len(draws or [])} "
+        f"learning_history_load_ms={history_ms} learning_models_compute_ms={models_ms} total_ms={total_ms}",
+        flush=True,
+    )
 
     return {
         "status": "ok",
@@ -142,7 +148,7 @@ def api_learning_compute_benchmark() -> dict:
         "history_records": len(draws or []),
         "learning_history_load_ms": history_ms,
         "learning_models_compute_ms": models_ms,
-        "total_ms": round((time.perf_counter() - started) * 1000.0, 2),
+        "total_ms": total_ms,
         "models": [
             {
                 "name": model.get("name") or model.get("model_name"),
