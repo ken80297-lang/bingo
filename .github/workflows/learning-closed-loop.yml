@@ -1,6 +1,9 @@
 name: Learning closed-loop regression
 
 on:
+  push:
+    branches:
+      - fix-learning-snapshot-integrity
   pull_request:
     paths:
       - "bingo-ai-pro/backend/services/learning_engine.py"
