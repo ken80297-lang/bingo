@@ -136,3 +136,42 @@ def test_capture_accepts_only_complete_18_record_snapshot(monkeypatch):
 
     assert result["status"] == "ok"
     assert len(result["learning_records"]) == 18
+
+
+def test_prediction_history_recovery_rejects_fast_path_only_row():
+    prediction = {
+        "issue": "115099900",
+        "prediction_issue": "115099901",
+        "predict_time": "2026-09-24T00:00:00",
+        "recommend_numbers": list(range(1, 21)),
+        "model_scores": {
+            "production_fast_path": {
+                "candidate_numbers": list(range(1, 21)),
+                "confidence": 80,
+            }
+        },
+    }
+    official = {"numbers": list(range(1, 21)), "draw_time": "2026-09-24T00:05:00"}
+
+    records = learning_engine._learning_records_from_prediction(prediction, official, {})
+
+    assert records == []
+
+
+def test_prediction_history_recovery_requires_and_builds_18_records():
+    prediction = {
+        "issue": "115099900",
+        "prediction_issue": "115099901",
+        "predict_time": "2026-09-24T00:00:00",
+        "recommend_numbers": list(range(1, 21)),
+        "model_scores": _model_scores(),
+    }
+    official = {"numbers": list(range(1, 21)), "draw_time": "2026-09-24T00:05:00"}
+
+    records = learning_engine._learning_records_from_prediction(prediction, official, {})
+
+    assert len(records) == 18
+    assert {row["model_name"] for row in records} == {
+        "laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"
+    }
+    assert {row["top_n"] for row in records} == {5, 10, 20}
