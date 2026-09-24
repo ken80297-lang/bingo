@@ -42,14 +42,23 @@ def run(draws,warmup=100,seed=20260925):
         if adaptive:version+=1
         rng=random.Random(f"{seed}:{target['issue']}"); rnd=rng.sample(range(1,81),20)
         os=off["ranked_candidates"]; ns=on["ranked_candidates"]
+        model_hits={}
         for m in MODELS:
             cand=(off.get("model_scores",{}).get(m) or {}).get("candidate_numbers") or []
-            perf[m].append(hits(cand[:20],official))
+            h20=hits(cand[:20],official); h5=hits(cand[:5],official)
+            model_hits[m]={"hit20":h20,"hit5":h5}
+            perf[m].append(h20)
         rows.append({"issue":target["issue"],"adaptive_enabled":adaptive is not None,
           "off20":hits(os[:20],official),"on20":hits(ns[:20],official),"random20":hits(rnd,official),
-          "off5":hits(os[:5],official),"on5":hits(ns[:5],official),"random5":hits(rnd[:5],official)})
+          "off5":hits(os[:5],official),"on5":hits(ns[:5],official),"random5":hits(rnd[:5],official),
+          "model_hits":model_hits,"adaptive_weights":adaptive})
     avg=lambda k: mean(r[k] for r in rows) if rows else 0
+    model_summary={m:{"hit20":mean(r["model_hits"][m]["hit20"] for r in rows) if rows else 0,
+                      "hit5":mean(r["model_hits"][m]["hit5"] for r in rows) if rows else 0} for m in MODELS}
+    adaptive_rows=[r for r in rows if r["adaptive_weights"]]
+    weight_summary={m:(mean(r["adaptive_weights"][KEYS[m]] for r in adaptive_rows) if adaptive_rows else 1.0) for m in MODELS}
     return {"summary":{"issues":len(rows),"warmup":warmup,"adaptive_active_issues":sum(r["adaptive_enabled"] for r in rows),
+      "model_performance":model_summary,"mean_adaptive_multipliers":weight_summary,
       "off20":avg("off20"),"on20":avg("on20"),"random20":avg("random20"),
       "off5":avg("off5"),"on5":avg("on5"),"random5":avg("random5"),
       "paired_on_minus_off_20":ci([r["on20"]-r["off20"] for r in rows]),
