@@ -72,10 +72,21 @@ def run(draws,warmup=100,seed=20260925):
     model_summary={m:{"hit20":mean(r["model_hits"][m]["hit20"] for r in rows) if rows else 0,
                       "hit5":mean(r["model_hits"][m]["hit5"] for r in rows) if rows else 0} for m in MODELS}
     adaptive_rows=[r for r in rows if r["adaptive_weights"]]
+    # Strict chronological holdout: selection came from earlier observations;
+    # report the newest third separately without using it to choose the subset.
+    split=max(1,(len(rows)*2)//3)
+    holdout=rows[split:]
+    def havg(key):
+        return mean(r[key] for r in holdout) if holdout else 0
+    core3_d=[r["core3"]-r["off20"] for r in holdout]
+    core3_r=[r["core3"]-r["random20"] for r in holdout]
     weight_summary={m:(mean(r["adaptive_weights"][KEYS[m]] for r in adaptive_rows) if adaptive_rows else 1.0) for m in MODELS}
     return {"summary":{"issues":len(rows),"warmup":warmup,"adaptive_active_issues":sum(r["adaptive_enabled"] for r in rows),
       "model_performance":model_summary,"mean_adaptive_multipliers":weight_summary,
       "candidate_subset_top20":{"hotcold_missing_balance":avg("core3"),"no_pattern":avg("core4_no_pattern"),"no_laowanjia":avg("core4_no_laowanjia")},
+      "chronological_holdout":{"issues":len(holdout),"start_issue":holdout[0]["issue"] if holdout else None,"end_issue":holdout[-1]["issue"] if holdout else None,
+        "core3_top20":havg("core3"),"full5_top20":havg("off20"),"random20":havg("random20"),
+        "core3_minus_full5":ci(core3_d),"core3_minus_random":ci(core3_r)},
       "leave_one_out_top20":{m:mean(r["leave_one_out"][m] for r in rows) if rows else 0 for m in MODELS},
       "leave_one_out_delta_vs_full":{m:(mean(r["leave_one_out"][m] for r in rows)-avg("off20")) if rows else 0 for m in MODELS},
       "off20":avg("off20"),"on20":avg("on20"),"random20":avg("random20"),
