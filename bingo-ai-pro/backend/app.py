@@ -664,6 +664,25 @@ def startup_event() -> None:
             )
 
 
+    if os.getenv("ADAPTIVE_VOTING_PROBE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.adaptive_weight_store import get_active_adaptive_weights
+            from services.voting_engine import _adaptive_multiplier, V7_ADAPTIVE_WEIGHT_KEYS
+
+            adaptive = get_active_adaptive_weights()
+            strategy = (adaptive or {}).get("strategy")
+            multipliers = {name: _adaptive_multiplier(name, adaptive) for name in V7_ADAPTIVE_WEIGHT_KEYS}
+            print(
+                "ADAPTIVE_VOTING_PROBE read_only=true "
+                f"record_found={bool(adaptive)} strategy={strategy} version={(adaptive or {}).get('version')} "
+                f"v7_enabled={strategy == 'v7_models'} missing_weight={(adaptive or {}).get('missing_weight')} "
+                f"pattern_weight={(adaptive or {}).get('pattern_weight')} multipliers={multipliers}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"ADAPTIVE_VOTING_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+
 @app.on_event("shutdown")
 def shutdown_event() -> None:
     try:
