@@ -519,3 +519,25 @@ def test_verified_learning_persists_versioned_v7_weights(monkeypatch):
     assert payload["strategy"] == "v7_models"
     assert payload["laowanjia_weight"] > payload["hot_cold_weight"] > payload["missing_weight"]
     assert abs(sum(result["weights"].values()) - 5.0) < 0.00001
+
+
+def test_17_of_18_never_invokes_adaptive_updater(monkeypatch):
+    complete = []
+    for model in learning_engine.EXPECTED_LIVE_MODELS:
+        for top_n in learning_engine.EXPECTED_TOP_N:
+            complete.append({
+                "issue": "115099901", "source_issue": "115099900", "target_issue": "115099901",
+                "model_name": model, "top_n": top_n, "predicted_count": top_n,
+                "predicted_numbers": list(range(1, top_n + 1)),
+                "prediction_snapshot": {"source_issue": "115099900"},
+                "analysis_snapshot": {"issue": "115099900"},
+                "learned_status": "pending", "verification_status": "pending_official",
+            })
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: complete[:-1])
+    monkeypatch.setattr(learning_engine, "_latest_prediction_for_issue", lambda issue: None)
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", lambda row: row)
+    adaptive_calls = []
+    monkeypatch.setattr(learning_engine, "update_v7_adaptive_weights", lambda issue: adaptive_calls.append(issue) or {"status": "ok"})
+    result = learning_engine.evaluate_verified_issue("115099901")
+    assert result["status"] == "missing_snapshot"
+    assert adaptive_calls == []
