@@ -684,7 +684,7 @@ def get_complete_live_learning_records(
         }
         return pairs == expected_pairs
 
-    while offset < max_rows and len(selected) < window:
+    while offset < max_rows and len(selected) // len(expected_pairs) < window:
         batch = get_learning_records(
             limit=min(page_size, max_rows - offset),
             offset=offset,
