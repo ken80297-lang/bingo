@@ -484,16 +484,33 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
     if target_issue:
         pending_resolution = _resolve_pending_snapshot(source_issue, target_issue)
     existing = _learning_snapshots_for_issue(snapshot_issue)
-    if existing:
+    valid_existing = [
+        record
+        for record in existing
+        if str(record.get("model_name") or "") in EXPECTED_LIVE_MODELS
+        and int(record.get("top_n") or 0) in EXPECTED_TOP_N
+        and int(record.get("predicted_count") or len(record.get("predicted_numbers") or [])) > 0
+        and bool(record.get("prediction_snapshot"))
+    ]
+    existing_combos = {
+        (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
+        for record in valid_existing
+    }
+    expected_combos = {
+        (model_name, top_n)
+        for model_name in EXPECTED_LIVE_MODELS
+        for top_n in EXPECTED_TOP_N
+    }
+    if existing_combos == expected_combos and len(valid_existing) == EXPECTED_RECORDS_PER_TARGET:
         return {
             "status": "ok",
             "skipped": True,
-            "message": "live prediction snapshot already exists",
+            "message": "complete live prediction snapshot already exists",
             "source_issue": source_issue,
             "target_issue": target_issue,
-            "history_cutoff_issue": existing[0].get("history_cutoff_issue"),
-            "prediction_created_at": existing[0].get("prediction_created_at"),
-            "records": len(existing),
+            "history_cutoff_issue": valid_existing[0].get("history_cutoff_issue"),
+            "prediction_created_at": valid_existing[0].get("prediction_created_at"),
+            "records": len(valid_existing),
             "pending_resolution": pending_resolution,
         }
 
