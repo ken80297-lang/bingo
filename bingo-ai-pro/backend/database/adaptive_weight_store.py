@@ -192,7 +192,12 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(\n    sql: str,\n    params: tuple = (),\n    sqlite_sql: str | None = None,\n    sqlite_params: tuple | None = None,\n) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    sqlite_params: tuple | None = None,
+) -> list[Any]:
     try:
         return _query_cloud(sql, params)
     except Exception:
