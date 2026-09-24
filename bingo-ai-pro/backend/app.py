@@ -685,19 +685,38 @@ def startup_event() -> None:
 
     if os.getenv("ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
         try:
-            from database.collector_store import get_draw_history
+            from database.analysis_store import get_analysis_history
             from scripts.walk_forward_adaptive_ab import run as run_adaptive_walk_forward_ab
 
-            result = run_adaptive_walk_forward_ab(get_draw_history(600), warmup=100)
-            print(
-                "ADAPTIVE_WALK_FORWARD_AB "
-                + json.dumps(
-                    {"read_only": True, "limit": 600, "warmup": 100, "summary": result.get("summary") or {}},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
+            history = get_analysis_history(600)
+            if len(history) < 120:
+                print(
+                    "ADAPTIVE_WALK_FORWARD_AB_ERROR "
+                    + json.dumps(
+                        {"reason": "insufficient_history", "records": len(history), "required_minimum": 120},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            else:
+                result = run_adaptive_walk_forward_ab(history, warmup=100)
+                print(
+                    "ADAPTIVE_WALK_FORWARD_AB "
+                    + json.dumps(
+                        {
+                            "read_only": True,
+                            "source": "analysis_history",
+                            "records": len(history),
+                            "limit": 600,
+                            "warmup": 100,
+                            "summary": result.get("summary") or {},
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         except Exception as exc:
             print(f"ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
 
