@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from database import collector_store, learning_store, official_draw_store, postgres, prediction_history_store
+from database import analysis_store, collector_store, learning_store, official_draw_store, postgres, prediction_history_store
 from services import player_dashboard
 
 
@@ -1177,7 +1177,8 @@ def test_card_two_records_internal_execution_diagnostics(monkeypatch):
         "odd_even": "odd",
     }
 
-    def fake_timed_lookup(issue):
+    def fake_timed_lookup(issue, *, use_dashboard_read_pool=False):
+        assert use_dashboard_read_pool is True
         return (
             {"issue": issue, "rules": []},
             {
@@ -1188,6 +1189,7 @@ def test_card_two_records_internal_execution_diagnostics(monkeypatch):
                 "fetch_ms": 0.5,
                 "transform_ms": 0.1,
                 "total_ms": 5.6,
+                "connection_path": "dashboard_read_pool",
             },
         )
 
@@ -1200,6 +1202,7 @@ def test_card_two_records_internal_execution_diagnostics(monkeypatch):
         {"issue": "115052001"},
         "115052001",
         diagnostics=diagnostics,
+        use_dashboard_read_pool=True,
     )
 
     execution = payload["diagnostics"]["card_two_execution"]
@@ -1209,7 +1212,47 @@ def test_card_two_records_internal_execution_diagnostics(monkeypatch):
     assert stages["_card_two_from_record.analysis_lookup"]["query_count"] == 1
     assert stages["_card_two_from_record.analysis_lookup"]["db_calls"] == 1
     assert stages["_card_two_from_record.analysis_lookup"]["execute_ms"] == 3.0
+    assert stages["_card_two_from_record.analysis_lookup"]["connection_path"] == "dashboard_read_pool"
     assert stages["_card_two_from_record.total"]["query_count"] == 1
+
+
+def test_analysis_history_timed_lookup_uses_dashboard_read_pool_only_when_requested(monkeypatch):
+    used = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=()):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            used.append(self.name)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(analysis_store, "_cloud_connection", lambda: FakeConnection("direct"))
+    monkeypatch.setattr(analysis_store, "_dashboard_read_connection", lambda: FakeConnection("pool"))
+
+    analysis_store.get_analysis_history_by_issue_with_timing("115052000")
+    analysis_store.get_analysis_history_by_issue_with_timing("115052000", use_dashboard_read_pool=True)
+
+    assert used == ["direct", "pool"]
 
 
 def test_dashboard_component_stage_latency_preserves_exception(caplog):
@@ -2159,7 +2202,7 @@ def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
     monkeypatch.setattr(
         player_dashboard,
         "_card_two_from_record",
-        lambda record, current, previous_target_issue, diagnostics=None: {},
+        lambda record, current, previous_target_issue, diagnostics=None, use_dashboard_read_pool=False: {},
     )
     monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
 
@@ -2213,7 +2256,7 @@ def test_dashboard_summary_waits_previous_verification_after_aggregates_before_c
     monkeypatch.setattr(
         player_dashboard,
         "_card_two_from_record",
-        lambda record, current, previous_target_issue, diagnostics=None: {},
+        lambda record, current, previous_target_issue, diagnostics=None, use_dashboard_read_pool=False: {},
     )
 
     token = player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(1)

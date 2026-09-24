@@ -758,7 +758,13 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
         return []
 
 
-def _query_with_fallback_timing(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> tuple[list[Any], dict[str, Any]]:
+def _query_with_fallback_timing(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    cloud_connection_factory=None,
+) -> tuple[list[Any], dict[str, Any]]:
     timing: dict[str, Any] = {
         "query_tag": "analysis_history.by_issue",
         "query_count": 1,
@@ -766,8 +772,10 @@ def _query_with_fallback_timing(sql: str, params: tuple = (), sqlite_sql: str | 
     }
     connect_started = time.perf_counter()
     try:
-        with _cloud_connection() as conn:
+        connection_factory = cloud_connection_factory or _cloud_connection
+        with connection_factory() as conn:
             timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+            timing["pool_acquire_ms"] = timing["connect_ms"] if cloud_connection_factory is not None else None
             execute_started = time.perf_counter()
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -858,7 +866,18 @@ def get_analysis_history_by_issue(issue: str) -> dict | None:
     return _row_to_record(rows[0]) if rows else None
 
 
-def get_analysis_history_by_issue_with_timing(issue: str) -> tuple[dict | None, dict[str, Any]]:
+def _dashboard_read_connection():
+    from database.postgres import dashboard_read_connection
+
+    return dashboard_read_connection()
+
+
+def get_analysis_history_by_issue_with_timing(
+    issue: str,
+    *,
+    use_dashboard_read_pool: bool = False,
+) -> tuple[dict | None, dict[str, Any]]:
+    cloud_connection_factory = _dashboard_read_connection if use_dashboard_read_pool else None
     rows, timing = _query_with_fallback_timing(
         """
         select issue, draw_time, numbers, super_number, big_small, odd_even,
@@ -887,6 +906,7 @@ def get_analysis_history_by_issue_with_timing(issue: str) -> tuple[dict | None, 
         where issue = ?
         limit 1
         """,
+        cloud_connection_factory=cloud_connection_factory,
     )
     transform_started = time.perf_counter()
     record = _row_to_record(rows[0]) if rows else None

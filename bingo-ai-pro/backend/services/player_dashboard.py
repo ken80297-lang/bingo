@@ -2457,7 +2457,11 @@ def _card_two_analysis_by_issue(issue: Any) -> dict | None:
     return record
 
 
-def _card_two_analysis_by_issue_with_timing(issue: Any) -> tuple[dict | None, dict]:
+def _card_two_analysis_by_issue_with_timing(
+    issue: Any,
+    *,
+    use_dashboard_read_pool: bool = False,
+) -> tuple[dict | None, dict]:
     if not issue:
         return None, {"query_count": 0, "db_calls": 0}
     try:
@@ -2468,10 +2472,12 @@ def _card_two_analysis_by_issue_with_timing(issue: Any) -> tuple[dict | None, di
     timed_lookup = getattr(analysis_store_module, "get_analysis_history_by_issue_with_timing", None)
     if callable(timed_lookup):
         try:
-            record, timing = timed_lookup(str(issue))
+            record, timing = timed_lookup(str(issue), use_dashboard_read_pool=use_dashboard_read_pool)
             timing = dict(timing or {})
             timing.setdefault("query_count", 1)
             timing.setdefault("db_calls", 1)
+            if use_dashboard_read_pool:
+                timing.setdefault("connection_path", "dashboard_read_pool")
             return record, timing
         except Exception as exc:
             logger.exception("dashboard card two timed analysis lookup failed")
@@ -2652,6 +2658,7 @@ def _card_two_from_record(
     current_draw: dict | None = None,
     requested_issue: Any = None,
     diagnostics: dict | None = None,
+    use_dashboard_read_pool: bool = False,
 ) -> dict:
     total_started = time.perf_counter()
     if not record:
@@ -2733,11 +2740,19 @@ def _card_two_from_record(
         matched_count=len(matched_numbers),
     )
     analysis_started = time.perf_counter()
-    analysis, analysis_timing = _timed_component_stage(
-        "card_two",
-        "analysis_lookup",
-        lambda: _card_two_analysis_by_issue_with_timing(record.get("issue")),
-    )
+    if use_dashboard_read_pool:
+        analysis, analysis_timing = _timed_component_stage(
+            "card_two",
+            "analysis_lookup",
+            lambda: _card_two_analysis_by_issue_with_timing(record.get("issue"), use_dashboard_read_pool=True),
+        )
+    else:
+        analysis = _timed_component_stage(
+            "card_two",
+            "analysis_lookup",
+            lambda: _card_two_analysis_by_issue(record.get("issue")),
+        )
+        analysis_timing = {"query_count": 1 if record.get("issue") else 0, "db_calls": 1 if record.get("issue") else 0}
     _card_two_diag_stage(
         diagnostics,
         "_card_two_from_record.analysis_lookup",
@@ -3785,6 +3800,7 @@ def _build_player_dashboard_summary_payload(
             current,
             previous_target_issue,
             diagnostics=diagnostics,
+            use_dashboard_read_pool=True,
         )
 
     card_two_future, _ = _submit_component(
