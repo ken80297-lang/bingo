@@ -442,14 +442,21 @@ def _cached_observation() -> dict | None:
 def capture_prediction_snapshot(issue: str | None = None) -> dict:
     if issue:
         records = _learning_snapshots_for_issue(str(issue))
-        if records:
-            first = records[0]
+        valid_records = [
+            record
+            for record in records
+            if str(record.get("model_name") or "") != "unknown"
+            and int(record.get("predicted_count") or len(record.get("predicted_numbers") or [])) > 0
+            and bool(record.get("prediction_snapshot"))
+        ]
+        if valid_records:
+            first = valid_records[0]
             return {
                 "status": "ok",
                 "issue": str(issue),
                 "prediction_snapshot": first.get("prediction_snapshot") or {},
                 "analysis_snapshot": first.get("analysis_snapshot") or {},
-                "learning_records": records,
+                "learning_records": valid_records,
             }
 
     return {
@@ -654,6 +661,33 @@ def evaluate_verified_issue(issue: str) -> dict:
     try:
         snapshot = capture_prediction_snapshot(issue)
         if snapshot.get("status") != "ok":
+            # A persisted prediction_history row is also an immutable pre-draw
+            # prediction source. Reconstruct the learning rows from it instead
+            # of turning a missing-snapshot marker into a future learned sample.
+            prediction = _latest_prediction_for_issue(str(issue))
+            if prediction:
+                official = get_official_draw_by_issue(str(issue), verified_only=False)
+                analysis = _analysis_by_issue(str(prediction.get("issue") or ""))
+                recovered_records = _learning_records_from_prediction(prediction, official, analysis)
+                if recovered_records:
+                    saved = [upsert_learning_record(record) for record in recovered_records]
+                    status = "ok" if official else "pending_official"
+                    if status == "ok":
+                        try:
+                            from database.prediction_history_store import mark_prediction_learning_used
+
+                            mark_prediction_learning_used(str(issue), True)
+                        except Exception:
+                            logger.exception("prediction history learning queue recovery update failed")
+                        invalidate_learning_status_cache()
+                    return {
+                        "status": status,
+                        "issue": issue,
+                        "records": len(recovered_records),
+                        "saved": saved,
+                        "recovered_from": "prediction_history",
+                    }
+
             record = {
                 "issue": str(issue),
                 "draw_time": None,
