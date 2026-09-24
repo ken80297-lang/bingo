@@ -638,7 +638,20 @@ def _learning_records_from_prediction(prediction: dict, official: dict | None, a
     learned_status = "learned" if verification_status == "verified" else "pending"
     learned_at = datetime.utcnow().isoformat() if learned_status == "learned" else None
 
-    model_names = list(model_scores.keys()) if model_scores else ["ensemble"]
+    model_names = [
+        model_name
+        for model_name in EXPECTED_LIVE_MODELS
+        if model_name != "ensemble" and model_name in model_scores
+    ]
+    # Recovery is allowed to produce formal learned rows only when the
+    # immutable prediction_history row contains all five V7 model outputs.
+    # Older fast-path rows often contain only production_fast_path (or no
+    # per-model scores); those rows are evidence of a prediction, not evidence
+    # of six-model learning.
+    expected_base_models = [name for name in EXPECTED_LIVE_MODELS if name != "ensemble"]
+    if set(model_names) != set(expected_base_models):
+        return []
+
     records = []
     for model_name in model_names:
         candidates = _model_candidates(model_name, model_scores, fallback_numbers)
@@ -681,6 +694,47 @@ def _learning_records_from_prediction(prediction: dict, official: dict | None, a
                     "error_message": None,
                 }
             )
+
+    ensemble_numbers = fallback_numbers
+    for top_n in TOP_N_VALUES:
+        top_numbers = ensemble_numbers[:top_n]
+        result = calculate_model_result(top_numbers, official_numbers) if official_numbers else {
+            "hit_numbers": [],
+            "hit_count": 0,
+            "predicted_count": len(top_numbers),
+            "precision_score": 0,
+            "official_coverage": 0,
+        }
+        records.append(
+            {
+                "issue": issue,
+                "source_issue": prediction.get("issue"),
+                "target_issue": issue,
+                "history_cutoff_issue": prediction.get("issue"),
+                "prediction_created_at": prediction.get("predict_time"),
+                "draw_time": (official or {}).get("draw_time") or prediction.get("predict_time"),
+                "model_name": "ensemble",
+                "model_version": DEFAULT_MODEL_VERSION,
+                "prediction_type": "live_prediction",
+                "predicted_numbers": top_numbers,
+                "predicted_scores": {"recovered_from": "prediction_history"},
+                "model_weight": {"weight": 1.0},
+                "official_numbers": official_numbers,
+                "hit_numbers": result["hit_numbers"],
+                "predicted_count": result["predicted_count"],
+                "hit_count": result["hit_count"],
+                "precision_score": result["precision_score"],
+                "official_coverage": result["official_coverage"],
+                "rank_score": _rank_score(result["hit_count"], top_n),
+                "top_n": top_n,
+                "prediction_snapshot": prediction,
+                "analysis_snapshot": analysis,
+                "verification_status": verification_status,
+                "learned_status": learned_status,
+                "learned_at": learned_at,
+                "error_message": None,
+            }
+        )
     return records
 
 
