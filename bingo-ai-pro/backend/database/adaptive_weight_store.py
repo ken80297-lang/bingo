@@ -268,6 +268,38 @@ def get_latest_adaptive_weights() -> dict | None:
     return _row_to_weights(rows[0]) if rows else None
 
 
+def get_adaptive_weights_by_source_issue(source_issue: str) -> dict | None:
+    """Return a persisted V7 update for one source issue, if it already exists."""
+    try:
+        source_id = int(str(source_issue))
+    except (TypeError, ValueError):
+        return None
+    rows = _query_with_fallback(
+        """
+        select id, version, strategy, "window",
+               laowanjia_weight, hot_cold_weight, balance_weight,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
+               source_evaluation_id, is_active, created_at, updated_at
+        from adaptive_weights
+        where strategy = 'v7_models' and source_evaluation_id = %s
+        order by id desc
+        limit 1
+        """,
+        (source_id,),
+        sqlite_sql="""
+        select id, version, strategy, "window",
+               laowanjia_weight, hot_cold_weight, balance_weight,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
+               source_evaluation_id, is_active, created_at, updated_at
+        from adaptive_weights
+        where strategy = 'v7_models' and source_evaluation_id = ?
+        order by id desc
+        limit 1
+        """,
+    )
+    return _row_to_weights(rows[0]) if rows else None
+
+
 def get_adaptive_weight_history(limit: int = 20) -> list[dict]:
     rows = _query_with_fallback(
         """
