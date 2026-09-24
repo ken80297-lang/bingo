@@ -496,7 +496,7 @@ def create_for_official_draw(
             previous_strategy_version = existing_strategy["previous_strategy_version"]
             force = True
 
-        recommendation_context = {
+        from database.analysis_store import get_analysis_history\n        learning_analysis_history = get_analysis_history(100)\n\n        recommendation_context = {
             "source": source,
             "trigger": trigger,
             "collector_metadata": collector_metadata or {},
