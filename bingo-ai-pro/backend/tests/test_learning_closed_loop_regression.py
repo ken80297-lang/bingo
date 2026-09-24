@@ -429,3 +429,51 @@ def test_17_of_18_snapshot_cannot_mark_learning_used(monkeypatch):
     assert learning_used == []
     assert len(saved) == 1
     assert saved[0]["learned_status"] == "missing_snapshot"
+
+
+def test_voting_adaptive_learning_off_vs_on(monkeypatch):
+    from services import voting_engine
+
+    models = [
+        {"model": "laowanjia", "label": "L", "confidence": 60, "reason": "", "candidate_numbers": list(range(1, 21))},
+        {"model": "hotcold", "label": "H", "confidence": 60, "reason": "", "candidate_numbers": list(range(21, 41))},
+        {"model": "missing", "label": "M", "confidence": 60, "reason": "", "candidate_numbers": list(range(21, 41))},
+        {"model": "pattern", "label": "P", "confidence": 60, "reason": "", "candidate_numbers": list(range(21, 41))},
+        {"model": "balance", "label": "B", "confidence": 60, "reason": "", "candidate_numbers": list(range(21, 41))},
+    ]
+    monkeypatch.setattr(voting_engine, "run_all_models", lambda limit=100: {"status": "ok", "latest_issue": "115099900", "models": models})
+    monkeypatch.setattr(voting_engine, "model_hit_rates", lambda limit=100: {name: 0 for name in voting_engine.MODEL_NAMES})
+
+    monkeypatch.setattr(voting_engine, "get_active_adaptive_weights", lambda: None)
+    off = voting_engine.build_voting_result(100)
+    assert off["adaptive_learning"]["enabled"] is False
+    assert off["model_scores"]["laowanjia"]["adaptive_multiplier"] == 1.0
+
+    monkeypatch.setattr(voting_engine, "get_active_adaptive_weights", lambda: {
+        "id": 7, "version": 1, "strategy": "v7_models",
+        "laowanjia_weight": 1.5, "hot_cold_weight": 0.5,
+        "missing_weight": 0.5, "pattern_weight": 0.5, "balance_weight": 0.5,
+    })
+    on = voting_engine.build_voting_result(100)
+    assert on["adaptive_learning"] == {"enabled": True, "weight_id": 7, "version": 1}
+    assert on["model_scores"]["laowanjia"]["adaptive_multiplier"] == 1.5
+    assert on["model_scores"]["hotcold"]["adaptive_multiplier"] == 0.5
+    assert on["model_scores"]["laowanjia"]["effective_vote_weight"] > off["model_scores"]["laowanjia"]["effective_vote_weight"]
+    assert on["model_scores"]["hotcold"]["effective_vote_weight"] < off["model_scores"]["hotcold"]["effective_vote_weight"]
+    assert on["final_candidates"] != off["final_candidates"]
+
+
+def test_legacy_adaptive_weights_are_not_applied_to_v7(monkeypatch):
+    from services import voting_engine
+
+    monkeypatch.setattr(voting_engine, "run_all_models", lambda limit=100: {
+        "status": "ok", "latest_issue": "115099900",
+        "models": [{"model": name, "label": name, "confidence": 80, "reason": "", "candidate_numbers": list(range(1, 21))} for name in voting_engine.MODEL_NAMES],
+    })
+    monkeypatch.setattr(voting_engine, "model_hit_rates", lambda limit=100: {name: 0 for name in voting_engine.MODEL_NAMES})
+    monkeypatch.setattr(voting_engine, "get_active_adaptive_weights", lambda: {
+        "id": 3, "version": 99, "strategy": "legacy", "laowanjia_weight": 1.5,
+    })
+    result = voting_engine.build_voting_result(100)
+    assert result["adaptive_learning"]["enabled"] is False
+    assert all(payload["adaptive_multiplier"] == 1.0 for payload in result["model_scores"].values())
