@@ -913,8 +913,17 @@ def evaluate_verified_issue(issue: str) -> dict:
                 records.append(updated)
         else:
             return {"status": "missing_snapshot", "issue": issue, "saved": []}
-        saved = [upsert_learning_record(record) for record in records]
         status = "ok" if official else "pending_official"
+        if status == "ok" and not _is_complete_learning_record_set(records):
+            return {
+                "status": "missing_snapshot",
+                "issue": issue,
+                "records": len(records),
+                "saved": [],
+                "learning_queue": {"status": "skipped"},
+                "adaptive_weights": {"status": "skipped", "reason": "incomplete_learning_record_set"},
+            }
+        saved = [upsert_learning_record(record) for record in records]
         record_operation_event(
             component="learning",
             event_type="learning_evaluation",
@@ -933,7 +942,9 @@ def evaluate_verified_issue(issue: str) -> dict:
                 duration_ms=_duration_ms(start),
             )
         learning_queue = {"status": "skipped"}
+        adaptive_weights = {"status": "skipped"}
         if status == "ok":
+            adaptive_weights = update_v7_adaptive_weights(str(issue))
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
 
@@ -948,6 +959,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "records": len(records),
             "saved": saved,
             "learning_queue": learning_queue,
+            "adaptive_weights": adaptive_weights,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")
