@@ -663,7 +663,8 @@ def save_analysis_history(draw: dict) -> dict:
 
     try:
         _save_sqlite(record)
-        _update_analysis_history_cache(record)
+        # Cloud analysis_history is the production source of truth for the prediction cache.
+        # Do not promote SQLite-only degraded writes into the in-memory production snapshot.
         return {
             "status": "ok",
             "storage": "sqlite",
