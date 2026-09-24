@@ -631,6 +631,27 @@ def startup_event() -> None:
         f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
     )
 
+    if os.getenv("LEARNING_HISTORY_CACHE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            import time
+            from database.analysis_store import clear_analysis_history_cache, get_cached_analysis_history
+
+            clear_analysis_history_cache()
+            cold_started = time.perf_counter()
+            cold_rows, cold_meta = get_cached_analysis_history(100)
+            cold_ms = round((time.perf_counter() - cold_started) * 1000.0, 2)
+            warm_started = time.perf_counter()
+            warm_rows, warm_meta = get_cached_analysis_history(100)
+            warm_ms = round((time.perf_counter() - warm_started) * 1000.0, 2)
+            print(
+                f"LEARNING_HISTORY_CACHE_BENCHMARK read_only=true cold_source={cold_meta.get('source')} "
+                f"cold_ms={cold_ms} warm_source={warm_meta.get('source')} warm_ms={warm_ms} "
+                f"cold_records={len(cold_rows or [])} warm_records={len(warm_rows or [])}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"LEARNING_HISTORY_CACHE_BENCHMARK_ERROR {type(exc).__name__}: {exc}", flush=True)
+
     if os.getenv("LEARNING_COMPUTE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
         try:
             from scripts.learning_compute_benchmark import main as run_learning_compute_benchmark
