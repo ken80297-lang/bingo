@@ -46,6 +46,41 @@ def _valid_numbers(values) -> list[int]:
     return result
 
 
+
+def build_voting_candidates_from_draws(draws: list[dict], adaptive: dict | None = None) -> dict:
+    """Pure walk-forward voting core: caller supplies only history available at prediction time."""
+    model_payload = run_all_models(len(draws), draws=draws)
+    models = model_payload.get("models") or []
+    votes: Counter[int] = Counter()
+    model_scores: dict = {}
+
+    for model in models:
+        confidence = float(model.get("confidence") or 0)
+        model_key = model.get("model")
+        model_candidates = _valid_numbers(model.get("candidate_numbers") or [])
+        multiplier = _adaptive_multiplier(model_key, adaptive)
+        weight = max(1, confidence / 20) * multiplier
+        model_scores[model_key] = {
+            "candidate_numbers": model_candidates,
+            "confidence": round(confidence, 2),
+            "adaptive_multiplier": round(multiplier, 4),
+            "effective_vote_weight": round(weight, 4),
+        }
+        for rank, number in enumerate(model_candidates):
+            votes[number] += weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
+
+    ranked = [number for number, _ in votes.most_common(RECOMMENDATION_NUMBER_COUNT)]
+    return {
+        "latest_issue": model_payload.get("latest_issue"),
+        "ranked_candidates": ranked,
+        "final_candidates": sorted(ranked),
+        "model_scores": model_scores,
+        "adaptive_learning": {
+            "enabled": bool(adaptive and str(adaptive.get("strategy") or "") == "v7_models"),
+            "version": adaptive.get("version") if adaptive else None,
+        },
+    }
+
 def build_voting_result(limit: int = 100) -> dict:
     model_payload = run_all_models(limit)
     models = model_payload.get("models") or []
