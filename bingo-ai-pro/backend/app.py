@@ -683,6 +683,25 @@ def startup_event() -> None:
             print(f"ADAPTIVE_VOTING_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
 
 
+    if os.getenv("ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.collector_store import get_draw_history
+            from scripts.walk_forward_adaptive_ab import run as run_adaptive_walk_forward_ab
+
+            result = run_adaptive_walk_forward_ab(get_draw_history(600), warmup=100)
+            print(
+                "ADAPTIVE_WALK_FORWARD_AB "
+                + json.dumps(
+                    {"read_only": True, "limit": 600, "warmup": 100, "summary": result.get("summary") or {}},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+
 @app.on_event("shutdown")
 def shutdown_event() -> None:
     try:
