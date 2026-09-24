@@ -308,7 +308,7 @@ def test_fast_path_learning_capture_does_not_change_production_numbers(monkeypat
     monkeypatch.setattr(
         model_engine,
         "run_all_models",
-        lambda limit=100: {
+        lambda limit=100, draws=None, issue=None: {
             "status": "ok",
             "models": [
                 {
