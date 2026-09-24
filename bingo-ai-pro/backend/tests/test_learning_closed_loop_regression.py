@@ -622,3 +622,62 @@ def test_adaptive_updater_uses_full_100_complete_target_window(monkeypatch):
     assert result["complete_targets"] == 100
     assert result["version"] == 8
     assert saved[0]["window"] == 100
+
+
+def test_adaptive_weight_change_requires_exact_18_cloud_evidence(monkeypatch):
+    rows = []
+    for n in range(20, 0, -1):
+        rows.extend(_complete_learning_rows(str(115400000 + n)))
+    monkeypatch.setattr(learning_engine, "get_adaptive_weights_by_source_issue", lambda issue: None)
+    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: rows)
+    monkeypatch.setattr(learning_engine, "get_latest_adaptive_weights", lambda: {"version": 1})
+    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: {"status": "ok", "storage": "cloud", "weight_id": 2})
+
+    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 17})
+    result = learning_engine.update_v7_adaptive_weights("115400021")
+    assert result["status"] == "error"
+    assert result["reason"] == "adaptive_weight_evidence_update_required"
+
+    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "sqlite", "updated": 18})
+    result = learning_engine.update_v7_adaptive_weights("115400021")
+    assert result["status"] == "error"
+
+    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 18})
+    result = learning_engine.update_v7_adaptive_weights("115400021")
+    assert result["status"] == "ok"
+    assert result["evidence"]["updated"] == 18
+
+
+def test_existing_adaptive_weight_reconciles_interrupted_evidence(monkeypatch):
+    monkeypatch.setattr(
+        learning_engine,
+        "get_adaptive_weights_by_source_issue",
+        lambda issue: {"id": 9, "version": 4, "strategy": "v7_models"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        learning_engine,
+        "mark_learning_weight_changed",
+        lambda issue, changed=True: calls.append((issue, changed)) or {"status": "ok", "storage": "cloud", "updated": 18},
+    )
+    result = learning_engine.update_v7_adaptive_weights("115500001")
+    assert result["status"] == "ok"
+    assert result["reason"] == "already_updated"
+    assert calls == [("115500001", True)]
+    assert result["evidence"]["updated"] == 18
+
+
+def test_existing_adaptive_weight_does_not_hide_failed_reconciliation(monkeypatch):
+    monkeypatch.setattr(
+        learning_engine,
+        "get_adaptive_weights_by_source_issue",
+        lambda issue: {"id": 9, "version": 4, "strategy": "v7_models"},
+    )
+    monkeypatch.setattr(
+        learning_engine,
+        "mark_learning_weight_changed",
+        lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 17},
+    )
+    result = learning_engine.update_v7_adaptive_weights("115500001")
+    assert result["status"] == "error"
+    assert result["reason"] == "adaptive_weight_evidence_reconciliation_required"
