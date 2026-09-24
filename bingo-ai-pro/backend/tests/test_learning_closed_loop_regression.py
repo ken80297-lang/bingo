@@ -507,10 +507,16 @@ def test_verified_learning_persists_versioned_v7_weights(monkeypatch):
         {"model_name": "pattern", "sample_size": 25, "average_hits": 5.0},
         {"model_name": "balance", "sample_size": 25, "average_hits": 5.0},
     ]
-    rows = []\n    for n in range(25, 0, -1):\n        rows.extend(_complete_learning_rows(str(115098000 + n)))\n    for row in rows:\n        row["hit_count"] = {"laowanjia": 6, "hotcold": 5, "missing": 4, "pattern": 5, "balance": 5, "ensemble": 5}[row["model_name"]]\n    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: rows)
+    rows = []
+    for n in range(25, 0, -1):
+        rows.extend(_complete_learning_rows(str(115098000 + n)))
+    for row in rows:
+        row["hit_count"] = {"laowanjia": 6, "hotcold": 5, "missing": 4, "pattern": 5, "balance": 5, "ensemble": 5}[row["model_name"]]
+    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: rows)
     monkeypatch.setattr(learning_engine, "get_latest_adaptive_weights", lambda: {"version": 4})
     saved = []
-    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 9})\n    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 18})
+    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 9})
+    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 18})
     result = learning_engine.update_v7_adaptive_weights("115099901")
     assert result["status"] == "ok"
     assert result["version"] == 5
