@@ -173,6 +173,93 @@ def test_card_two_skips_official_lookup_when_record_has_actual_and_super(monkeyp
     assert payload["hit_count"] == 20
 
 
+def test_dashboard_card_two_reuses_current_official_draw_without_lookup(monkeypatch):
+    record = _record(
+        prediction_issue="115040901",
+        winning_numbers=[],
+        actual_super=None,
+        official_super_number=None,
+        recommend_numbers=list(range(1, 21)),
+    )
+    current = {
+        "issue": "115040901",
+        "numbers": list(range(1, 21)),
+        "super_number": 5,
+        "source": "official_draw_history",
+        "draw_time": "12:00",
+        "fetched_at": "2026-07-30T01:00:00+00:00",
+    }
+
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_official_draw_by_issue",
+        lambda issue: (_ for _ in ()).throw(AssertionError("dashboard current should satisfy official draw data")),
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "_card_two_analysis_by_issue_with_timing",
+        lambda issue, *, use_dashboard_read_pool=False: (None, {"query_count": 0, "db_calls": 0}),
+    )
+    monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
+
+    diagnostics = {}
+    payload = player_dashboard._card_two_from_record(
+        record,
+        current,
+        "115040901",
+        diagnostics=diagnostics,
+        use_dashboard_read_pool=True,
+    )
+
+    stage = payload["diagnostics"]["card_two_execution"]["stages"]["_card_two_from_record.official_draw_lookup"]
+    assert payload["available"] is True
+    assert payload["official_numbers"] == list(range(1, 21))
+    assert payload["super_number"] == 5
+    assert stage["source"] == "current_draw"
+    assert stage["query_count"] == 0
+    assert stage["db_calls"] == 0
+
+
+def test_dashboard_card_two_keeps_official_lookup_when_current_issue_differs(monkeypatch):
+    record = _record(
+        prediction_issue="115040901",
+        winning_numbers=[],
+        actual_super=None,
+        official_super_number=None,
+        recommend_numbers=list(range(1, 21)),
+    )
+    current = {"issue": "115040902", "numbers": list(range(21, 41)), "super_number": 22}
+    lookups = []
+
+    def fake_official_lookup(issue):
+        lookups.append(issue)
+        return {"issue": issue, "numbers": list(range(1, 21)), "super_number": 5}
+
+    monkeypatch.setattr(player_dashboard, "get_official_draw_by_issue", fake_official_lookup)
+    monkeypatch.setattr(
+        player_dashboard,
+        "_card_two_analysis_by_issue_with_timing",
+        lambda issue, *, use_dashboard_read_pool=False: (None, {"query_count": 0, "db_calls": 0}),
+    )
+    monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
+
+    diagnostics = {}
+    payload = player_dashboard._card_two_from_record(
+        record,
+        current,
+        "115040901",
+        diagnostics=diagnostics,
+        use_dashboard_read_pool=True,
+    )
+
+    stage = payload["diagnostics"]["card_two_execution"]["stages"]["_card_two_from_record.official_draw_lookup"]
+    assert payload["available"] is True
+    assert lookups == ["115040901"]
+    assert stage["source"] == "lookup"
+    assert stage["query_count"] == 1
+    assert stage["db_calls"] == 1
+
+
 def test_card_two_empty_payload_keeps_requested_previous_issue():
     payload = player_dashboard._card_two_from_record(None, {"issue": "115040904"}, "115040903")
 

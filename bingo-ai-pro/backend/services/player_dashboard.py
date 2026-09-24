@@ -2518,6 +2518,18 @@ def _card_two_record_actual_numbers(record: dict | None) -> list[int]:
     )
 
 
+def _card_two_current_official_draw(issue: Any, current_draw: dict | None) -> dict | None:
+    if not issue or not current_draw:
+        return None
+    if _valid_production_issue((current_draw or {}).get("issue")) != str(issue):
+        return None
+    numbers = _as_int_list((current_draw or {}).get("numbers"))
+    super_number = _as_int((current_draw or {}).get("super_number"))
+    if len(numbers) != 20 or super_number is None:
+        return None
+    return current_draw
+
+
 def _is_card_two_finalized_candidate(record: dict, current_issue: Any = None) -> bool:
     if not is_production_prediction(record):
         return False
@@ -2691,15 +2703,20 @@ def _card_two_from_record(
     official_draw = None
     if issue and (len(official_numbers) != 20 or official_super is None):
         official_lookup_started = time.perf_counter()
-        try:
-            official_draw = _timed_component_stage(
-                "card_two",
-                "official_draw_lookup",
-                lambda: get_official_draw_by_issue(issue),
-            )
-        except Exception:
-            logger.exception("dashboard card two official draw lookup failed")
-            official_draw = None
+        official_draw = _card_two_current_official_draw(issue, current_draw) if use_dashboard_read_pool else None
+        official_lookup_source = "current_draw" if official_draw else "lookup"
+        query_count = 0 if official_draw else 1
+        db_calls = 0 if official_draw else 1
+        if official_draw is None:
+            try:
+                official_draw = _timed_component_stage(
+                    "card_two",
+                    "official_draw_lookup",
+                    lambda: get_official_draw_by_issue(issue),
+                )
+            except Exception:
+                logger.exception("dashboard card two official draw lookup failed")
+                official_draw = None
         if len(official_numbers) != 20:
             official_numbers = _as_int_list((official_draw or {}).get("numbers"))
         if official_super is None:
@@ -2708,9 +2725,11 @@ def _card_two_from_record(
             diagnostics,
             "_card_two_from_record.official_draw_lookup",
             official_lookup_started,
-            query_count=1,
-            db_calls=1,
+            query_count=query_count,
+            db_calls=db_calls,
             found=bool(official_draw),
+            source=official_lookup_source,
+            current_issue=(current_draw or {}).get("issue"),
         )
     if not issue or len(prediction_numbers) != 20 or len(official_numbers) != 20:
         result = _card_two_empty(requested_issue or issue)
