@@ -372,7 +372,7 @@ def test_full_snapshot_verification_learning_closed_loop(monkeypatch):
     monkeypatch.setattr(
         prediction_history_store,
         "mark_prediction_learning_used",
-        lambda issue, used: learning_used.append((str(issue), used)) or {"status": "ok"},
+        lambda issue, used: learning_used.append((str(issue), used)) or {"status": "ok", "storage": "cloud", "updated": 1},
     )
 
     created = learning_engine.save_live_prediction_snapshot(_recommendation())
@@ -484,12 +484,12 @@ def test_adaptive_updater_requires_all_models_and_minimum_samples(monkeypatch):
         {"model_name": name, "sample_size": 20, "average_hits": 5.0}
         for name in ("laowanjia", "hotcold", "missing", "pattern")
     ]
-    monkeypatch.setattr(learning_engine, "get_learning_model_performance", lambda **kwargs: rows)
+    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: [])
     saved = []
     monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(payload) or {"status": "ok"})
     result = learning_engine.update_v7_adaptive_weights("115099901")
     assert result["status"] == "skipped"
-    assert result["reason"] == "missing_model_performance"
+    assert result["reason"] == "insufficient_complete_targets"
     assert saved == []
 
     rows.append({"model_name": "balance", "sample_size": 19, "average_hits": 5.0})
@@ -507,10 +507,10 @@ def test_verified_learning_persists_versioned_v7_weights(monkeypatch):
         {"model_name": "pattern", "sample_size": 25, "average_hits": 5.0},
         {"model_name": "balance", "sample_size": 25, "average_hits": 5.0},
     ]
-    monkeypatch.setattr(learning_engine, "get_learning_model_performance", lambda **kwargs: performance)
+    rows = []\n    for n in range(25, 0, -1):\n        rows.extend(_complete_learning_rows(str(115098000 + n)))\n    for row in rows:\n        row["hit_count"] = {"laowanjia": 6, "hotcold": 5, "missing": 4, "pattern": 5, "balance": 5, "ensemble": 5}[row["model_name"]]\n    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: rows)
     monkeypatch.setattr(learning_engine, "get_latest_adaptive_weights", lambda: {"version": 4})
     saved = []
-    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 9})
+    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 9})\n    monkeypatch.setattr(learning_engine, "mark_learning_weight_changed", lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 18})
     result = learning_engine.update_v7_adaptive_weights("115099901")
     assert result["status"] == "ok"
     assert result["version"] == 5
