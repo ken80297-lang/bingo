@@ -209,3 +209,20 @@ def api_learning_compute_benchmark() -> dict:
             for model in models
         ],
     }
+
+
+@router.get("/runtime-diagnostics/adaptive-walk-forward-ab")
+def api_adaptive_walk_forward_ab(limit: int = 600, warmup: int = 100) -> dict:
+    """Bounded read-only OFF/ON/random walk-forward comparison."""
+    from database.collector_store import get_draw_history
+    from scripts.walk_forward_adaptive_ab import run
+
+    bounded_limit = max(121, min(int(limit or 600), 2000))
+    bounded_warmup = max(100, min(int(warmup or 100), bounded_limit - 1))
+    result = run(get_draw_history(bounded_limit), warmup=bounded_warmup)
+    return {
+        "status": "ok",
+        "read_only": True,
+        "limit": bounded_limit,
+        "summary": result.get("summary") or {},
+    }
