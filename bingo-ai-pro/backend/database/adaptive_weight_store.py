@@ -308,7 +308,7 @@ def get_active_adaptive_weights() -> dict | None:
         order by aw.updated_at desc, aw.id desc
         limit 1
         """,
-        (generation, generation),
+        params=(generation, generation),
         sqlite_params=(generation, generation),
     )
     return _row_to_weights(rows[0]) if rows else None
