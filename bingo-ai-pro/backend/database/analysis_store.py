@@ -914,6 +914,56 @@ def get_analysis_history_by_issue_with_timing(
     return record, timing
 
 
+
+def get_analysis_history_with_timing(
+    limit: int = 100,
+    *,
+    use_dashboard_read_pool: bool = False,
+) -> tuple[list[dict], dict[str, Any]]:
+    cloud_connection_factory = _dashboard_read_connection if use_dashboard_read_pool else None
+    rows, timing = _query_with_fallback_timing(
+        """
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit ?
+        """,
+        cloud_connection_factory=cloud_connection_factory,
+    )
+    transform_started = time.perf_counter()
+    records = [_row_to_record(row) for row in rows]
+    timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000.0, 2)
+    timing["total_with_transform_ms"] = round(
+        float(timing.get("total_ms") or 0.0) + timing["transform_ms"], 2
+    )
+    timing["query_tag"] = "analysis_history.recent"
+    return records, timing
+
 def get_analysis_history(limit: int = 100) -> list[dict]:
     rows = _query_with_fallback(
         """
