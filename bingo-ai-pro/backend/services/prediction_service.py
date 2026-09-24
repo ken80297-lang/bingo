@@ -684,6 +684,24 @@ def create_for_official_draw(
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
+        snapshot_result = {"status": "skipped", "reason": "prediction_not_persisted"}
+        if saved.get("status") == "ok":
+            snapshot_mark = time.perf_counter()
+            try:
+                from services.learning_engine import save_live_prediction_snapshot
+
+                snapshot_result = save_live_prediction_snapshot(recommendation)
+            except Exception as exc:
+                logger.exception("live prediction snapshot save failed")
+                snapshot_result = {"status": "error", "message": str(exc)}
+            _stage_done(
+                stages,
+                "learning_snapshot_save",
+                snapshot_mark,
+                status=snapshot_result.get("status"),
+                records=snapshot_result.get("records"),
+                message=snapshot_result.get("message"),
+            )
         completed_at = _now()
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
@@ -713,6 +731,7 @@ def create_for_official_draw(
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,
+                "learning_snapshot": snapshot_result,
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"
