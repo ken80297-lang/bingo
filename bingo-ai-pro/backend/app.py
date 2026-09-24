@@ -631,6 +631,17 @@ def startup_event() -> None:
         f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
     )
 
+    if os.getenv("LEARNING_COMPUTE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from scripts.learning_compute_benchmark import main as run_learning_compute_benchmark
+
+            run_learning_compute_benchmark()
+        except Exception as exc:
+            print(
+                f"LEARNING_COMPUTE_BENCHMARK_ERROR {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
