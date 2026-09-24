@@ -118,6 +118,36 @@ def api_card_two_stepwise_latency_benchmark() -> dict:
     return run_card_two_stepwise_latency_benchmark()
 
 
+@router.api_route("/runtime-diagnostics/learning-history-cache-benchmark", methods=["GET", "POST"])
+def api_learning_history_cache_benchmark() -> dict:
+    """Read-only cold/warm benchmark for the process-local analysis history cache."""
+    import time
+
+    from database.analysis_store import clear_analysis_history_cache, get_cached_analysis_history
+
+    clear_analysis_history_cache()
+    cold_started = time.perf_counter()
+    cold_rows, cold_meta = get_cached_analysis_history(100)
+    cold_ms = round((time.perf_counter() - cold_started) * 1000.0, 2)
+
+    warm_started = time.perf_counter()
+    warm_rows, warm_meta = get_cached_analysis_history(100)
+    warm_ms = round((time.perf_counter() - warm_started) * 1000.0, 2)
+
+    print(
+        f"LEARNING_HISTORY_CACHE_BENCHMARK read_only=true cold_source={cold_meta.get('source')} "
+        f"cold_ms={cold_ms} warm_source={warm_meta.get('source')} warm_ms={warm_ms} "
+        f"records={len(warm_rows or [])}",
+        flush=True,
+    )
+    return {
+        "status": "ok",
+        "read_only": True,
+        "cold": {"source": cold_meta.get("source"), "ms": cold_ms, "records": len(cold_rows or [])},
+        "warm": {"source": warm_meta.get("source"), "ms": warm_ms, "records": len(warm_rows or [])},
+    }
+
+
 @router.api_route("/runtime-diagnostics/learning-compute-benchmark", methods=["GET", "POST"])
 def api_learning_compute_benchmark() -> dict:
     """Read-only benchmark for the V7 learning input load and model computation."""
