@@ -28,7 +28,7 @@ from services.official_verification import official_statistics
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "22.1"
+ENGINE_VERSION = "22.1"  # learning closed-loop CI
 OBSERVATION_VERSION = "22.1.5"
 OBSERVATION_CACHE_TTL_SECONDS = 30
 LEARNING_STATUS_CACHE_TTL_SECONDS = 60
