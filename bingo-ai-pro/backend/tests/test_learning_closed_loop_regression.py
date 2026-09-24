@@ -700,7 +700,7 @@ def test_complete_verified_issue_invokes_adaptive_updater_once(monkeypatch):
     adaptive = []
     monkeypatch.setattr(learning_engine, "update_v7_adaptive_weights", lambda issue: adaptive.append(issue) or {"status": "ok"})
     import database.prediction_history_store as phs
-    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: {"status": "ok"})
+    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: {"status": "ok", "storage": "cloud", "updated": 1})
 
     result = learning_engine.evaluate_verified_issue("115600001")
     assert result["status"] == "ok"
@@ -772,7 +772,7 @@ def _setup_complete_verified_gate_case(monkeypatch, save_results, adaptive_resul
     monkeypatch.setattr(learning_engine, "update_v7_adaptive_weights", lambda issue: adaptive_calls.append(issue) or dict(adaptive_result))
     import database.prediction_history_store as phs
     learning_used = []
-    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: learning_used.append((issue, used)) or {"status": "ok"})
+    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: learning_used.append((issue, used)) or {"status": "ok", "storage": "cloud", "updated": 1})
     return adaptive_calls, learning_used
 
 
@@ -813,3 +813,25 @@ def test_verified_learning_adaptive_skipped_allows_learning_used(monkeypatch):
     assert result["status"] == "ok"
     assert adaptive_calls == ["115700001"]
     assert learning_used == [("115700001", True)]
+
+
+def test_verified_learning_rejects_sqlite_learning_used_update(monkeypatch):
+    saves = [{"status": "ok", "storage": "cloud"} for _ in range(18)]
+    adaptive_calls, _ = _setup_complete_verified_gate_case(monkeypatch, saves, {"status": "skipped", "reason": "insufficient_samples"})
+    import database.prediction_history_store as phs
+    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: {"status": "ok", "storage": "sqlite", "updated": 1})
+    result = learning_engine.evaluate_verified_issue("115700001")
+    assert result["status"] == "error"
+    assert result["reason"] == "learning_used_cloud_update_required"
+    assert adaptive_calls == ["115700001"]
+
+
+def test_verified_learning_rejects_zero_cloud_learning_used_updates(monkeypatch):
+    saves = [{"status": "ok", "storage": "cloud"} for _ in range(18)]
+    adaptive_calls, _ = _setup_complete_verified_gate_case(monkeypatch, saves, {"status": "skipped", "reason": "insufficient_samples"})
+    import database.prediction_history_store as phs
+    monkeypatch.setattr(phs, "mark_prediction_learning_used", lambda issue, used: {"status": "ok", "storage": "cloud", "updated": 0})
+    result = learning_engine.evaluate_verified_issue("115700001")
+    assert result["status"] == "error"
+    assert result["reason"] == "learning_used_cloud_update_required"
+    assert adaptive_calls == ["115700001"]
