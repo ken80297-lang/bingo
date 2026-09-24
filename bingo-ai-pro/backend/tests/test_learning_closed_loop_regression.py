@@ -187,6 +187,7 @@ def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
     monkeypatch.setattr(prediction_service, "get_production_generation", lambda: 2)
     monkeypatch.setattr(prediction_service, "PREDICTION_TIMEOUT_SECONDS", 999.0)
     monkeypatch.setattr(prediction_service, "_duration_ms", lambda start: 0.0)
+    monkeypatch.setattr(prediction_service, "is_issue_in_current_generation", lambda issue: True)
 
     recommendation = {
         "issue": "115000001",
@@ -243,6 +244,7 @@ def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
     monkeypatch.setattr(prediction_service, "get_production_generation", lambda: 2)
     monkeypatch.setattr(prediction_service, "PREDICTION_TIMEOUT_SECONDS", 999.0)
     monkeypatch.setattr(prediction_service, "_duration_ms", lambda start: 0.0)
+    monkeypatch.setattr(prediction_service, "is_issue_in_current_generation", lambda issue: True)
     monkeypatch.setattr(
         prediction_service,
         "calculate_fast_recommendation",
