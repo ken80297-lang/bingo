@@ -118,7 +118,7 @@ def api_card_two_stepwise_latency_benchmark() -> dict:
     return run_card_two_stepwise_latency_benchmark()
 
 
-@router.post("/runtime-diagnostics/learning-compute-benchmark")
+@router.api_route("/runtime-diagnostics/learning-compute-benchmark", methods=["GET", "POST"])
 def api_learning_compute_benchmark() -> dict:
     """Read-only benchmark for the V7 learning input load and model computation."""
     import time
