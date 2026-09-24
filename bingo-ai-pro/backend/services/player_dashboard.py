@@ -3559,6 +3559,25 @@ def _build_player_dashboard_summary_payload(
         component_metadata=component_metadata,
         dashboard_generation_id=dashboard_generation_id,
     ) or {}
+    if previous_future is not None:
+        previous_verification = _component_result(
+            "previous_verification",
+            previous_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        )
+    else:
+        previous_verification = None
+    if not previous_verification:
+        previous_verification = _unavailable_previous_result(previous_target_issue)
+        previous_verification["previous_result_mode"] = "stale_unavailable"
+    previous_verification.setdefault("requested_target_issue", previous_target_issue)
+    previous_verification.setdefault("displayed_target_issue", None)
+
     card_two_history = _component_result(
         "card_two_history",
         card_two_history_future,
@@ -3617,25 +3636,6 @@ def _build_player_dashboard_summary_payload(
     _store_component_cache("rule_library", rule_library)
     next_prediction["rule_library"] = rule_library
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
-
-    if previous_future is not None:
-        previous_verification = _component_result(
-            "previous_verification",
-            previous_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        )
-    else:
-        previous_verification = None
-    if not previous_verification:
-        previous_verification = _unavailable_previous_result(previous_target_issue)
-        previous_verification["previous_result_mode"] = "stale_unavailable"
-    previous_verification.setdefault("requested_target_issue", previous_target_issue)
-    previous_verification.setdefault("displayed_target_issue", None)
 
     card_two_future, _ = _submit_component(
         "card_two",

@@ -2125,7 +2125,7 @@ def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
     ]
 
 
-def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch):
+def test_dashboard_summary_waits_previous_verification_after_aggregates_before_card_two_history(monkeypatch):
     submitted = []
     previous_targets = []
     original_submit = player_dashboard._submit_component
@@ -2179,8 +2179,8 @@ def test_dashboard_summary_waits_aggregates_before_card_two_history(monkeypatch)
     release_wait = diagnostics["active_release"][-1]["wait_order_position"]
     previous_wait = diagnostics["previous_verification"][-1]["wait_order_position"]
     card_two_wait = diagnostics["card_two"][-1]["wait_order_position"]
-    assert aggregate_wait < card_two_history_wait
-    assert card_two_history_wait < analysis_wait < release_wait < previous_wait < card_two_wait
+    assert aggregate_wait < previous_wait < card_two_history_wait
+    assert card_two_history_wait < analysis_wait < release_wait < card_two_wait
     assert diagnostics["prediction_aggregates"][-1]["query_count"] == 1
 
 
