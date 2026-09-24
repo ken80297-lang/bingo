@@ -182,6 +182,40 @@ def _as_int_list(values: Any) -> list[int]:
     return numbers
 
 
+def _valid_learning_snapshot_record(record: dict) -> bool:
+    model_name = str(record.get("model_name") or "")
+    try:
+        top_n = int(record.get("top_n") or 0)
+        predicted_count = int(record.get("predicted_count") or len(record.get("predicted_numbers") or []))
+    except Exception:
+        return False
+    return (
+        model_name in EXPECTED_LIVE_MODELS
+        and top_n in EXPECTED_TOP_N
+        and predicted_count > 0
+        and bool(record.get("predicted_numbers"))
+        and bool(record.get("prediction_snapshot"))
+    )
+
+
+def _is_complete_learning_record_set(records: list[dict]) -> bool:
+    valid_records = [record for record in records if _valid_learning_snapshot_record(record)]
+    valid_combos = {
+        (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
+        for record in valid_records
+    }
+    expected_combos = {
+        (model_name, top_n)
+        for model_name in EXPECTED_LIVE_MODELS
+        for top_n in EXPECTED_TOP_N
+    }
+    return (
+        len(records) == EXPECTED_RECORDS_PER_TARGET
+        and len(valid_records) == EXPECTED_RECORDS_PER_TARGET
+        and valid_combos == expected_combos
+    )
+
+
 def _analysis_by_issue(issue: str) -> dict:
     for item in get_analysis_history(300):
         if str(item.get("issue")) == str(issue):
@@ -442,25 +476,8 @@ def _cached_observation() -> dict | None:
 def capture_prediction_snapshot(issue: str | None = None) -> dict:
     if issue:
         records = _learning_snapshots_for_issue(str(issue))
-        valid_records = [
-            record
-            for record in records
-            if str(record.get("model_name") or "") != "unknown"
-            and int(record.get("predicted_count") or len(record.get("predicted_numbers") or [])) > 0
-            and bool(record.get("prediction_snapshot"))
-        ]
-        valid_combos = {
-            (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
-            for record in valid_records
-            if str(record.get("model_name") or "") in EXPECTED_LIVE_MODELS
-            and int(record.get("top_n") or 0) in EXPECTED_TOP_N
-        }
-        expected_combos = {
-            (model_name, top_n)
-            for model_name in EXPECTED_LIVE_MODELS
-            for top_n in EXPECTED_TOP_N
-        }
-        if valid_combos == expected_combos and len(valid_records) == EXPECTED_RECORDS_PER_TARGET:
+        valid_records = [record for record in records if _valid_learning_snapshot_record(record)]
+        if _is_complete_learning_record_set(records):
             first = valid_records[0]
             return {
                 "status": "ok",
@@ -495,24 +512,8 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
     if target_issue:
         pending_resolution = _resolve_pending_snapshot(source_issue, target_issue)
     existing = _learning_snapshots_for_issue(snapshot_issue)
-    valid_existing = [
-        record
-        for record in existing
-        if str(record.get("model_name") or "") in EXPECTED_LIVE_MODELS
-        and int(record.get("top_n") or 0) in EXPECTED_TOP_N
-        and int(record.get("predicted_count") or len(record.get("predicted_numbers") or [])) > 0
-        and bool(record.get("prediction_snapshot"))
-    ]
-    existing_combos = {
-        (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
-        for record in valid_existing
-    }
-    expected_combos = {
-        (model_name, top_n)
-        for model_name in EXPECTED_LIVE_MODELS
-        for top_n in EXPECTED_TOP_N
-    }
-    if existing_combos == expected_combos and len(valid_existing) == EXPECTED_RECORDS_PER_TARGET:
+    valid_existing = [record for record in existing if _valid_learning_snapshot_record(record)]
+    if _is_complete_learning_record_set(existing):
         return {
             "status": "ok",
             "skipped": True,
@@ -751,7 +752,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                 official = get_official_draw_by_issue(str(issue), verified_only=False)
                 analysis = _analysis_by_issue(str(prediction.get("issue") or ""))
                 recovered_records = _learning_records_from_prediction(prediction, official, analysis)
-                if recovered_records:
+                if _is_complete_learning_record_set(recovered_records):
                     saved = [upsert_learning_record(record) for record in recovered_records]
                     status = "ok" if official else "pending_official"
                     if status == "ok":
@@ -830,7 +831,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                 records.append(updated)
         else:
             return {"status": "missing_snapshot", "issue": issue, "saved": []}
-        if len(records) != EXPECTED_RECORDS_PER_TARGET:
+        if not _is_complete_learning_record_set(records):
             return {
                 "status": "missing_snapshot",
                 "issue": issue,
