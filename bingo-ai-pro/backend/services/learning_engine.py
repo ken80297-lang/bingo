@@ -979,7 +979,10 @@ def get_learning_status() -> dict:
             "total_records": int(counts.get("total_records") or records.get("total") or 0),
             "live_prediction_count": int(counts.get("live_prediction_count") or records.get("live") or 0),
             "historical_backtest_count": int(counts.get("historical_backtest_count") or records.get("historical") or 0),
-            "learned_records": int(counts.get("learned_records") or records.get("learned") or 0),
+            "learned_records": int(records.get("learned") or 0),
+            "learned_records_raw": int(counts.get("learned_records") or records.get("learned_raw") or 0),
+            "learned_valid_targets": int(records.get("learned_valid_targets") or 0),
+            "learned_contract": records.get("learned_contract") or "complete 6 models x Top5/10/20",
             "pending_records": int(counts.get("pending_records") or records.get("pending") or 0),
             "pending_official_records": records.get("pending_official", 0),
             "pending_target_records": records.get("pending_target", 0),
@@ -1204,16 +1207,19 @@ def _build_learning_observation() -> dict:
         incomplete_targets = [item for item in target_rows if item["status"] != "complete"]
         duplicate_risk_count = sum(item["duplicate_count"] for item in target_rows)
         evaluation_error_count = int(base_counts.get("evaluation_error_records") or 0)
-        learned_target_count = len(
-            {
-                _target_key(item)
-                for item in records
-                if item.get("learned_status") == "learned" and str(item.get("model_name") or "") != "unknown"
-            }
-        )
+        complete_learned_targets = {
+            item["target_issue"]
+            for item in complete_targets
+            if all(
+                record.get("learned_status") == "learned"
+                for record in grouped_targets.get(item["target_issue"], [])
+            )
+        }
+        learned_target_count = len(complete_learned_targets)
         missing_snapshot_count = int(base_counts.get("missing_snapshot_records") or 0)
         live_count = int(base_counts.get("live_prediction_count") or 0)
-        learned_records = int(base_counts.get("learned_records") or 0)
+        learned_records_raw = int(base_counts.get("learned_records") or 0)
+        learned_records = learned_target_count * EXPECTED_RECORDS_PER_TARGET
         pending_official = int(base_counts.get("pending_official_records") or 0)
         pending_target = int(base_counts.get("pending_target_records") or 0)
         resolved_pending = int(base_counts.get("resolved_pending_records") or 0)
@@ -1301,6 +1307,9 @@ def _build_learning_observation() -> dict:
                 "live": live_count,
                 "historical": int(base_counts.get("historical_backtest_count") or historical),
                 "learned": learned_records,
+                "learned_raw": learned_records_raw,
+                "learned_valid_targets": learned_target_count,
+                "learned_contract": "complete 6 models x Top5/10/20",
                 "pending": int(base_counts.get("pending_records") or 0),
                 "pending_official": pending_official,
                 "pending_target": pending_target,
