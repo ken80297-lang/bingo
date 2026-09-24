@@ -14,6 +14,7 @@ from database.adaptive_weight_store import (
     save_adaptive_weights,
 )
 from database.learning_store import (
+    get_complete_live_learning_records,
     get_learning_model_performance,
     get_learning_records,
     get_learning_summary_records,
@@ -764,12 +765,7 @@ def update_v7_adaptive_weights(source_issue: str) -> dict:
     # target issues. Fetch enough rows for 100 complete targets (18 each) and
     # reject every target that does not satisfy the same snapshot contract used
     # by the realtime learning path.
-    strict_rows = get_learning_records(
-        limit=500,
-        prediction_type="live_prediction",
-        verification_status="verified",
-        learned_status="learned",
-    )
+    strict_rows = get_complete_live_learning_records(window=V7_ADAPTIVE_WINDOW)
     by_issue: dict[str, list[dict]] = {}
     for row in strict_rows:
         by_issue.setdefault(str(row.get("issue") or ""), []).append(row)
