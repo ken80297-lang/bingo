@@ -8,7 +8,11 @@ from datetime import datetime
 from typing import Any
 
 from database.analysis_store import get_analysis_history
-from database.adaptive_weight_store import (\n    get_adaptive_weights_by_source_issue,\n    get_latest_adaptive_weights,\n    save_adaptive_weights,\n)
+from database.adaptive_weight_store import (
+    get_adaptive_weights_by_source_issue,
+    get_latest_adaptive_weights,
+    save_adaptive_weights,
+)
 from database.learning_store import (
     get_learning_model_performance,
     get_learning_records,
