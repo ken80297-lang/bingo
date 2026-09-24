@@ -241,13 +241,15 @@ def get_active_adaptive_weights() -> dict | None:
           and (
             aw.strategy <> 'v7_models'
             or (
-              select count(*)
+              select count(distinct (lh.model_name, lh.top_n))
               from learning_history lh
               where lh.issue = aw.source_evaluation_id::text
                 and lh.prediction_type = 'live_prediction'
                 and lh.verification_status = 'verified'
                 and lh.learned_status = 'learned'
                 and lh.weight_changed = true
+                and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                and lh.top_n in (5,10,20)
             ) = 18
           )
         order by aw.updated_at desc, aw.id desc
@@ -263,13 +265,15 @@ def get_active_adaptive_weights() -> dict | None:
           and (
             aw.strategy <> 'v7_models'
             or (
-              select count(*)
+              select count(distinct lh.model_name || ':' || cast(lh.top_n as text))
               from learning_history lh
               where lh.issue = cast(aw.source_evaluation_id as text)
                 and lh.prediction_type = 'live_prediction'
                 and lh.verification_status = 'verified'
                 and lh.learned_status = 'learned'
                 and lh.weight_changed = 1
+                and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                and lh.top_n in (5,10,20)
             ) = 18
           )
         order by aw.updated_at desc, aw.id desc
