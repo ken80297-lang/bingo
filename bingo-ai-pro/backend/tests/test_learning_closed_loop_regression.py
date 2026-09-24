@@ -99,3 +99,40 @@ def test_complete_18_record_snapshot_is_idempotent(monkeypatch):
     assert result["status"] == "ok"
     assert result["skipped"] is True
     assert result["records"] == 18
+
+
+def test_capture_rejects_partial_snapshot(monkeypatch):
+    partial = [{
+        "model_name": "laowanjia",
+        "top_n": 5,
+        "predicted_count": 5,
+        "predicted_numbers": [1, 2, 3, 4, 5],
+        "prediction_snapshot": {"source_issue": "115099900"},
+        "analysis_snapshot": {"issue": "115099900"},
+    }]
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: partial)
+
+    result = learning_engine.capture_prediction_snapshot("115099901")
+
+    assert result["status"] == "missing_snapshot"
+    assert result["learning_records"] == []
+
+
+def test_capture_accepts_only_complete_18_record_snapshot(monkeypatch):
+    complete = []
+    for model in learning_engine.EXPECTED_LIVE_MODELS:
+        for top_n in learning_engine.EXPECTED_TOP_N:
+            complete.append({
+                "model_name": model,
+                "top_n": top_n,
+                "predicted_count": top_n,
+                "predicted_numbers": list(range(1, top_n + 1)),
+                "prediction_snapshot": {"source_issue": "115099900"},
+                "analysis_snapshot": {"issue": "115099900"},
+            })
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: complete)
+
+    result = learning_engine.capture_prediction_snapshot("115099901")
+
+    assert result["status"] == "ok"
+    assert len(result["learning_records"]) == 18
