@@ -541,3 +541,84 @@ def test_17_of_18_never_invokes_adaptive_updater(monkeypatch):
     result = learning_engine.evaluate_verified_issue("115099901")
     assert result["status"] == "missing_snapshot"
     assert adaptive_calls == []
+
+
+def _complete_learning_rows(issue: str):
+    rows = []
+    for model in learning_engine.EXPECTED_LIVE_MODELS:
+        for top_n in learning_engine.EXPECTED_TOP_N:
+            rows.append({
+                "issue": issue,
+                "model_name": model,
+                "top_n": top_n,
+                "prediction_type": "live_prediction",
+                "verification_status": "verified",
+                "learned_status": "learned",
+                "hit_count": 5,
+            })
+    return rows
+
+
+def test_complete_learning_window_pages_to_100_targets_across_500_boundary(monkeypatch):
+    from database import learning_store
+
+    # 100 complete targets = 1,800 rows. 500-row pages deliberately split
+    # targets because 500 is not divisible by 18.
+    source = []
+    for n in range(100, 0, -1):
+        source.extend(_complete_learning_rows(str(115100000 + n)))
+
+    calls = []
+    def fake_get_learning_records(limit=100, offset=0, **kwargs):
+        calls.append((limit, offset, kwargs))
+        return source[offset: offset + limit]
+
+    monkeypatch.setattr(learning_store, "get_learning_records", fake_get_learning_records)
+    result = learning_store.get_complete_live_learning_records(window=100, page_size=500, max_rows=2500)
+
+    assert len(result) == 1800
+    assert len({row["issue"] for row in result}) == 100
+    assert [offset for _, offset, _ in calls] == [0, 500, 1000, 1500]
+    assert all(call[2]["prediction_type"] == "live_prediction" for call in calls)
+    assert all(call[2]["verification_status"] == "verified" for call in calls)
+    assert all(call[2]["learned_status"] == "learned" for call in calls)
+
+
+def test_complete_learning_window_excludes_incomplete_target(monkeypatch):
+    from database import learning_store
+
+    newest_incomplete = _complete_learning_rows("115200003")[:-1]
+    older_complete = _complete_learning_rows("115200002") + _complete_learning_rows("115200001")
+    source = newest_incomplete + older_complete
+
+    monkeypatch.setattr(
+        learning_store,
+        "get_learning_records",
+        lambda limit=100, offset=0, **kwargs: source[offset: offset + limit],
+    )
+    result = learning_store.get_complete_live_learning_records(window=2, page_size=20, max_rows=200)
+
+    assert len(result) == 36
+    assert {row["issue"] for row in result} == {"115200002", "115200001"}
+
+
+def test_adaptive_updater_uses_full_100_complete_target_window(monkeypatch):
+    rows = []
+    for n in range(100, 0, -1):
+        rows.extend(_complete_learning_rows(str(115300000 + n)))
+
+    monkeypatch.setattr(learning_engine, "get_adaptive_weights_by_source_issue", lambda issue: None)
+    monkeypatch.setattr(learning_engine, "get_complete_live_learning_records", lambda window: rows)
+    monkeypatch.setattr(learning_engine, "get_latest_adaptive_weights", lambda: {"version": 7})
+    saved = []
+    monkeypatch.setattr(
+        learning_engine,
+        "save_adaptive_weights",
+        lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 10},
+    )
+
+    result = learning_engine.update_v7_adaptive_weights("115300101")
+    assert result["status"] == "ok"
+    assert result["complete_targets"] == 100
+    assert result["version"] == 8
+    assert saved[0]["window"] == 100
