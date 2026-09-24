@@ -731,3 +731,17 @@ def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch)
     assert ") = 18" in cloud
     assert "lh.weight_changed = 1" in sqlite
     assert ") = 18" in sqlite
+
+
+def test_balance_model_always_emits_twenty_unique_candidates():
+    from services.model_engine import model_e_balance
+
+    draws = [
+        {"issue": str(1000 - i), "numbers": list(range(1 + (i % 4), 81, 4))[:20]}
+        for i in range(30)
+    ]
+    result = model_e_balance(draws)
+    candidates = result["candidate_numbers"]
+    assert len(candidates) == 20
+    assert len(set(candidates)) == 20
+    assert all(1 <= number <= 80 for number in candidates)
