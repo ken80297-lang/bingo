@@ -477,3 +477,45 @@ def test_legacy_adaptive_weights_are_not_applied_to_v7(monkeypatch):
     result = voting_engine.build_voting_result(100)
     assert result["adaptive_learning"]["enabled"] is False
     assert all(payload["adaptive_multiplier"] == 1.0 for payload in result["model_scores"].values())
+
+
+def test_adaptive_updater_requires_all_models_and_minimum_samples(monkeypatch):
+    rows = [
+        {"model_name": name, "sample_size": 20, "average_hits": 5.0}
+        for name in ("laowanjia", "hotcold", "missing", "pattern")
+    ]
+    monkeypatch.setattr(learning_engine, "get_learning_model_performance", lambda **kwargs: rows)
+    saved = []
+    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(payload) or {"status": "ok"})
+    result = learning_engine.update_v7_adaptive_weights("115099901")
+    assert result["status"] == "skipped"
+    assert result["reason"] == "missing_model_performance"
+    assert saved == []
+
+    rows.append({"model_name": "balance", "sample_size": 19, "average_hits": 5.0})
+    result = learning_engine.update_v7_adaptive_weights("115099901")
+    assert result["status"] == "skipped"
+    assert result["reason"] == "insufficient_samples"
+    assert saved == []
+
+
+def test_verified_learning_persists_versioned_v7_weights(monkeypatch):
+    performance = [
+        {"model_name": "laowanjia", "sample_size": 25, "average_hits": 6.0},
+        {"model_name": "hotcold", "sample_size": 25, "average_hits": 5.0},
+        {"model_name": "missing", "sample_size": 25, "average_hits": 4.0},
+        {"model_name": "pattern", "sample_size": 25, "average_hits": 5.0},
+        {"model_name": "balance", "sample_size": 25, "average_hits": 5.0},
+    ]
+    monkeypatch.setattr(learning_engine, "get_learning_model_performance", lambda **kwargs: performance)
+    monkeypatch.setattr(learning_engine, "get_latest_adaptive_weights", lambda: {"version": 4})
+    saved = []
+    monkeypatch.setattr(learning_engine, "save_adaptive_weights", lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 9})
+    result = learning_engine.update_v7_adaptive_weights("115099901")
+    assert result["status"] == "ok"
+    assert result["version"] == 5
+    assert len(saved) == 1
+    payload = saved[0]
+    assert payload["strategy"] == "v7_models"
+    assert payload["laowanjia_weight"] > payload["hot_cold_weight"] > payload["missing_weight"]
+    assert abs(sum(result["weights"].values()) - 5.0) < 0.00001
