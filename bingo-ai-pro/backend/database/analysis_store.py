@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -757,6 +758,52 @@ def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = 
         return []
 
 
+def _query_with_fallback_timing(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> tuple[list[Any], dict[str, Any]]:
+    timing: dict[str, Any] = {
+        "query_tag": "analysis_history.by_issue",
+        "query_count": 1,
+        "backend": "cloud",
+    }
+    connect_started = time.perf_counter()
+    try:
+        with _cloud_connection() as conn:
+            timing["connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+            execute_started = time.perf_counter()
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+                fetch_started = time.perf_counter()
+                rows = cur.fetchall()
+                timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
+                timing["row_count"] = len(rows or [])
+                timing["total_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+                return rows, timing
+    except Exception as exc:
+        timing["cloud_error_type"] = type(exc).__name__
+        logger.exception("cloud analysis_history query failed")
+
+    sqlite_started = time.perf_counter()
+    try:
+        with _sqlite_connection() as conn:
+            timing["backend"] = "sqlite"
+            timing["connect_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+            execute_started = time.perf_counter()
+            cur = conn.execute(sqlite_sql or sql.replace("%s", "?"), params)
+            timing["execute_ms"] = round((time.perf_counter() - execute_started) * 1000, 2)
+            fetch_started = time.perf_counter()
+            rows = cur.fetchall()
+            timing["fetch_ms"] = round((time.perf_counter() - fetch_started) * 1000, 2)
+            timing["row_count"] = len(rows or [])
+            timing["total_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+            return rows, timing
+    except Exception as exc:
+        timing["sqlite_error_type"] = type(exc).__name__
+        logger.exception("sqlite analysis_history query failed")
+        timing["row_count"] = 0
+        timing["total_ms"] = round((time.perf_counter() - sqlite_started) * 1000, 2)
+        return [], timing
+
+
 def get_latest_analysis_history() -> dict | None:
     rows = _query_with_fallback(
         """
@@ -809,6 +856,42 @@ def get_analysis_history_by_issue(issue: str) -> dict | None:
         """,
     )
     return _row_to_record(rows[0]) if rows else None
+
+
+def get_analysis_history_by_issue_with_timing(issue: str) -> tuple[dict | None, dict[str, Any]]:
+    rows, timing = _query_with_fallback_timing(
+        """
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue = %s
+        limit 1
+        """,
+        (str(issue),),
+        sqlite_sql="""
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue = ?
+        limit 1
+        """,
+    )
+    transform_started = time.perf_counter()
+    record = _row_to_record(rows[0]) if rows else None
+    timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000, 2)
+    return record, timing
 
 
 def get_analysis_history(limit: int = 100) -> list[dict]:

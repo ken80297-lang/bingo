@@ -1160,6 +1160,58 @@ def test_dashboard_component_stage_latency_preserves_result(caplog):
     assert "result=success" in joined
 
 
+def test_card_two_records_internal_execution_diagnostics(monkeypatch):
+    record = {
+        "id": 1,
+        "issue": "115052000",
+        "prediction_issue": "115052001",
+        "prediction_status": "verified",
+        "production_valid": True,
+        "production_generation": 2,
+        "strategy": "ProductionFastPath",
+        "recommend_numbers": list(range(1, 21)),
+        "winning_numbers": list(range(11, 31)),
+        "actual_super": 12,
+        "learning_used": True,
+        "big_small": "big",
+        "odd_even": "odd",
+    }
+
+    def fake_timed_lookup(issue):
+        return (
+            {"issue": issue, "rules": []},
+            {
+                "query_count": 1,
+                "db_calls": 1,
+                "connect_ms": 2.0,
+                "execute_ms": 3.0,
+                "fetch_ms": 0.5,
+                "transform_ms": 0.1,
+                "total_ms": 5.6,
+            },
+        )
+
+    monkeypatch.setattr(player_dashboard, "_card_two_analysis_by_issue_with_timing", fake_timed_lookup)
+    monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", lambda analysis, prediction: {"rules": []})
+
+    diagnostics = {}
+    payload = player_dashboard._card_two_from_record(
+        record,
+        {"issue": "115052001"},
+        "115052001",
+        diagnostics=diagnostics,
+    )
+
+    execution = payload["diagnostics"]["card_two_execution"]
+    stages = execution["stages"]
+    assert payload["available"] is True
+    assert payload["query_count"] == 1
+    assert stages["_card_two_from_record.analysis_lookup"]["query_count"] == 1
+    assert stages["_card_two_from_record.analysis_lookup"]["db_calls"] == 1
+    assert stages["_card_two_from_record.analysis_lookup"]["execute_ms"] == 3.0
+    assert stages["_card_two_from_record.total"]["query_count"] == 1
+
+
 def test_dashboard_component_stage_latency_preserves_exception(caplog):
     with caplog.at_level(logging.WARNING, logger="services.player_dashboard"):
         with pytest.raises(RuntimeError):
@@ -2104,7 +2156,11 @@ def test_dashboard_summary_submits_aggregates_with_read_pool(monkeypatch):
     })
     monkeypatch.setattr(player_dashboard, "production_scope_payload", lambda: {})
     monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: {})
-    monkeypatch.setattr(player_dashboard, "_card_two_from_record", lambda record, current, previous_target_issue: {})
+    monkeypatch.setattr(
+        player_dashboard,
+        "_card_two_from_record",
+        lambda record, current, previous_target_issue, diagnostics=None: {},
+    )
     monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
 
     player_dashboard._build_player_dashboard_summary_payload(
@@ -2154,7 +2210,11 @@ def test_dashboard_summary_waits_previous_verification_after_aggregates_before_c
     monkeypatch.setattr(player_dashboard, "production_scope_payload", lambda: {})
     monkeypatch.setattr(player_dashboard, "_build_previous_verification_snapshot", lambda issue: previous_targets.append(issue) or {})
     monkeypatch.setattr(player_dashboard, "get_latest_finalized_analysis_report", lambda *args, **kwargs: None)
-    monkeypatch.setattr(player_dashboard, "_card_two_from_record", lambda record, current, previous_target_issue: {})
+    monkeypatch.setattr(
+        player_dashboard,
+        "_card_two_from_record",
+        lambda record, current, previous_target_issue, diagnostics=None: {},
+    )
 
     token = player_dashboard._PLAYER_DASHBOARD_WAIT_ORDER_CONTEXT.set(1)
     try:

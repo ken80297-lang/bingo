@@ -2453,22 +2453,53 @@ def _card_two_rules(analysis: dict | None, prediction: dict, official_numbers: l
 
 
 def _card_two_analysis_by_issue(issue: Any) -> dict | None:
+    record, _timing = _card_two_analysis_by_issue_with_timing(issue)
+    return record
+
+
+def _card_two_analysis_by_issue_with_timing(issue: Any) -> tuple[dict | None, dict]:
     if not issue:
-        return None
+        return None, {"query_count": 0, "db_calls": 0}
     try:
         from database import analysis_store as analysis_store_module
     except ImportError as exc:
         logger.warning("dashboard card two analysis fallback unavailable: %s", exc)
-        return None
+        return None, {"query_count": 0, "db_calls": 0, "error_type": type(exc).__name__}
+    timed_lookup = getattr(analysis_store_module, "get_analysis_history_by_issue_with_timing", None)
+    if callable(timed_lookup):
+        try:
+            record, timing = timed_lookup(str(issue))
+            timing = dict(timing or {})
+            timing.setdefault("query_count", 1)
+            timing.setdefault("db_calls", 1)
+            return record, timing
+        except Exception as exc:
+            logger.exception("dashboard card two timed analysis lookup failed")
+            return None, {"query_count": 1, "db_calls": 1, "error_type": type(exc).__name__}
     lookup = getattr(analysis_store_module, "get_analysis_history_by_issue", None)
     if not callable(lookup):
         logger.warning("dashboard card two analysis fallback helper missing")
-        return None
+        return None, {"query_count": 0, "db_calls": 0, "error_type": "missing_lookup"}
     try:
-        return lookup(str(issue))
-    except Exception:
+        started = time.perf_counter()
+        record = lookup(str(issue))
+        return record, {
+            "query_count": 1,
+            "db_calls": 1,
+            "total_ms": round((time.perf_counter() - started) * 1000, 2),
+            "timing_source": "fallback_total_only",
+        }
+    except Exception as exc:
         logger.exception("dashboard card two analysis lookup failed")
-        return None
+        return None, {"query_count": 1, "db_calls": 1, "error_type": type(exc).__name__}
+
+
+def _card_two_diag_stage(diagnostics: dict | None, stage: str, started: float, **extra: Any) -> None:
+    if diagnostics is None:
+        return
+    payload = {"elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+    payload.update(extra)
+    diagnostics.setdefault("stages", {})[stage] = payload
 
 
 def _card_two_record_actual_numbers(record: dict | None) -> list[int]:
@@ -2558,10 +2589,22 @@ def get_latest_finalized_analysis_report(
     history_records: list[dict] | None = None,
     current_draw: dict | None = None,
     target_issue: Any = None,
+    diagnostics: dict | None = None,
 ) -> dict | None:
+    total_started = time.perf_counter()
+    source_started = time.perf_counter()
     records = history_records if history_records is not None else get_prediction_history_records(100)
+    _card_two_diag_stage(
+        diagnostics,
+        "get_latest_finalized_analysis_report.source_records",
+        source_started,
+        source="provided" if history_records is not None else "query",
+        row_count=len(records or []),
+        query_count=0 if history_records is not None else 1,
+    )
     current_issue = (current_draw or {}).get("issue")
     requested_target = _valid_production_issue(target_issue)
+    filter_started = time.perf_counter()
     candidates = [
         record
         for record in (records or [])
@@ -2574,8 +2617,24 @@ def get_latest_finalized_analysis_report(
             if _valid_production_issue(record.get("prediction_issue") or record.get("target_issue")) == requested_target
         ]
     if not candidates:
+        _card_two_diag_stage(
+            diagnostics,
+            "get_latest_finalized_analysis_report.filter_candidates",
+            filter_started,
+            candidate_count=0,
+            requested_target=requested_target,
+        )
+        _card_two_diag_stage(diagnostics, "get_latest_finalized_analysis_report.total", total_started, query_count=0)
         return None
-    return max(
+    _card_two_diag_stage(
+        diagnostics,
+        "get_latest_finalized_analysis_report.filter_candidates",
+        filter_started,
+        candidate_count=len(candidates),
+        requested_target=requested_target,
+    )
+    select_started = time.perf_counter()
+    selected = max(
         candidates,
         key=lambda item: (
             _as_int(item.get("prediction_issue")) or 0,
@@ -2583,24 +2642,48 @@ def get_latest_finalized_analysis_report(
             int(item.get("id") or 0),
         ),
     )
+    _card_two_diag_stage(diagnostics, "get_latest_finalized_analysis_report.select_latest", select_started)
+    _card_two_diag_stage(diagnostics, "get_latest_finalized_analysis_report.total", total_started, query_count=0)
+    return selected
 
 
 def _card_two_from_record(
     record: dict | None,
     current_draw: dict | None = None,
     requested_issue: Any = None,
+    diagnostics: dict | None = None,
 ) -> dict:
+    total_started = time.perf_counter()
     if not record:
-        return _card_two_empty(requested_issue)
+        result = _card_two_empty(requested_issue)
+        _card_two_diag_stage(diagnostics, "_card_two_from_record.total", total_started, query_count=0, db_calls=0)
+        if diagnostics is not None:
+            result["diagnostics"] = {"card_two_execution": diagnostics}
+            result["query_count"] = 0
+        return result
+    extract_started = time.perf_counter()
     issue = _valid_production_issue(record.get("prediction_issue") or record.get("target_issue"))
     requested = _valid_production_issue(requested_issue)
     if requested and issue != requested:
-        return _card_two_empty(requested)
+        result = _card_two_empty(requested)
+        _card_two_diag_stage(diagnostics, "_card_two_from_record.total", total_started, query_count=0, db_calls=0)
+        if diagnostics is not None:
+            result["diagnostics"] = {"card_two_execution": diagnostics}
+            result["query_count"] = 0
+        return result
     prediction_numbers = _as_int_list(record.get("recommend_numbers"))
     official_numbers = _card_two_record_actual_numbers(record)
     official_super = _as_int(record.get("actual_super") or record.get("official_super_number"))
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_from_record.field_extraction",
+        extract_started,
+        prediction_count=len(prediction_numbers),
+        official_count=len(official_numbers),
+    )
     official_draw = None
     if issue and (len(official_numbers) != 20 or official_super is None):
+        official_lookup_started = time.perf_counter()
         try:
             official_draw = _timed_component_stage(
                 "card_two",
@@ -2614,8 +2697,22 @@ def _card_two_from_record(
             official_numbers = _as_int_list((official_draw or {}).get("numbers"))
         if official_super is None:
             official_super = _as_int((official_draw or {}).get("super_number"))
+        _card_two_diag_stage(
+            diagnostics,
+            "_card_two_from_record.official_draw_lookup",
+            official_lookup_started,
+            query_count=1,
+            db_calls=1,
+            found=bool(official_draw),
+        )
     if not issue or len(prediction_numbers) != 20 or len(official_numbers) != 20:
-        return _card_two_empty(requested_issue or issue)
+        result = _card_two_empty(requested_issue or issue)
+        _card_two_diag_stage(diagnostics, "_card_two_from_record.total", total_started, query_count=0, db_calls=0)
+        if diagnostics is not None:
+            result["diagnostics"] = {"card_two_execution": diagnostics}
+            result["query_count"] = 0
+        return result
+    number_started = time.perf_counter()
     official_set = set(official_numbers)
     matched_numbers = [number for number in prediction_numbers if number in official_set]
     if official_super is None or not (1 <= official_super <= 80):
@@ -2629,13 +2726,29 @@ def _card_two_from_record(
     size_result = _card_two_distribution_result(record.get("big_small"), actual_big_small)
     odd_even_result = _card_two_distribution_result(record.get("odd_even"), actual_odd_even)
     consecutive_groups = _card_two_actual_consecutive_groups(official_numbers)
-    analysis = _timed_component_stage(
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_from_record.number_processing",
+        number_started,
+        matched_count=len(matched_numbers),
+    )
+    analysis_started = time.perf_counter()
+    analysis, analysis_timing = _timed_component_stage(
         "card_two",
         "analysis_lookup",
-        lambda: _card_two_analysis_by_issue(record.get("issue")),
+        lambda: _card_two_analysis_by_issue_with_timing(record.get("issue")),
     )
+    _card_two_diag_stage(
+        diagnostics,
+        "_card_two_from_record.analysis_lookup",
+        analysis_started,
+        **dict(analysis_timing or {}),
+    )
+    rules_started = time.perf_counter()
     rules = _card_two_rules(analysis, record, official_numbers)
-    return {
+    _card_two_diag_stage(diagnostics, "_card_two_from_record.rule_processing", rules_started, rule_count=len(rules))
+    payload_started = time.perf_counter()
+    result = {
         "title": CARD_TWO_TITLE,
         "available": True,
         "report_status": "finalized",
@@ -2666,6 +2779,21 @@ def _card_two_from_record(
             "selector": "get_latest_finalized_analysis_report",
         },
     }
+    _card_two_diag_stage(diagnostics, "_card_two_from_record.payload_build", payload_started)
+    if diagnostics is not None:
+        stages = diagnostics.get("stages", {})
+        query_count = sum(int(stage.get("query_count") or 0) for stage in stages.values() if isinstance(stage, dict))
+        db_calls = sum(int(stage.get("db_calls") or 0) for stage in stages.values() if isinstance(stage, dict))
+        _card_two_diag_stage(
+            diagnostics,
+            "_card_two_from_record.total",
+            total_started,
+            query_count=query_count,
+            db_calls=db_calls,
+        )
+        result["diagnostics"] = {"card_two_execution": diagnostics}
+        result["query_count"] = query_count
+    return result
 
 
 def _data_counts(
@@ -3637,17 +3765,31 @@ def _build_player_dashboard_summary_payload(
     next_prediction["rule_library"] = rule_library
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
 
-    card_two_future, _ = _submit_component(
-        "card_two",
-        lambda: _card_two_from_record(
+    def build_card_two_snapshot():
+        diagnostics: dict[str, Any] = {"dependency_inputs": {
+            "card_two_history_count": len(card_two_history or []),
+            "current_issue": (current or {}).get("issue"),
+            "previous_target_issue": previous_target_issue,
+        }}
+        return _card_two_from_record(
             _timed_component_stage(
                 "card_two",
                 "finalized_analysis_report",
-                lambda: get_latest_finalized_analysis_report(card_two_history, current, previous_target_issue),
+                lambda: get_latest_finalized_analysis_report(
+                    card_two_history,
+                    current,
+                    previous_target_issue,
+                    diagnostics=diagnostics,
+                ),
             ),
             current,
             previous_target_issue,
-        ),
+            diagnostics=diagnostics,
+        )
+
+    card_two_future, _ = _submit_component(
+        "card_two",
+        build_card_two_snapshot,
     )
     card_two = _component_result(
         "card_two",
