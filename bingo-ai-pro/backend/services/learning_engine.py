@@ -830,6 +830,15 @@ def evaluate_verified_issue(issue: str) -> dict:
                 records.append(updated)
         else:
             return {"status": "missing_snapshot", "issue": issue, "saved": []}
+        if len(records) != EXPECTED_RECORDS_PER_TARGET:
+            return {
+                "status": "missing_snapshot",
+                "issue": issue,
+                "saved": [],
+                "reason": "incomplete_learning_record_set",
+                "records": len(records),
+                "expected_records": EXPECTED_RECORDS_PER_TARGET,
+            }
         saved = [upsert_learning_record(record) for record in records]
         status = "ok" if official else "pending_official"
         record_operation_event(
