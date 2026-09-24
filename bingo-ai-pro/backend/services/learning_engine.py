@@ -754,12 +754,23 @@ V7_ADAPTIVE_WINDOW = 100
 def update_v7_adaptive_weights(source_issue: str) -> dict:
     existing = get_adaptive_weights_by_source_issue(str(source_issue))
     if existing:
+        evidence = mark_learning_weight_changed(str(source_issue), True)
+        if evidence.get("status") != "ok" or evidence.get("storage") != "cloud" or int(evidence.get("updated") or 0) != EXPECTED_RECORDS_PER_TARGET:
+            return {
+                "status": "error",
+                "reason": "adaptive_weight_evidence_reconciliation_required",
+                "source_issue": str(source_issue),
+                "version": existing.get("version"),
+                "weight_id": existing.get("id"),
+                "evidence": evidence,
+            }
         return {
             "status": "ok",
             "reason": "already_updated",
             "source_issue": str(source_issue),
             "version": existing.get("version"),
             "weight_id": existing.get("id"),
+            "evidence": evidence,
         }
 
     # Build the adaptive window only from strict, complete 18/18 verified+learned
