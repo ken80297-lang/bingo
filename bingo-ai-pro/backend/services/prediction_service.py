@@ -496,14 +496,19 @@ def create_for_official_draw(
             previous_strategy_version = existing_strategy["previous_strategy_version"]
             force = True
 
-        from database.analysis_store import get_analysis_history
+        from database.analysis_store import get_cached_analysis_history
         mark = time.perf_counter()
-        learning_analysis_history = get_analysis_history(100)
+        learning_analysis_history, learning_history_cache = get_cached_analysis_history(
+            100,
+            based_on_issue=based_on,
+        )
         _stage_done(
             stages,
             "learning_history_load",
             mark,
             records=len(learning_analysis_history or []),
+            source=learning_history_cache.get("source"),
+            cache_reason=learning_history_cache.get("cache_reason"),
         )
 
         recommendation_context = {
