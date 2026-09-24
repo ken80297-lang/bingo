@@ -116,3 +116,38 @@ def api_card_two_ordering_benchmark() -> dict:
 @router.post("/runtime-diagnostics/card-two-stepwise-latency-benchmark")
 def api_card_two_stepwise_latency_benchmark() -> dict:
     return run_card_two_stepwise_latency_benchmark()
+
+
+@router.post("/runtime-diagnostics/learning-compute-benchmark")
+def api_learning_compute_benchmark() -> dict:
+    """Read-only benchmark for the V7 learning input load and model computation."""
+    import time
+
+    from database.analysis_store import get_analysis_history
+    from services.model_engine import run_all_models
+
+    started = time.perf_counter()
+    history_started = time.perf_counter()
+    draws = get_analysis_history(100)
+    history_ms = round((time.perf_counter() - history_started) * 1000.0, 2)
+
+    models_started = time.perf_counter()
+    payload = run_all_models(100, draws=draws)
+    models_ms = round((time.perf_counter() - models_started) * 1000.0, 2)
+    models = payload.get("models") or []
+
+    return {
+        "status": "ok",
+        "read_only": True,
+        "history_records": len(draws or []),
+        "learning_history_load_ms": history_ms,
+        "learning_models_compute_ms": models_ms,
+        "total_ms": round((time.perf_counter() - started) * 1000.0, 2),
+        "models": [
+            {
+                "name": model.get("name") or model.get("model_name"),
+                "candidate_count": len(model.get("candidates") or model.get("numbers") or []),
+            }
+            for model in models
+        ],
+    }
