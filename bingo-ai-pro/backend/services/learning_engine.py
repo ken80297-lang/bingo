@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from database.analysis_store import get_analysis_history
+from database.adaptive_weight_store import get_latest_adaptive_weights, save_adaptive_weights
 from database.learning_store import (
     get_learning_model_performance,
     get_learning_records,
@@ -739,6 +740,57 @@ def _learning_records_from_prediction(prediction: dict, official: dict | None, a
     return records
 
 
+V7_ADAPTIVE_MODELS = ("laowanjia", "hotcold", "missing", "pattern", "balance")
+V7_ADAPTIVE_MIN_SAMPLES = 20
+V7_ADAPTIVE_WINDOW = 100
+
+
+def update_v7_adaptive_weights(source_issue: str) -> dict:
+    performance = get_learning_model_performance(
+        window=V7_ADAPTIVE_WINDOW,
+        top_n=20,
+        prediction_type="live_prediction",
+    )
+    by_model = {row.get("model_name"): row for row in performance if row.get("model_name") in V7_ADAPTIVE_MODELS}
+    if set(by_model) != set(V7_ADAPTIVE_MODELS):
+        return {"status": "skipped", "reason": "missing_model_performance", "models": sorted(by_model)}
+    minimum = min(int(by_model[name].get("sample_size") or 0) for name in V7_ADAPTIVE_MODELS)
+    if minimum < V7_ADAPTIVE_MIN_SAMPLES:
+        return {"status": "skipped", "reason": "insufficient_samples", "minimum_samples": minimum}
+
+    # Top-20 average hits is directly comparable across all five models. Center
+    # each model around the peer mean, shrink the effect, and cap each update.
+    scores = {name: float(by_model[name].get("average_hits") or 0) for name in V7_ADAPTIVE_MODELS}
+    peer_mean = sum(scores.values()) / len(scores) if scores else 0.0
+    raw = {name: 1.0 + ((score - peer_mean) / max(1.0, peer_mean)) * 0.5 for name, score in scores.items()}
+    raw = {name: max(0.8, min(1.2, value)) for name, value in raw.items()}
+    normalizer = sum(raw.values()) / len(raw) or 1.0
+    weights = {name: round(value / normalizer, 6) for name, value in raw.items()}
+
+    previous = get_latest_adaptive_weights() or {}
+    version = int(previous.get("version") or 0) + 1
+    payload = {
+        "version": version,
+        "strategy": "v7_models",
+        "window": V7_ADAPTIVE_WINDOW,
+        "laowanjia_weight": weights["laowanjia"],
+        "hot_cold_weight": weights["hotcold"],
+        "missing_weight": weights["missing"],
+        "pattern_weight": weights["pattern"],
+        "balance_weight": weights["balance"],
+        "tail_weight": None,
+        "random_weight": None,
+        "average_hits": round(peer_mean, 4),
+        "hit_rate": round(peer_mean / 20.0, 6),
+        "source_evaluation_id": None,
+        "is_active": True,
+    }
+    saved = save_adaptive_weights(payload)
+    if saved.get("status") != "ok":
+        return {"status": "error", "reason": "adaptive_weight_save_failed", "save": saved}
+    return {"status": "ok", "source_issue": str(source_issue), "version": version, "weights": weights, "save": saved}
+
+
 def evaluate_verified_issue(issue: str) -> dict:
     start = time.perf_counter()
     try:
@@ -860,6 +912,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                 duration_ms=_duration_ms(start),
             )
         learning_queue = {"status": "skipped"}
+        adaptive_learning = {"status": "skipped"}
         if status == "ok":
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
@@ -869,12 +922,14 @@ def evaluate_verified_issue(issue: str) -> dict:
                 logger.exception("prediction history learning queue update failed")
                 learning_queue = {"status": "error", "message": str(exc)}
             invalidate_learning_status_cache()
+            adaptive_learning = update_v7_adaptive_weights(str(issue))
         return {
             "status": status,
             "issue": issue,
             "records": len(records),
             "saved": saved,
             "learning_queue": learning_queue,
+            "adaptive_learning": adaptive_learning,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")
