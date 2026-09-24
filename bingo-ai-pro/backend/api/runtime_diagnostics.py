@@ -220,11 +220,21 @@ def api_adaptive_walk_forward_ab(limit: int = 600, warmup: int = 100) -> dict:
     bounded_limit = max(121, min(int(limit or 600), 2000))
     bounded_warmup = max(100, min(int(warmup or 100), bounded_limit - 1))
     result = run(get_draw_history(bounded_limit), warmup=bounded_warmup)
+    summary = result.get("summary") or {}
+    print(
+        "ADAPTIVE_WALK_FORWARD_AB "
+        + __import__("json").dumps(
+            {"read_only": True, "limit": bounded_limit, "warmup": bounded_warmup, "summary": summary},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     return {
         "status": "ok",
         "read_only": True,
         "limit": bounded_limit,
-        "summary": result.get("summary") or {},
+        "summary": summary,
     }
 
 
