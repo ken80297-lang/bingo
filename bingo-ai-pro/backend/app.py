@@ -755,7 +755,29 @@ def startup_event() -> None:
         def _run_player_dashboard_summary_probe() -> None:
             try:
                 import time
+                from database.postgres import dashboard_read_connection
                 from services.player_dashboard import build_player_dashboard_summary
+
+                ready = False
+                for attempt in range(1, 7):
+                    try:
+                        with dashboard_read_connection() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("select 1")
+                                cur.fetchone()
+                        ready = True
+                        print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_READY attempt={attempt}", flush=True)
+                        break
+                    except Exception as exc:
+                        print(
+                            f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_WAIT attempt={attempt} "
+                            f"error_type={type(exc).__name__}",
+                            flush=True,
+                        )
+                        time.sleep(3)
+                if not ready:
+                    print("PLAYER_DASHBOARD_SUMMARY_PROBE_SKIPPED reason=db_pool_not_ready", flush=True)
+                    return
 
                 dashboard_started = time.perf_counter()
                 payload = build_player_dashboard_summary()
