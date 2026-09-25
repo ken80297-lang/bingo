@@ -1154,12 +1154,10 @@
         title: "🤖 AI 運作中心",
         status: raw.status || (player && player.partial ? "partial" : "ok"),
         sections: raw.sections || {},
-        learning: raw.learning || (player && player.history) || {},
-        data_quality: raw.data_quality || (player && player.data_counts) || {},
+        learning: raw.learning || {},
         system: raw.system || {},
-        collector: raw.collector || (player && player.sync) || {},
-        ai_model: raw.ai_model || {},
-        previous_verification: (player && player.previous_verification) || {}
+        collector: raw.collector || {},
+        ai_model: raw.ai_model || {}
       };
     }
 
