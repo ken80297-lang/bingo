@@ -3691,7 +3691,7 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
     return records
 
 
-def get_prediction_history_summary_records(limit: int = 100, *, diagnostic_component: str | None = None) -> list[dict]:
+def get_prediction_history_summary_records(\n    limit: int = 100,\n    *,\n    diagnostic_component: str | None = None,\n    include_event_metadata: bool = True,\n) -> list[dict]:
     total_started = time.perf_counter()
     diagnostics_enabled = diagnostic_component == "card_two_history"
     _ensure_initialized()
@@ -3793,14 +3793,17 @@ def _get_prediction_history_summary_records_loaded(
 
     records = _maybe_timed_card_two_history_stage(diagnostics_enabled, "transform", transform_rows)
     metadata_query_timing: dict[str, Any] = {"query_tag": "card_two_history.metadata_bulk"}
-    metadata_by_record, metadata_queries = _maybe_timed_card_two_history_stage(
-        diagnostics_enabled,
-        "metadata_bulk",
-        lambda: _with_card_two_query_timing(
-            metadata_query_timing if diagnostics_enabled else None,
-            lambda: _prediction_event_metadata_bulk(records),
-        ),
-    )
+    metadata_by_record: dict[int, dict] = {}
+    metadata_queries = 0
+    if include_event_metadata:
+        metadata_by_record, metadata_queries = _maybe_timed_card_two_history_stage(
+            diagnostics_enabled,
+            "metadata_bulk",
+            lambda: _with_card_two_query_timing(
+                metadata_query_timing if diagnostics_enabled else None,
+                lambda: _prediction_event_metadata_bulk(records),
+            ),
+        )
     enriched = [
         _enrich_prediction_metadata_from_map(record, metadata_by_record.get(id(record)))
         for record in records
