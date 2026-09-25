@@ -625,7 +625,13 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
             }
         )
 
-    # Keep the monkeypatchable single-record seam for tests/non-cloud runs;\n    # Production cloud uses the one-transaction batch path.\n    saved = (\n        upsert_learning_records(records)\n        if getattr(upsert_learning_record, \"__module__\", \"\") == \"database.learning_store\"\n        else [upsert_learning_record(record) for record in records]\n    )
+    # Keep the monkeypatchable single-record seam for tests/non-cloud runs;
+    # Production cloud uses the one-transaction batch path.
+    saved = (
+        upsert_learning_records(records)
+        if getattr(upsert_learning_record, "__module__", "") == "database.learning_store"
+        else [upsert_learning_record(record) for record in records]
+    )
     return {
         "status": "ok",
         "source_issue": source_issue,
