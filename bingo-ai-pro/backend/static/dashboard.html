@@ -2127,24 +2127,7 @@
           ${metric("Release", safe(versionInfo.release_version || model.release_version || "尚無資料"))}
           ${metric("Generation", safe(versionInfo.production_generation || model.production_generation || "尚無資料"))}
         </div>
-        <h3>下一期資訊</h3>
-        <div class="grid">
-          ${metric("預測期號", nextIssue.target_issue ? `第${safe(nextIssue.target_issue)}期` : "尚無資料")}
-          ${metric("依據期號", nextIssue.source_issue ? `第${safe(nextIssue.source_issue)}期` : "尚無資料")}
-          ${metric("預估開獎時間", formatDateTime(nextIssue.expected_draw_time))}
-          ${metric("推薦狀態", nextIssue.recommendation_ready ? "20 碼完整" : "等待推薦資料", nextIssue.recommendation_ready ? "status-ok" : "status-warning")}
-        </div>
-        <h3>${previousTitle}摘要</h3>
-        ${previousNote}
-        <div class="grid">
-          ${metric("比對期號", `第${safe(previous.target_issue || previous.verified_issue)}期`)}
-          ${metric("開獎時間", formatDateTime(previous.draw_time))}
-          ${metric("命中", verified ? `${fmtNumber(previous.hit_count)} / ${fmtNumber(denominator)}` : "尚未完成", verified ? "status-ok" : "status-warning")}
-          ${metric("Verified 狀態", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
-          ${metric("Learned 狀態", learned ? "已完成學習" : "尚未完成", learned ? "status-ok" : "status-warning")}
-        </div>
-        <h3>預測號碼</h3>${predicted.length ? balls(predicted, "", matched) : `<div class="empty">尚無資料</div>`}
-        <h3>開獎號碼</h3>${official.length ? balls(official, "", matched) : `<div class="empty">尚無資料</div>`}
+
       `;
     }
 
