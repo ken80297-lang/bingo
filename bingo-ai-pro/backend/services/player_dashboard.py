@@ -3811,7 +3811,6 @@ def _build_player_dashboard_summary_payload(
         }
 
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
-    release_future, _ = _submit_component("active_release", get_current_release)
 
     aggregates = _component_result(
         "prediction_aggregates",
@@ -3863,16 +3862,21 @@ def _build_player_dashboard_summary_payload(
         component_metadata=component_metadata,
         dashboard_generation_id=dashboard_generation_id,
     ) or {}
-    active_release = _component_result(
-        "active_release",
-        release_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    active_release = {
+        key: next_prediction.get(key)
+        for key in (
+            "release_version",
+            "git_commit_hash",
+            "git_commit_short",
+            "production_generation",
+            "production_start_issue",
+            "production_start_at",
+            "model_version",
+            "feature_version",
+            "phase",
+        )
+        if next_prediction.get(key) is not None
+    }
     kuaishou = _load_component_cache("kuaishou", {}) or {}
     production_scope = _run_inline_step(
         "production_scope",
