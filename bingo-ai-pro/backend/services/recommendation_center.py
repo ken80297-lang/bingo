@@ -55,7 +55,7 @@ FEATURE_LABELS = {
 }
 
 RECOMMENDATION_NUMBER_COUNT = 20
-FAST_PATH_STRATEGY_VERSION = "28.0-diversity-v1"
+FAST_PATH_STRATEGY_VERSION = "29.0-adaptive-v1"
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -279,6 +279,7 @@ def _build_fast_path_numbers(
     target_issue: str | None,
     previous_numbers: list[int],
     trace: list[dict],
+    adaptive_number_scores: dict[int, float] | None = None,
 ) -> tuple[list[int], dict]:
     source_weights = {
         "patch_numbers": 9.0,
@@ -321,6 +322,10 @@ def _build_fast_path_numbers(
             if number in values:
                 score += source_weights[source_name]
                 reason.append(source_name)
+        adaptive_bonus = float((adaptive_number_scores or {}).get(number, 0.0))
+        if adaptive_bonus:
+            score += adaptive_bonus
+            reason.append("adaptive_v7")
         scores[number] = score
         reasons[number] = reason
 
@@ -443,6 +448,38 @@ def calculate_fast_recommendation(
                 "timings_ms": {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)},
             }
 
+        # Feed the latest qualified adaptive V7 weights back into the formal
+        # Production Fast Path before its final 20-number diversity selection.
+        from services.model_engine import run_all_models
+
+        learning_models_started = time.perf_counter()
+        learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
+        learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
+        learning_models = learning_models_payload.get("models") or []
+        adaptive = get_active_adaptive_weights()
+        adaptive_keys = {
+            "laowanjia": "laowanjia_weight",
+            "hotcold": "hot_cold_weight",
+            "missing": "missing_weight",
+            "pattern": "pattern_weight",
+            "balance": "balance_weight",
+        }
+        adaptive_number_scores: dict[int, float] = {}
+        applied_multipliers: dict[str, float] = {}
+        for model in learning_models:
+            model_key = str(model.get("model") or "")
+            weight_key = adaptive_keys.get(model_key)
+            try:
+                multiplier = float((adaptive or {}).get(weight_key)) if weight_key else 1.0
+            except (TypeError, ValueError):
+                multiplier = 1.0
+            multiplier = max(0.5, min(1.5, multiplier))
+            applied_multipliers[model_key] = round(multiplier, 6)
+            confidence_value = float(model.get("confidence") or 0)
+            base_weight = max(1.0, confidence_value / 20.0) * multiplier
+            for rank, number in enumerate(_recommendation_numbers(model.get("candidate_numbers"))):
+                adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + base_weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
+
         previous_numbers = _previous_fast_path_numbers(context)
         numbers, diversity = _build_fast_path_numbers(
             analysis,
@@ -450,18 +487,9 @@ def calculate_fast_recommendation(
             target_issue=target_issue,
             previous_numbers=previous_numbers,
             trace=trace,
+            adaptive_number_scores=adaptive_number_scores,
         )
 
-        # Preserve the lightweight fast-path recommendation as the production
-        # output, but capture the five V7 model candidates for the learning
-        # ledger. This restores 6 models x Top5/10/20 snapshots without
-        # replacing the fast-path 20-number selection with V7 voting.
-        from services.model_engine import run_all_models
-
-        learning_models_started = time.perf_counter()
-        learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
-        learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
-        learning_models = learning_models_payload.get("models") or []
         learning_model_scores = {
             str(model.get("model")): {
                 "label": model.get("label"),
@@ -521,6 +549,13 @@ def calculate_fast_recommendation(
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": context.get("regenerated_reason"),
                 "previous_strategy_version": context.get("previous_strategy_version"),
+                "adaptive_learning": {
+                    "enabled": bool(adaptive and str(adaptive.get("strategy") or "") == "v7_models"),
+                    "weight_id": adaptive.get("id") if adaptive else None,
+                    "version": adaptive.get("version") if adaptive else None,
+                    "source_evaluation_id": adaptive.get("source_evaluation_id") if adaptive else None,
+                    "multipliers": applied_multipliers,
+                },
             },
             "winning_model": "production_fast_path",
             "model_voting": {
