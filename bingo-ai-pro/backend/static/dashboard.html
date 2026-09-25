@@ -2067,19 +2067,6 @@
       const systemHealth = sections.system_health || {};
       const learningStatus = sections.learning_status || {};
       const versionInfo = sections.version_info || {};
-      const nextIssue = sections.next_issue || {};
-      const previous = verification || payload.previous_verification || {};
-      const predicted = normalizeNumbers(previous.predicted_numbers);
-      const official = normalizeNumbers(previous.official_numbers || previous.draw_numbers);
-      const matched = normalizeNumbers(previous.matched_numbers);
-      const denominator = previous.hit_denominator || previous.prediction_count || predicted.length || 20;
-      const verified = previous.verification_status === "verified";
-      const learned = Boolean(previous.learning_used);
-      const previousMode = previous.previous_result_mode || "unavailable";
-      const previousTitle = previousMode === "latest_available_verified" ? "最近可驗證推薦結果" : "上一期推薦結果";
-      const previousNote = previousMode === "latest_available_verified"
-        ? `<div class="notice warn">第${safe(previous.requested_target_issue)}期尚無可顯示 prediction，改顯示最近可驗證的第${safe(previous.displayed_target_issue)}期。</div>`
-        : "";
       const warnings = asList(system.warnings).filter(Boolean);
       const status = payload.status === "partial" || warnings.length ? "warning" : "ok";
       const syncOk = collector.is_synced === true || Number(collector.lag_count || 0) === 0;
@@ -2088,8 +2075,6 @@
         <h3>最新處理資訊</h3>
         <div class="grid">
           ${metric("目前期號", safe(latestProcessing.current_issue || collector.database_latest_issue || "尚無資料"))}
-          ${metric("Database 最新期", safe(latestProcessing.database_latest_issue || collector.database_latest_issue || "尚無資料"))}
-          ${metric("Source 最新期", safe(latestProcessing.source_latest_issue || collector.latest_issue || "尚無資料"))}
           ${metric("最後成功同步", formatDateTime(latestProcessing.last_successful_collection || collector.last_successful_collection))}
         </div>
         <h3>AI 流程</h3>
@@ -2107,7 +2092,6 @@
         </div>
         <h3>系統健康</h3>
         <div class="grid">
-          ${metric("整體狀態", status === "ok" ? "正常" : "部分資料更新中", statusClass(status))}
           ${metric("健康狀態", statusText(systemHealth.status || status), statusClass(systemHealth.status || status))}
           ${metric("同步狀態", syncOk ? "已同步" : `落後 ${fmtNumber(collector.lag_count)} 期`, syncOk ? "status-ok" : "status-warning")}
           ${metric("警告數", fmtNumber(asList(systemHealth.warnings || warnings).length))}
