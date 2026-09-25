@@ -5,6 +5,7 @@ import os
 SCHEDULER_FLAG_DEFAULTS = {
     "CATCH_UP_SCHEDULER_ENABLED": False,
     "COLLECTOR_SCHEDULER_ENABLED": False,
+    "LATEST_OFFICIAL_SCHEDULER_ENABLED": False,
     "LEGACY_REFRESH_SCHEDULER_ENABLED": False,
     "DAILY_RECOVERY_ENABLED": False,
     "HISTORICAL_CATCHUP_ENABLED": False,
@@ -13,6 +14,7 @@ SCHEDULER_FLAG_DEFAULTS = {
 SCHEDULER_FLAG_RESPONSE_FIELDS = {
     "CATCH_UP_SCHEDULER_ENABLED": "catch_up_scheduler_enabled",
     "COLLECTOR_SCHEDULER_ENABLED": "collector_scheduler_enabled",
+    "LATEST_OFFICIAL_SCHEDULER_ENABLED": "latest_official_scheduler_enabled",
     "LEGACY_REFRESH_SCHEDULER_ENABLED": "legacy_refresh_scheduler_enabled",
     "DAILY_RECOVERY_ENABLED": "daily_recovery_enabled",
     "HISTORICAL_CATCHUP_ENABLED": "historical_catchup_enabled",
