@@ -853,3 +853,26 @@ def test_verified_learning_rejects_zero_cloud_learning_used_updates(monkeypatch)
     assert result["status"] == "error"
     assert result["reason"] == "learning_used_cloud_update_required"
     assert adaptive_calls == ["115700001"]
+
+
+def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch):
+    from api import runtime_diagnostics
+
+    monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [])
+    result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
+    assert result == {"status": "rejected", "reason": "verified_official_draw_required", "issue": "115054089"}
+
+
+def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypatch):
+    from api import runtime_diagnostics
+
+    monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [{"issue": "115054089", "numbers": list(range(1, 21))}])
+    captured = {}
+    def fake_create(issue, **kwargs):
+        captured.update({"issue": issue, **kwargs})
+        return {"status": "created", "recommended_count": 20, "learning_snapshot": {"status": "ok", "records": 18}}
+    monkeypatch.setattr("services.prediction_service.create_for_official_draw", fake_create)
+    result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
+    assert result["status"] == "ok"
+    assert result["result"]["status"] == "created"
+    assert captured == {"issue": "115054089", "source": "runtime_diagnostics", "trigger": "manual_closed_loop_once", "force": False}

@@ -148,6 +148,23 @@ def api_learning_history_cache_benchmark() -> dict:
     }
 
 
+@router.post("/runtime-diagnostics/closed-loop-prediction-once")
+def api_closed_loop_prediction_once(issue: str) -> dict:
+    """Explicit single-shot production-path prediction diagnostic for one verified official issue."""
+    from database.collector_store import get_draw_history
+    from services.prediction_service import create_for_official_draw
+
+    normalized = str(issue or "").strip()
+    if not normalized.isdigit() or len(normalized) < 6:
+        return {"status": "rejected", "reason": "invalid_issue", "issue": normalized}
+    official = next((row for row in get_draw_history(200) if str(row.get("issue")) == normalized), None)
+    numbers = (official or {}).get("numbers") or []
+    if not official or len(numbers) != 20:
+        return {"status": "rejected", "reason": "verified_official_draw_required", "issue": normalized}
+    result = create_for_official_draw(normalized, source="runtime_diagnostics", trigger="manual_closed_loop_once", force=False)
+    return {"status": "ok", "issue": normalized, "result": result}
+
+
 @router.get("/runtime-diagnostics/adaptive-voting-readonly")
 def api_adaptive_voting_readonly() -> dict:
     """Read-only proof that persisted adaptive state is schema-compatible and safely gated."""
