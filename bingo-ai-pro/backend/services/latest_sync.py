@@ -1006,7 +1006,8 @@ def process_latest_official_draw() -> dict[str, Any]:
     source_issue = str(source_draw.get("issue"))
     prediction_target_issue = _next_issue(source_issue)
     existing = get_official_draw_by_issue(source_issue)
-    if is_complete_official_draw(existing):
+    existing_complete = is_complete_official_draw(existing)
+    if existing_complete:
         saved_draw = existing
         save_result = {"status": "ok", "saved": 0, "storage": "existing"}
     elif is_complete_official_draw(source_draw):
@@ -1030,19 +1031,22 @@ def process_latest_official_draw() -> dict[str, Any]:
         analysis_result = {"status": "error", "error": str(exc)}
 
     lifecycle: dict[str, Any]
-    try:
-        from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
+    if existing_complete and _prediction_exists_for_latest(source_issue):
+        lifecycle = {"status": "existing", "prediction": {"status": "already_exists"}}
+    else:
+        try:
+            from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
 
-        lifecycle = process_official_draw_lifecycle(
-            saved_draw,
-            source="official_collector",
-            trigger="official_draw_saved",
-            caller="process_latest_official_draw",
-            create_next_prediction=True,
-        )
-    except Exception as exc:
-        logger.exception("latest sync downstream lifecycle failed")
-        lifecycle = {"status": "error", "message": str(exc)}
+            lifecycle = process_official_draw_lifecycle(
+                saved_draw,
+                source="official_collector",
+                trigger="official_draw_saved",
+                caller="process_latest_official_draw",
+                create_next_prediction=True,
+            )
+        except Exception as exc:
+            logger.exception("latest sync downstream lifecycle failed")
+            lifecycle = {"status": "error", "message": str(exc)}
 
     analysis_created = analysis_result.get("status") == "ok" or _analysis_exists(source_issue)
     prediction_payload = lifecycle.get("prediction") if isinstance(lifecycle, dict) else {}
