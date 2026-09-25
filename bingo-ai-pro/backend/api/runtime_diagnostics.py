@@ -278,3 +278,34 @@ def api_adaptive_walk_forward_ab(limit: int = 600, warmup: int = 100) -> dict:
         "summary": summary,
     }
 
+
+
+@router.get("/runtime-diagnostics/player-dashboard-summary-readonly")
+def api_player_dashboard_summary_readonly() -> dict:
+    """Read-only execution of the real player dashboard summary path for production verification."""
+    import time
+
+    from services.player_dashboard import build_player_dashboard_summary
+
+    started = time.perf_counter()
+    payload = build_player_dashboard_summary()
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+    meta = payload.get("meta") or {}
+    components = meta.get("components") or {}
+    aggregate = components.get("prediction_aggregates") or {}
+    print(
+        f"DASHBOARD_SUMMARY_READONLY status={payload.get('status')} elapsed_ms={elapsed_ms} "
+        f"aggregate_source={aggregate.get('source')} aggregate_result={aggregate.get('result')} "
+        f"aggregate_timed_out={aggregate.get('timed_out')}",
+        flush=True,
+    )
+    return {
+        "status": "ok",
+        "read_only": True,
+        "elapsed_ms": elapsed_ms,
+        "dashboard_status": payload.get("status"),
+        "health": payload.get("health"),
+        "sync": payload.get("sync"),
+        "aggregate_component": aggregate,
+        "dashboard_meta": meta,
+    }
