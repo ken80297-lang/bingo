@@ -2056,14 +2056,12 @@
     function renderCardThree(cardThree, verification) {
       const payload = cardThree || {};
       const learning = payload.learning || {};
-      const quality = payload.data_quality || {};
       const collector = payload.collector || {};
       const model = payload.ai_model || {};
       const system = payload.system || {};
       const sections = payload.sections || {};
       const latestProcessing = sections.latest_processing || {};
       const aiFlow = sections.ai_flow || {};
-      const todaySummary = sections.today_summary || {};
       const systemHealth = sections.system_health || {};
       const learningStatus = sections.learning_status || {};
       const versionInfo = sections.version_info || {};
@@ -2081,12 +2079,6 @@
         <div class="grid">
           ${metric("推薦狀態", statusText(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"), statusClass(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"))}
           ${metric("部分降級", (aiFlow.partial || payload.status === "partial") ? "是" : "否", (aiFlow.partial || payload.status === "partial") ? "status-warning" : "status-ok")}
-        </div>
-        <h3>今日運作摘要</h3>
-        <div class="grid">
-          ${metric("開獎資料", fmtNumber(todaySummary.draw_count ?? quality.draw_count))}
-          ${metric("推薦資料", fmtNumber(todaySummary.prediction_count ?? quality.prediction_count))}
-          ${metric("已驗證", fmtNumber(todaySummary.verified_prediction_count ?? quality.verified_prediction_count))}
         </div>
         <h3>系統健康</h3>
         <div class="grid">
