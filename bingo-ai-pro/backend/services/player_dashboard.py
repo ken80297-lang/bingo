@@ -125,6 +125,7 @@ PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS = 1.0
 # normally completes this query in ~1.6s, so give it a bounded window that still fits
 # inside the 4.5s global dashboard budget.
 PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS = 2.0
+PLAYER_DASHBOARD_PREVIOUS_VERIFICATION_TIMEOUT_SECONDS = 2.0
 PLAYER_DASHBOARD_HISTORY_LIMIT = 10
 CARD_TWO_TITLE = "📖 AI 驗證與分析報告"
 CARD_TWO_RULE_ORDER = [
@@ -1132,6 +1133,14 @@ def _resolve_dashboard_benchmark_inputs() -> dict:
     timings: list[dict] = []
     warnings: list[str] = []
     deadline = time.monotonic() + PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS
+    card_two_history_future, _ = _submit_component(
+        "card_two_history",
+        lambda: _timed_component_stage(
+            "card_two_history",
+            "prediction_history_summary_records",
+            lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+        ),
+    )
     card_one = get_player_card_one_snapshot(deadline=deadline, timings=timings, warnings=warnings)
     current = card_one.get("current") or {}
     detected_latest_issue = card_one.get("detected_latest_issue")
@@ -3852,14 +3861,6 @@ def _build_player_dashboard_summary_payload(
             },
         }
 
-    card_two_history_future, _ = _submit_component(
-        "card_two_history",
-        lambda: _timed_component_stage(
-            "card_two_history",
-            "prediction_history_summary_records",
-            lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
-        ),
-    )
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
     release_future, _ = _submit_component("active_release", get_current_release)
 
@@ -3879,7 +3880,7 @@ def _build_player_dashboard_summary_payload(
             "previous_verification",
             previous_future,
             deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timeout_seconds=PLAYER_DASHBOARD_PREVIOUS_VERIFICATION_TIMEOUT_SECONDS,
             timings=timings,
             warnings=warnings,
             component_metadata=component_metadata,
