@@ -750,9 +750,7 @@
 
   <script>
     const API_TIMEOUT_MS = 10000;
-    const HEALTH_STORAGE_KEY = "bingo-ai-health-cache";
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
-    const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
     let cardOneFallbackHtml = "";
     let cardOneCommittedHtml = "";
     let cardOneCommittedIssue = null;
@@ -773,15 +771,11 @@
     };
 
     const fastApiKeys = ["playerSummary"];
-    const slowApiKeys = [];
     const pollState = {
       latest: {},
       timers: [],
       inFlight: {},
       isLeader: false,
-      slowTimersScheduled: false,
-      slowCursor: 0,
-      slowTimeouts: [],
       leaderHeartbeatTimer: null,
       broadcast: null
     };
@@ -1336,35 +1330,6 @@
       `;
     }
 
-    function saveHealthBrowserCache(payload) {
-      try {
-        localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload }));
-      } catch (error) {
-        console.warn("[dashboard] health browser cache save failed", error);
-      }
-    }
-
-    function loadHealthBrowserCache() {
-      try {
-        const raw = localStorage.getItem(HEALTH_STORAGE_KEY);
-        if (!raw) return null;
-        const cached = JSON.parse(raw);
-        if (!cached || !cached.payload) return null;
-        if ((Date.now() - Number(cached.saved_at || 0)) > HEALTH_STORAGE_MAX_AGE_MS) return null;
-        return {
-          ...cached.payload,
-          cached: true,
-          source: "browser",
-          stale: true,
-          cache_state: cached.payload.cache_state || "stale",
-          browser_cache_saved_at: new Date(cached.saved_at).toISOString()
-        };
-      } catch (error) {
-        console.warn("[dashboard] health browser cache load failed", error);
-        return null;
-      }
-    }
-
     async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
       if (pollState.inFlight[key]) {
         return { __skipped: true, status: "skipped", reason: "request_in_flight" };
@@ -1376,17 +1341,12 @@
         const response = await fetch(url, { cache: "no-store", signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
-        if (key === "health") saveHealthBrowserCache(payload);
         return payload;
       } catch (error) {
         const message = error && error.name === "AbortError"
           ? `${url} timeout after ${timeoutMs / 1000}s`
           : `${url} ${error && error.message ? error.message : error}`;
         console.warn("[dashboard] API failed", { endpoint: url, error: message });
-        if (key === "health") {
-          const cachedHealth = loadHealthBrowserCache();
-          if (cachedHealth) return cachedHealth;
-        }
         return { status: "unknown", unavailable: true, error: message };
       } finally {
         clearTimeout(timer);
@@ -1397,7 +1357,6 @@
     async function loadAll() {
       if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
       await loadApiGroup(fastApiKeys);
-      scheduleSlowApiStagger({ immediate: true });
     }
 
     async function loadApiGroup(keys, renderAfter = true) {
@@ -1503,7 +1462,7 @@
       pollState.slowTimeouts = [];
     }
 
-    function scheduleSlowApiStagger({ immediate = false } = {}) {
+ = {}) {
       if (document.visibilityState !== "visible" || !pollState.isLeader) return;
       clearSlowApiTimeouts();
       slowApiKeys.forEach((key, index) => {
@@ -1688,17 +1647,6 @@
       try { renderNext(next, officialDraw); } catch (error) { console.warn("[dashboard] card one render failed", error); }
       renderCardTwo(cardTwo);
       renderCardThree(cardThree);
-    }
-
-    function isUsableSyncPayload(payload) {
-      if (!payload || payload.unavailable || payload.__skipped) return false;
-      return Boolean(
-        payload.database_latest_issue ||
-        payload.official_detected_issue ||
-        payload.source_issue ||
-        payload.latest_saved_at ||
-        payload.dashboard_latest_issue
-      );
     }
 
     function toggleSection(id, button) {
@@ -2042,131 +1990,6 @@
       `;
     }
 
-    function renderAlerts(alerts, analysis) {
-      const body = analysis.analysis || analysis.data || analysis || {};
-      const aiScore = body.ai_score || {};
-      document.getElementById("cardAlerts").innerHTML = `
-        <h2>4. 下一期預警</h2>
-        ${rows([
-          alertRow("大群聚", alerts.cluster_alert || aiScore.cluster_aftershock_recovery),
-          alertRow("補號爆發", alerts.patch_alert),
-          alertRow("雙生號", alerts.twin_alert),
-          alertRow("連號", alerts.consecutive_alert),
-          alertRow("超級獎號軌跡", alerts.super_alert || aiScore.super_number_trajectory_recovery)
-        ])}
-      `;
-    }
-
-    function renderHistory(history, counts, historyRecords = []) {
-      const records = asList(historyRecords).filter((item) => item && item.production_valid !== false && item.prediction_issue);
-      if (!records.length) {
-        document.getElementById("cardHistory").innerHTML = `<h2>歷史推薦紀錄</h2><div class="empty">${safe(history && history.message, "尚未累積正式推薦紀錄，系統會持續保存後續推薦。")}</div>`;
-        return;
-      }
-      const sampleSize = Number(history.sample_size || counts.statistics_sample_count || 0);
-      const sampleHint = sampleSize > 0 && sampleSize < 20 ? `<div class="notice warn">樣本數較少，結果僅供參考。</div>` : "";
-      const verifiedCount = records.filter((item) => item.verification_status === "verified" || item.prediction_status === "verified").length;
-      const learnedCount = records.filter((item) => item.learning_used).length;
-      const waitingCount = records.filter((item) => item.prediction_status === "waiting_draw").length;
-      const averageHits = records.length
-        ? records.reduce((sum, item) => sum + Number(item.hit_count || 0), 0) / records.length
-        : 0;
-      const recordHtml = records.slice(0, 20).map((item, index) => {
-        const predicted = normalizeNumbers(item.recommend_numbers);
-        const official = normalizeNumbers(item.winning_numbers);
-        const matched = normalizeNumbers(item.matched_numbers);
-        const denominator = item.prediction_count || predicted.length || 20;
-        const verified = item.verification_status === "verified" || item.prediction_status === "verified";
-        const learned = Boolean(item.learning_used);
-        return `
-          <div class="rule-item">
-            <button class="collapse-button" type="button" aria-expanded="${index === 0 ? "true" : "false"}" aria-controls="historyItem${index}" onclick="toggleSection('historyItem${index}', this)">
-              <span>預測期號：第${safe(item.prediction_issue)}期</span><span>${index === 0 ? "收合" : "展開查看"}</span>
-            </button>
-            <div id="historyItem${index}" ${index === 0 ? "" : "hidden"}>
-              <div class="grid section">
-                ${metric("預測期號", `第${safe(item.prediction_issue)}期`)}
-                ${metric("依據期號", `第${safe(item.based_on_issue || item.issue)}期`)}
-                ${metric("依據開獎時間", formatDateTime(item.based_on_draw_time))}
-                ${metric("推薦建立時間", formatDateTime(item.prediction_created_at || item.created_at))}
-                ${metric("命中", verified ? `${fmtNumber(item.hit_count)} / ${fmtNumber(denominator)}` : "等待開獎", verified ? "status-ok" : "status-warning")}
-                ${metric("Prediction 狀態", statusText(item.prediction_status), statusClass(item.prediction_status))}
-              </div>
-              <h3>推薦20碼</h3>${balls(predicted, "", matched)}
-              ${predicted.length !== 20 ? `<div class="notice warn">此筆保存 ${fmtNumber(predicted.length)} 碼，分母使用實際保存數量。</div>` : ""}
-              <h3>官方20碼</h3>${official.length ? balls(official, "", matched) : `<div class="empty">尚待開獎</div>`}
-              <div class="grid section">
-                ${metric("官方超級獎號", item.official_super_number ? numberLabel(item.official_super_number) : "尚無資料")}
-                ${metric("超級獎命中", item.super_number_hit ? "命中" : "未命中", item.super_number_hit ? "status-ok" : "")}
-                ${metric("Verified", verified ? "已完成驗證" : "尚未完成", verified ? "status-ok" : "status-warning")}
-                ${metric("Learned", learned ? "已完成學習" : "尚未完成", learned ? "status-ok" : "status-warning")}
-                ${metric("來源", sourceText(item.source))}
-                ${metric("Trigger", triggerText(item.trigger))}
-                ${metric("驗證時間", verified ? formatDateTime(item.verified_at) : "尚未完成")}
-                ${metric("學習時間", learned ? formatDateTime(item.learned_at) : "尚未完成")}
-              </div>
-            </div>
-          </div>
-        `;
-      }).join("");
-      document.getElementById("cardHistory").innerHTML = `
-        <h2>歷史推薦紀錄</h2>
-        <div class="section">
-          <p class="mini-title">正式推薦統計</p>
-          <div class="grid">
-            ${metric("正式推薦總數", fmtNumber(counts.valid_prediction_count || records.length))}
-            ${metric("已驗證數", fmtNumber(counts.verified_prediction_count || verifiedCount))}
-            ${metric("已學習數", fmtNumber(counts.learning_sample_count || learnedCount))}
-            ${metric("等待開獎數", fmtNumber(waitingCount))}
-            ${metric("平均命中", `${fmtNumber(history.average_hits || averageHits)} / 20`)}
-            ${metric("統計樣本", `${fmtNumber(sampleSize)}期`)}
-            ${metric("20碼命中分布", `五星率 ${fmtNumber(history.five_star_rate)}%`)}
-            ${metric("Cache 狀態", history.cache ? `${safe(history.cache.status)} / ${fmtNumber(history.cache.ttl_seconds)}秒` : "即時資料")}
-          </div>
-          ${sampleHint}
-        </div>
-        <div class="section">
-          <p class="mini-title">最近正式推薦</p>
-          <div class="rule-list">${recordHtml}</div>
-        </div>
-      `;
-    }
-
-    function renderSync(system, currentDraw, counts, collectorStatus) {
-      const lag = Number(system.issues_behind ?? system.lag_count ?? collectorStatus.lag_count ?? 0);
-      const syncStatus = system.sync_status || (lag > 0 || system.is_synced === false ? "database_behind" : "synced");
-      const status = syncStatus === "synced" ? "ok" : (["analysis_pending", "prediction_pending", "stale"].includes(syncStatus) ? "warning" : "error");
-      const officialIssue = system.official_detected_issue || system.source_latest_issue || system.official_latest_issue || system.latest_issue || currentDraw.issue;
-      const databaseIssue = system.database_latest_issue;
-      const dashboardIssue = system.dashboard_latest_issue || currentDraw.issue;
-      const consistent = officialIssue && databaseIssue && dashboardIssue && String(officialIssue) === String(databaseIssue) && String(databaseIssue) === String(dashboardIssue);
-      const summary = consistent && status === "ok" ? "同步正常" : (lag ? `落後 ${fmtNumber(lag)} 期` : statusText(syncStatus));
-      document.getElementById("cardSync").innerHTML = `
-        <h2>資料同步</h2>
-        <div class="grid">
-          ${metric("官方偵測最新期號", safe(officialIssue))}
-          ${metric("資料庫最新期號", safe(databaseIssue))}
-          ${metric("Dashboard 顯示期號", safe(dashboardIssue))}
-          ${metric("是否一致", consistent ? "一致" : "不一致", consistent ? "status-ok" : "status-warning")}
-          ${metric("同步狀態", summary, statusClass(status))}
-          ${metric("最後成功抓取時間", safe(system.latest_saved_at || system.last_successful_collect_time || collectorStatus.last_collector_finished_at))}
-          ${metric("資料庫是否已保存", system.database_saved ? "已保存" : "未保存", system.database_saved ? "status-ok" : "status-error")}
-          ${metric("分析是否完成", system.analysis_created ? "已完成" : "待處理", system.analysis_created ? "status-ok" : "status-warning")}
-          ${metric("推薦是否完成", system.prediction_created ? "已完成" : "待處理", system.prediction_created ? "status-ok" : "status-warning")}
-          ${metric("Stale 狀態", syncStatus === "stale" ? "stale" : "normal", statusClass(syncStatus === "stale" ? "warning" : "ok"))}
-        </div>
-        <h3>最新開獎資料</h3>
-        <div class="grid">
-          ${metric("期號", safe(currentDraw.issue))}
-          ${metric("開獎時間", safe(currentDraw.draw_time))}
-          ${metric("資料來源", safe(currentDraw.source || "official"))}
-          ${metric("號碼數量", fmtNumber(system.numbers_count || normalizeNumbers(currentDraw.numbers).length))}
-        </div>
-        <h3>號碼</h3>${balls(currentDraw.numbers)}
-        <h3>超級獎號</h3>${currentDraw.super_number ? balls([currentDraw.super_number], "super") : `<div class="empty">尚無資料</div>`}
-      `;
-    }
-
     function wakeStatusText(status) {
       if (status === "healthy") return "正常";
       if (status === "delayed") return "可能延遲";
@@ -2179,121 +2002,6 @@
       if (status === "delayed") return "status-warning";
       if (status === "at_risk") return "status-error";
       return "status-unknown";
-    }
-
-    function renderWake(wake, latestSync) {
-      const status = wake.wake_status || "unknown";
-      const seconds = Number(wake.seconds_since_last_health_request);
-      const minutes = Number.isFinite(seconds) ? Math.floor(seconds / 60) : null;
-      const warning = status === "at_risk"
-        ? `<div class="notice bad">外部喚醒可能已失效，Render 免費服務可能因閒置而休眠。</div>`
-        : "";
-      const restarted = latestSync.latest_saved_at && wake.instance_started_at
-        && new Date(wake.instance_started_at).getTime() > new Date(latestSync.latest_saved_at).getTime();
-      const restartNotice = restarted
-        ? `<div class="notice warn">服務剛重新啟動，休眠期間的排程可能未執行。</div>`
-        : "";
-      document.getElementById("cardWake").innerHTML = `
-        <h2>外部喚醒狀態</h2>
-        <div class="grid">
-          ${metric("狀態", wakeStatusText(status), wakeStatusClass(status))}
-          ${metric("最後 health request", formatDateTime(wake.last_health_request_at))}
-          ${metric("距今幾分鐘", minutes === null ? "尚無資料" : `${fmtNumber(minutes)} 分鐘`)}
-          ${metric("Wake source", safe(wake.wake_source))}
-          ${metric("Instance 啟動時間", formatDateTime(wake.instance_started_at))}
-          ${metric("本次啟動 request 數", fmtNumber(wake.health_request_count_since_start))}
-        </div>
-        ${warning}
-        ${restartNotice}
-      `;
-    }
-
-    function renderContinuity(gaps) {
-      const status = gaps.continuity_status || gaps.status || "unknown";
-      const missingCount = Number(gaps.missing_count || asList(gaps.missing_issues).length || 0);
-      document.getElementById("cardContinuity").innerHTML = `
-        <h2>資料連續性檢查</h2>
-        <div class="grid">
-          ${metric("連續性", statusText(status), statusClass(status === "complete" ? "ok" : status))}
-          ${metric("缺漏期數", fmtNumber(missingCount), missingCount ? "status-warning" : "status-ok")}
-          ${metric("待驗證", fmtNumber(gaps.pending_verification_count))}
-          ${metric("異常資料", fmtNumber(asList(gaps.invalid_issues).length))}
-          ${metric("檢查範圍", `${safe(gaps.start_issue)} - ${safe(gaps.end_issue)}`)}
-          ${metric("最後檢查", safe(gaps.checked_at))}
-        </div>
-        <h3>缺漏期數</h3>${chips(asList(gaps.missing_issues).slice(0, 20))}
-      `;
-    }
-
-    function renderPipeline(health, collectorStatus) {
-      const components = Object.entries(health.components || {}).map(([name, item]) =>
-        row(name, `${statusText(item.status || "unknown")} / ${fmtNumber(item.duration_ms)}ms`, statusClass(item.status))
-      );
-      document.getElementById("cardPipeline").innerHTML = `
-        <h2>Pipeline 同步狀態</h2>
-        <div class="grid">
-          ${metric("整體狀態", statusText(health.status || "unknown"), statusClass(health.status))}
-          ${metric("Pipeline", statusText(health.pipeline_status || "unknown"), statusClass(health.pipeline_status))}
-          ${metric("總耗時", `${fmtNumber(health.total_duration_ms)} ms`)}
-          ${metric("Trigger 今日", fmtNumber(health.prediction_trigger_count_today))}
-          ${metric("Service Call 今日", fmtNumber(health.prediction_service_call_count_today))}
-          ${metric("排程註冊", health.prediction_job_registered ? "已註冊" : "尚未註冊", health.prediction_job_registered ? "status-ok" : "status-warning")}
-          ${metric("排程最後狀態", safe(health.prediction_job_last_status))}
-          ${metric("排程最後錯誤", safe(health.prediction_job_last_error, "無"))}
-          ${metric("等待驗證", fmtNumber(health.live_verification_pending))}
-          ${metric("等待學習", fmtNumber(health.live_learning_pending))}
-          ${metric("Null Target", fmtNumber(health.null_target_count || health.null_target_today))}
-          ${metric("Schedule Coverage", `${fmtNumber(health.schedule_coverage)}%`)}
-        </div>
-        <h3>Components</h3>${components.length ? rows(components) : `<div class="empty">尚無資料</div>`}
-      `;
-    }
-
-    function renderOfficial(official) {
-      document.getElementById("cardOfficial").innerHTML = `
-        <h2>官方驗證中心</h2>
-        <div class="grid">
-          ${metric("最新官方期數", safe(official.latest_official_issue))}
-          ${metric("最新快手期數", safe(official.latest_kuaishou_issue))}
-          ${metric("驗證率", `${fmtNumber(official.verified_rate)}%`, Number(official.verified_rate) >= 99 ? "status-ok" : "status-warning")}
-          ${metric("已驗證", fmtNumber(official.verified_count))}
-          ${metric("Mismatch", fmtNumber(official.mismatch_count), Number(official.mismatch_count) ? "status-error" : "status-ok")}
-          ${metric("等待官方", fmtNumber(official.waiting_count || official.waiting_official_count))}
-        </div>
-      `;
-    }
-
-    function renderOperations(ops) {
-      const summary = ops.error_summary || {};
-      const unresolved = Number(summary.unresolved || 0);
-      document.getElementById("cardOperations").innerHTML = `
-        <h2>AI Operations Center</h2>
-        <div class="grid">
-          ${metric("營運狀態", statusText(ops.status || "unknown"), statusClass(ops.status))}
-          ${metric("未解決錯誤", fmtNumber(unresolved), unresolved ? "status-error" : "status-ok")}
-          ${metric("已解決錯誤", fmtNumber(summary.resolved))}
-          ${metric("總錯誤數", fmtNumber(summary.total))}
-        </div>
-        <h3>最近事件</h3>
-        ${rows(asList(ops.timeline).slice(0, 5).map((event) => row(safe(event.component), `${safe(event.status)} / ${safe(event.issue)}`, statusClass(event.status))))}
-      `;
-    }
-
-    function renderEvolution(evolution, history) {
-      const weights = evolution.recommended_weights || evolution.weights || {};
-      const weightRows = Object.entries(weights).map(([key, value]) => row(key, percent(value)));
-      const versions = asList(history.items || history.history).slice(0, 5).map((item) => row(`V${safe(item.version)}`, `平均 ${fmtNumber(item.average_hits)} / Super ${percent(item.super_hit_rate)}`));
-      document.getElementById("cardEvolution").innerHTML = `
-        <h2>AI Evolution</h2>
-        <div class="grid">
-          ${metric("目前版本", safe(evolution.version))}
-          ${metric("平均命中", fmtNumber(evolution.average_hits))}
-          ${metric("Super Hit", percent(evolution.super_hit_rate))}
-          ${metric("Candidate", evolution.candidate ? "YES" : "NO", evolution.candidate ? "status-ok" : "status-unknown")}
-        </div>
-        <h3>建議權重</h3>${weightRows.length ? rows(weightRows) : `<div class="empty">尚無 Evolution 權重</div>`}
-        <h3>Version History</h3>${versions.length ? rows(versions) : `<div class="empty">尚無版本歷史</div>`}
-      `;
     }
 
     document.getElementById("refreshButton").addEventListener("click", loadAll);
