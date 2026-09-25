@@ -3174,16 +3174,6 @@ def _card_three_payload(
         "next_prediction_status": next_prediction.get("status") or "unknown",
         "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
         "sections": sections,
-        "data_quality": {
-            "draw_count": data_counts.get("draw_count", 0),
-            "prediction_count": data_counts.get("prediction_count", 0),
-            "valid_prediction_count": data_counts.get("valid_prediction_count", 0),
-            "verified_prediction_count": data_counts.get("verified_prediction_count", 0),
-            "statistics_sample_count": data_counts.get("statistics_sample_count", 0),
-            "null_target_count": data_counts.get("null_target_count", 0),
-            "valid_target_count": data_counts.get("valid_target_count"),
-            "has_official_result_count": data_counts.get("has_official_result_count"),
-        },
         "system": {
             "sync": sync,
             "production_scope": production_scope,
