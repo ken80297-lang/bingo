@@ -759,18 +759,11 @@
     const DASHBOARD_LEADER_TTL_MS = 30 * 1000;
     const DASHBOARD_LEADER_HEARTBEAT_MS = 10 * 1000;
     const DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_SYSTEM_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_LATEST_SYNC_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_WAKE_STATUS_INTERVAL_MS = 300 * 1000;
-    const DASHBOARD_SLOW_INTERVAL_MS = 5 * 60 * 1000;
-    const DASHBOARD_SLOW_INITIAL_DELAY_MS = 10 * 1000;
-    const DASHBOARD_SLOW_STAGGER_MS = 1000;
 
     const apis = {
       playerSummary: "/api/dashboard/player-summary"
     };
 
-    const fastApiKeys = ["playerSummary"];
     const pollState = {
       latest: {},
       timers: [],
