@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 
@@ -14,7 +14,7 @@ OBSERVATION_VERSION = os.getenv("OBSERVATION_VERSION", "22.1.5")
 RULE_LIBRARY_VERSION = os.getenv("RULE_LIBRARY_VERSION", "28.0")
 DASHBOARD_VERSION = os.getenv("DASHBOARD_VERSION", "28.0")
 DATABASE_SCHEMA_VERSION = os.getenv("DATABASE_SCHEMA_VERSION", "28.0")
-GIT_COMMIT_HASH = (\n    os.getenv("RENDER_GIT_COMMIT")\n    or os.getenv("RELEASE_GIT_COMMIT_HASH")\n    or os.getenv("GIT_COMMIT_HASH")\n    or DEFAULT_GIT_COMMIT_HASH\n)
+GIT_COMMIT_HASH = os.getenv("RENDER_GIT_COMMIT") or os.getenv("RELEASE_GIT_COMMIT_HASH") or os.getenv("GIT_COMMIT_HASH") or DEFAULT_GIT_COMMIT_HASH
 GIT_BRANCH = os.getenv("GIT_BRANCH") or os.getenv("RENDER_GIT_BRANCH") or "runtime"
 
 
@@ -34,5 +34,3 @@ def release_payload() -> dict:
         "dashboard_version": DASHBOARD_VERSION,
         "database_schema_version": DATABASE_SCHEMA_VERSION,
     }
-
-
