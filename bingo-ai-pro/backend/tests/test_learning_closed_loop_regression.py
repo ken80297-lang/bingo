@@ -722,9 +722,11 @@ def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch)
     from database import adaptive_weight_store
 
     captured = {}
-    def fake_query(sql, params=(), sqlite_sql=None):
+    def fake_query(sql, params=(), sqlite_sql=None, sqlite_params=None):
         captured["cloud"] = sql
         captured["sqlite"] = sqlite_sql
+        captured["params"] = params
+        captured["sqlite_params"] = sqlite_params
         return []
 
     monkeypatch.setattr(adaptive_weight_store, "_query_with_fallback", fake_query)
