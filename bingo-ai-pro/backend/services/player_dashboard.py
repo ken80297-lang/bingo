@@ -3552,8 +3552,19 @@ def _dashboard_health(
     issue_consistent = True
     if official_text and prediction_source_issue and str(official_text) != str(prediction_source_issue):
         issue_consistent = False
-    if numeric_checks:
-        issue_consistent = issue_consistent and (max(numeric_checks) - min(numeric_checks) <= 1)
+
+    # Historical verification/aggregate/Card Two may legitimately trail after a
+    # latest-only gap jump. They describe the newest completed prediction
+    # lifecycle, not the freshness of the official draw. Only compare lifecycle
+    # components with each other; current freshness is defined by official vs
+    # prediction source.
+    lifecycle_checks = [
+        _as_int(item)
+        for item in (verification_issue, aggregate_issue, card_two_issue)
+        if item
+    ]
+    if lifecycle_checks:
+        issue_consistent = issue_consistent and (max(lifecycle_checks) - min(lifecycle_checks) <= 1)
     live_components = sum(1 for item in component_metadata.values() if item.get("source") == "live")
     cached_components = sum(1 for item in component_metadata.values() if item.get("source") == "cache")
     fallback_components = sum(1 for item in component_metadata.values() if item.get("source") == "fallback")
