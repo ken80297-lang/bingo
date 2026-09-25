@@ -21,7 +21,7 @@ from database.official_draw_store import (
     get_official_draw_by_issue,
     save_official_draws,
 )
-from database.prediction_history_store import get_prediction_for_source_target
+from database.prediction_history_store import get_prediction_for_source_target, is_production_prediction
 from services.collector_runtime import update_collector_runtime
 from services.recommendation_center import fast_path_prediction_is_current
 
@@ -413,7 +413,11 @@ def _latest_prediction_for_issue(issue: str) -> dict | None:
 
 
 def _prediction_exists_for_latest(issue: str) -> bool:
-    return fast_path_prediction_is_current(_latest_prediction_for_issue(issue))
+    prediction = _latest_prediction_for_issue(issue)
+    if not is_production_prediction(prediction):
+        return False
+    numbers = _valid_numbers((prediction or {}).get("recommend_numbers"))
+    return len(numbers) == 20
 
 
 def _sync_status(payload: dict[str, Any]) -> str:
