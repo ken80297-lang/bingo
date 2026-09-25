@@ -752,25 +752,34 @@ def startup_event() -> None:
 
 
     if os.getenv("PLAYER_DASHBOARD_SUMMARY_PROBE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
-        try:
-            import time
-            from services.player_dashboard import build_player_dashboard_summary
+        def _run_player_dashboard_summary_probe() -> None:
+            try:
+                import time
+                from services.player_dashboard import build_player_dashboard_summary
 
-            dashboard_started = time.perf_counter()
-            payload = build_player_dashboard_summary()
-            elapsed_ms = round((time.perf_counter() - dashboard_started) * 1000.0, 2)
-            meta = payload.get("meta") or {}
-            components = meta.get("components") or {}
-            aggregate = components.get("prediction_aggregates") or {}
-            print(
-                "PLAYER_DASHBOARD_SUMMARY_PROBE read_only=true "
-                f"status={payload.get('status')} elapsed_ms={elapsed_ms} "
-                f"aggregate_source={aggregate.get('source')} aggregate_result={aggregate.get('result')} "
-                f"aggregate_timed_out={aggregate.get('timed_out')} aggregate_total_ms={aggregate.get('total_ms')}",
-                flush=True,
-            )
-        except Exception as exc:
-            print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
+                dashboard_started = time.perf_counter()
+                payload = build_player_dashboard_summary()
+                elapsed_ms = round((time.perf_counter() - dashboard_started) * 1000.0, 2)
+                meta = payload.get("meta") or {}
+                components = meta.get("components") or {}
+                aggregate = components.get("prediction_aggregates") or {}
+                print(
+                    "PLAYER_DASHBOARD_SUMMARY_PROBE read_only=true delayed=true "
+                    f"status={payload.get('status')} elapsed_ms={elapsed_ms} "
+                    f"aggregate_source={aggregate.get('source')} aggregate_result={aggregate.get('result')} "
+                    f"aggregate_timed_out={aggregate.get('timed_out')} aggregate_total_ms={aggregate.get('total_ms')}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+        scheduler.add_job(
+            _run_player_dashboard_summary_probe,
+            "date",
+            run_date=datetime.now() + timedelta(seconds=12),
+            id="player_dashboard_summary_probe_once",
+            replace_existing=True,
+        )
 
 
     if os.getenv("ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
