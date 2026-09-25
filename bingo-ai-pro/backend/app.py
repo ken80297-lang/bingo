@@ -115,6 +115,7 @@ STATIC_DIR = ROOT / "static"
 
 CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
+LATEST_OFFICIAL_SCHEDULER_ENABLED = scheduler_flag_enabled("LATEST_OFFICIAL_SCHEDULER_ENABLED")
 LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
 STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
 OPERATIONS_DB_INIT_ENABLED = _env_bool("OPERATIONS_DB_INIT_ENABLED", False)
@@ -331,6 +332,24 @@ def _schedule_production_catch_up_jobs() -> None:
     )
 
 
+def _schedule_latest_official_job() -> None:
+    if not LATEST_OFFICIAL_SCHEDULER_ENABLED:
+        print("latest_official_scheduler_disabled interval_job_registered=false")
+        update_collector_runtime(official_collector_interval_job_registered=False)
+        return
+    scheduler.add_job(
+        collect_official_today,
+        "interval",
+        minutes=2,
+        id="collector_official_latest",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    update_collector_runtime(official_collector_interval_job_registered=True)
+
+
 def _schedule_collector_jobs() -> None:
     if not COLLECTOR_SCHEDULER_ENABLED:
         print("collector_scheduler_disabled startup_job_registered=false interval_job_registered=false")
@@ -372,16 +391,17 @@ def _schedule_collector_jobs() -> None:
         id="collector_pilio_today",
         replace_existing=True,
     )
-    scheduler.add_job(
-        collect_official_today,
-        "interval",
-        minutes=2,
-        id="collector_official_today",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=90,
-    )
+    if not LATEST_OFFICIAL_SCHEDULER_ENABLED:
+        scheduler.add_job(
+            collect_official_today,
+            "interval",
+            minutes=2,
+            id="collector_official_today",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=90,
+        )
     update_collector_runtime(
         collector_scheduler_enabled=True,
         collector_startup_job_registered=True,
