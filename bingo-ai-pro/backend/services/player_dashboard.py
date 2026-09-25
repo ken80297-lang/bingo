@@ -3688,6 +3688,18 @@ def _build_player_dashboard_summary_payload(
     component_metadata: dict[str, dict],
 ) -> dict:
 
+    aggregates_future, _ = _submit_component(
+        "prediction_aggregates",
+        lambda: _timed_component_stage(
+            "prediction_aggregates",
+            "prediction_lifecycle_aggregates",
+            lambda: get_prediction_lifecycle_aggregates(
+                diagnostic_component="prediction_aggregates",
+                use_dashboard_read_pool=True,
+            ),
+        ),
+    )
+
     card_one = get_player_card_one_snapshot(
         deadline=deadline,
         timings=timings,
@@ -3846,17 +3858,6 @@ def _build_player_dashboard_summary_payload(
             "card_two_history",
             "prediction_history_summary_records",
             lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
-        ),
-    )
-    aggregates_future, _ = _submit_component(
-        "prediction_aggregates",
-        lambda: _timed_component_stage(
-            "prediction_aggregates",
-            "prediction_lifecycle_aggregates",
-            lambda: get_prediction_lifecycle_aggregates(
-                diagnostic_component="prediction_aggregates",
-                use_dashboard_read_pool=True,
-            ),
         ),
     )
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
