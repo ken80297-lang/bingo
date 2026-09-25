@@ -3558,13 +3558,27 @@ def _dashboard_health(
     # lifecycle, not the freshness of the official draw. Only compare lifecycle
     # components with each other; current freshness is defined by official vs
     # prediction source.
-    lifecycle_checks = [
+    # Verification and aggregates describe the newest completed lifecycle.
+    # Card Two history can already contain the current prediction target, so it
+    # is not a reliable member of that historical consistency group after a
+    # latest-only gap jump. Validate it against either the current target or,
+    # when it is historical, the completed lifecycle independently.
+    completed_lifecycle_checks = [
         _as_int(item)
-        for item in (verification_issue, aggregate_issue, card_two_issue)
+        for item in (verification_issue, aggregate_issue)
         if item
     ]
-    if lifecycle_checks:
-        issue_consistent = issue_consistent and (max(lifecycle_checks) - min(lifecycle_checks) <= 1)
+    if len(completed_lifecycle_checks) > 1:
+        issue_consistent = issue_consistent and (
+            max(completed_lifecycle_checks) - min(completed_lifecycle_checks) <= 1
+        )
+    card_two_int = _as_int(card_two_issue)
+    prediction_target_int = _as_int(prediction_target_issue)
+    if card_two_int is not None and prediction_target_int is not None and card_two_int != prediction_target_int:
+        if completed_lifecycle_checks:
+            issue_consistent = issue_consistent and (
+                min(abs(card_two_int - item) for item in completed_lifecycle_checks) <= 1
+            )
     live_components = sum(1 for item in component_metadata.values() if item.get("source") == "live")
     cached_components = sum(1 for item in component_metadata.values() if item.get("source") == "cache")
     fallback_components = sum(1 for item in component_metadata.values() if item.get("source") == "fallback")
