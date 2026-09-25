@@ -3142,24 +3142,11 @@ def _card_three_payload(
         "latest_processing": {
             "label": "最新處理資訊",
             "current_issue": (current_draw or {}).get("issue"),
-            "database_latest_issue": sync.get("database_latest_issue"),
-            "source_latest_issue": sync.get("official_latest_issue") or sync.get("detected_latest_issue"),
             "last_successful_collection": sync.get("last_successful_collection"),
         },
         "ai_flow": {
             "label": "AI 流程",
-            "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
             "next_prediction_status": next_prediction.get("status") or "unknown",
-            "partial": partial,
-            "timeout_steps": timeout_steps,
-            "stale_steps": stale_steps,
-        },
-        "today_summary": {
-            "label": "今日運作摘要",
-            "draw_count": data_counts.get("draw_count", 0),
-            "prediction_count": data_counts.get("prediction_count", 0),
-            "verified_prediction_count": data_counts.get("verified_prediction_count", 0),
-            "statistics_sample_count": data_counts.get("statistics_sample_count", 0),
         },
         "system_health": {
             "label": "系統健康",
@@ -3177,18 +3164,7 @@ def _card_three_payload(
         },
         "version_info": {
             "label": "版本資訊",
-            "model_version": next_prediction.get("model_version") or active_release.get("model_version"),
-            "feature_version": next_prediction.get("feature_version") or active_release.get("feature_version"),
             "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
-            "git_commit_hash": next_prediction.get("git_commit_hash") or active_release.get("git_commit_hash"),
-            "production_generation": next_prediction.get("production_generation") or production_scope.get("production_generation"),
-        },
-        "next_issue": {
-            "label": "下一期資訊",
-            "target_issue": next_prediction.get("prediction_issue") or next_prediction.get("target_issue"),
-            "source_issue": next_prediction.get("based_on_issue"),
-            "expected_draw_time": next_prediction.get("expected_draw_time") or next_prediction.get("target_draw_time"),
-            "recommendation_ready": len(_as_int_list(next_prediction.get("recommend_numbers") or next_prediction.get("main_numbers"))) == 20,
         },
     }
     return {
