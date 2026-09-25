@@ -1141,6 +1141,15 @@ def _resolve_dashboard_benchmark_inputs() -> dict:
             lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
         ),
     )
+    card_two_history_future, _ = _submit_component(
+        "card_two_history",
+        lambda: _timed_component_stage(
+            "card_two_history",
+            "prediction_history_summary_records",
+            lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+        ),
+    )
+
     card_one = get_player_card_one_snapshot(deadline=deadline, timings=timings, warnings=warnings)
     current = card_one.get("current") or {}
     detected_latest_issue = card_one.get("detected_latest_issue")
