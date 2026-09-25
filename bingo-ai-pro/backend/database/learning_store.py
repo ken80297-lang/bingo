@@ -378,6 +378,89 @@ def upsert_learning_record(record: dict) -> dict:
         return {"status": "error", "storage": None, "error": str(exc), "cloud_error": cloud_error}
 
 
+
+def upsert_learning_records(records: list[dict]) -> list[dict]:
+    """Upsert a batch using one cloud checkout and one transaction.
+
+    The per-record conflict semantics and returned result shape stay compatible
+    with upsert_learning_record(). If the cloud batch fails, preserve the
+    existing per-record fallback behavior.
+    """
+    if not records:
+        return []
+    if _cloud_enabled():
+        try:
+            saved: list[dict] = []
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    for record in records:
+                        cur.execute(
+                            """
+                            insert into learning_history
+                            (
+                                issue, source_issue, target_issue, history_cutoff_issue,
+                                prediction_created_at, draw_time, model_name, model_version, prediction_type,
+                                predicted_numbers, predicted_scores, model_weight, official_numbers, hit_numbers,
+                                predicted_count, hit_count, precision_score, official_coverage,
+                                rank_score, top_n, prediction_snapshot,
+                                analysis_snapshot, verification_status, learned_status, learned_at,
+                                error_message, production_generation, sample_issue, snapshot_status,
+                                feature_version, model_version_before, model_version_after,
+                                weight_changed, applied_to_prediction_issue, resolved_at,
+                                resolved_to_issue, updated_at
+                            )
+                            values (
+                                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                                %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                            )
+                            on conflict (issue, model_name, model_version, prediction_type, top_n)
+                            do update set
+                                draw_time = excluded.draw_time,
+                                source_issue = excluded.source_issue,
+                                target_issue = excluded.target_issue,
+                                history_cutoff_issue = excluded.history_cutoff_issue,
+                                prediction_created_at = coalesce(learning_history.prediction_created_at, excluded.prediction_created_at),
+                                predicted_numbers = excluded.predicted_numbers,
+                                predicted_scores = excluded.predicted_scores,
+                                model_weight = excluded.model_weight,
+                                official_numbers = excluded.official_numbers,
+                                hit_numbers = excluded.hit_numbers,
+                                predicted_count = excluded.predicted_count,
+                                hit_count = excluded.hit_count,
+                                precision_score = excluded.precision_score,
+                                official_coverage = excluded.official_coverage,
+                                rank_score = excluded.rank_score,
+                                prediction_snapshot = excluded.prediction_snapshot,
+                                analysis_snapshot = excluded.analysis_snapshot,
+                                verification_status = excluded.verification_status,
+                                learned_status = excluded.learned_status,
+                                learned_at = excluded.learned_at,
+                                error_message = excluded.error_message,
+                                production_generation = excluded.production_generation,
+                                sample_issue = excluded.sample_issue,
+                                snapshot_status = excluded.snapshot_status,
+                                feature_version = excluded.feature_version,
+                                model_version_before = excluded.model_version_before,
+                                model_version_after = excluded.model_version_after,
+                                weight_changed = excluded.weight_changed,
+                                applied_to_prediction_issue = excluded.applied_to_prediction_issue,
+                                resolved_at = excluded.resolved_at,
+                                resolved_to_issue = excluded.resolved_to_issue,
+                                updated_at = now()
+                            returning id
+                            """,
+                            _record_params(record),
+                            prepare=False,
+                        )
+                        saved.append({"status": "ok", "storage": "cloud", "id": int(cur.fetchone()[0])})
+                conn.commit()
+            return saved
+        except Exception:
+            logger.exception("cloud learning_history batch upsert failed; using existing fallback path")
+    return [upsert_learning_record(record) for record in records]
+
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
     with _cloud_connection() as conn:
         with conn.cursor() as cur:
