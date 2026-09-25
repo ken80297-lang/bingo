@@ -1154,10 +1154,7 @@
         title: "🤖 AI 運作中心",
         status: raw.status || (player && player.partial ? "partial" : "ok"),
         sections: raw.sections || {},
-        learning: raw.learning || {},
-        system: raw.system || {},
-        collector: raw.collector || {},
-        ai_model: raw.ai_model || {}
+        system: raw.system || {}
       };
     }
 
@@ -2053,9 +2050,7 @@
 
     function renderCardThree(cardThree, verification) {
       const payload = cardThree || {};
-      const learning = payload.learning || {};
-      const collector = payload.collector || {};
-      const system = payload.system || {};
+       const system = payload.system || {};
       const sections = payload.sections || {};
       const latestProcessing = sections.latest_processing || {};
       const aiFlow = sections.ai_flow || {};
@@ -2064,13 +2059,13 @@
       const versionInfo = sections.version_info || {};
       const warnings = asList(system.warnings).filter(Boolean);
       const status = payload.status === "partial" || warnings.length ? "warning" : "ok";
-      const syncOk = collector.is_synced === true || Number(collector.lag_count || 0) === 0;
+      const syncOk = systemHealth.is_synced === true || Number(systemHealth.lag_count || 0) === 0;
       document.getElementById("cardReasons").innerHTML = `
         <h2>🤖 AI 運作中心</h2>
         <h3>最新處理資訊</h3>
         <div class="grid">
-          ${metric("目前期號", safe(latestProcessing.current_issue || collector.database_latest_issue || "尚無資料"))}
-          ${metric("最後成功同步", formatDateTime(latestProcessing.last_successful_collection || collector.last_successful_collection))}
+          ${metric("目前期號", safe(latestProcessing.current_issue || "尚無資料"))}
+          ${metric("最後成功同步", formatDateTime(latestProcessing.last_successful_collection))}
         </div>
         <h3>AI 流程</h3>
         <div class="grid">
@@ -2079,19 +2074,19 @@
         <h3>系統健康</h3>
         <div class="grid">
           ${metric("健康狀態", statusText(systemHealth.status || status), statusClass(systemHealth.status || status))}
-          ${metric("同步狀態", syncOk ? "已同步" : `落後 ${fmtNumber(collector.lag_count)} 期`, syncOk ? "status-ok" : "status-warning")}
+          ${metric("同步狀態", syncOk ? "已同步" : `落後 ${fmtNumber(systemHealth.lag_count)} 期`, syncOk ? "status-ok" : "status-warning")}
         </div>
         ${warnings.length ? `<div class="notice warn">資料更新中：${warnings.map((item) => safe(item)).join("、")}</div>` : ""}
         <h3>AI 學習狀態</h3>
         <div class="grid">
-          ${metric("學習狀態", statusText(learningStatus.status || learning.status || "unknown"), statusClass(learningStatus.status || learning.status || "unknown"))}
-          ${metric("統計樣本", `${fmtNumber(learningStatus.sample_size ?? learning.sample_size)} 期`)}
-          ${metric("平均命中", `${fmtNumber(learningStatus.average_hits ?? learning.average_hits)} / 20`)}
-          ${metric("等待學習", fmtNumber(learningStatus.pending_learning ?? learning.pending_learning))}
+          ${metric("學習狀態", statusText(learningStatus.status || "unknown"), statusClass(learningStatus.status || "unknown"))}
+          ${metric("統計樣本", `${fmtNumber(learningStatus.sample_size)} 期`)}
+          ${metric("平均命中", `${fmtNumber(learningStatus.average_hits)} / 20`)}
+          ${metric("等待學習", fmtNumber(learningStatus.pending_learning))}
         </div>
         <h3>版本資訊</h3>
         <div class="grid">
-          ${metric("版本", safe(versionInfo.release_version || payload.ai_model?.release_version || "尚無資料"))}
+          ${metric("版本", safe(versionInfo.release_version || "尚無資料"))}
         </div>
 
       `;
