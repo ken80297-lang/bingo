@@ -767,6 +767,8 @@
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
     const HEALTH_STORAGE_MAX_AGE_MS = 30 * 60 * 1000;
     let cardOneFallbackHtml = "";
+    let cardOneCommittedHtml = "";
+    let cardOneCommittedIssue = null;
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
     const DASHBOARD_LEADER_TTL_MS = 30 * 1000;
@@ -1851,6 +1853,21 @@
           </div>
         </div>
       `;
+      const cardOneComplete = isCompleteOfficialDraw(officialDraw)
+        && isCompletePrediction(next)
+        && isCardOneIssueAligned(officialDraw, next);
+      const incomingIssue = issueNumber((officialDraw || {}).issue);
+      if (!cardOneComplete && cardOneCommittedHtml) {
+        // Card One is atomic: keep the last complete official + prediction
+        // snapshot until the next complete aligned snapshot is ready.
+        card.innerHTML = cardOneCommittedHtml;
+        cardOneFallbackHtml = cardOneCommittedHtml;
+        return;
+      }
+      if (cardOneComplete) {
+        cardOneCommittedHtml = cardHtml;
+        cardOneCommittedIssue = incomingIssue;
+      }
       card.innerHTML = cardHtml;
       cardOneFallbackHtml = cardHtml;
     }
