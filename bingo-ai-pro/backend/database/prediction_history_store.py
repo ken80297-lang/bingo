@@ -90,6 +90,8 @@ TRACEABILITY_COLUMNS = {
     "git_commit_hash": ("text", "text"),
     "model_version": ("text", "text"),
     "feature_version": ("text", "text"),
+    "fast_path_strategy_version": ("text", "text"),
+    "fast_path_metadata": ("jsonb", "text"),
 }
 ALLOWED_PREDICTION_STATUSES = {"pending", "waiting_draw", "verified", "expired", "failed"}
 
@@ -511,6 +513,8 @@ def _prediction_params(item: dict) -> tuple:
         item.get("git_commit_hash") or GIT_COMMIT_HASH,
         item.get("model_version") or MODEL_VERSION,
         item.get("feature_version") or FEATURE_VERSION,
+        item.get("fast_path_strategy_version"),
+        _json_dumps(item.get("fast_path_metadata", {})),
     )
 
 
@@ -552,11 +556,11 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                             model_scores, winning_model, prediction_status, prediction_count,
                             learning_used, production_generation, production_valid,
                             release_version, git_commit_hash, model_version, feature_version,
-                            updated_at
+                            fast_path_strategy_version, fast_path_metadata, updated_at
                         )
                         values (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb,
                                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb,
-                                %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                                %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
                         on conflict (prediction_issue, strategy) do update set
                             issue = excluded.issue,
                             predict_time = excluded.predict_time,
@@ -586,6 +590,8 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                             git_commit_hash = excluded.git_commit_hash,
                             model_version = excluded.model_version,
                             feature_version = excluded.feature_version,
+                            fast_path_strategy_version = excluded.fast_path_strategy_version,
+                            fast_path_metadata = excluded.fast_path_metadata,
                             updated_at = now()
                         returning id
                         """,
@@ -619,9 +625,9 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     model_scores, winning_model, prediction_status, prediction_count,
                     learning_used, production_generation, production_valid,
                     release_version, git_commit_hash, model_version, feature_version,
-                    updated_at
+                    fast_path_strategy_version, fast_path_metadata, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(prediction_issue, strategy) do update set
                     issue = excluded.issue,
                     predict_time = excluded.predict_time,
@@ -651,6 +657,8 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     git_commit_hash = excluded.git_commit_hash,
                     model_version = excluded.model_version,
                     feature_version = excluded.feature_version,
+                    fast_path_strategy_version = excluded.fast_path_strategy_version,
+                    fast_path_metadata = excluded.fast_path_metadata,
                     updated_at = excluded.updated_at
                 """,
                 (*_prediction_params(item), _now()),
