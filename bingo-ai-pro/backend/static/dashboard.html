@@ -2080,7 +2080,6 @@
         <h3>AI 流程</h3>
         <div class="grid">
           ${metric("推薦狀態", statusText(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"), statusClass(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"))}
-          ${metric("預測流程", statusText(aiFlow.prediction_status || payload.prediction_status || "unknown"), statusClass(aiFlow.prediction_status || payload.prediction_status || "unknown"))}
           ${metric("部分降級", (aiFlow.partial || payload.status === "partial") ? "是" : "否", (aiFlow.partial || payload.status === "partial") ? "status-warning" : "status-ok")}
         </div>
         <h3>今日運作摘要</h3>
@@ -2088,13 +2087,11 @@
           ${metric("開獎資料", fmtNumber(todaySummary.draw_count ?? quality.draw_count))}
           ${metric("推薦資料", fmtNumber(todaySummary.prediction_count ?? quality.prediction_count))}
           ${metric("已驗證", fmtNumber(todaySummary.verified_prediction_count ?? quality.verified_prediction_count))}
-          ${metric("統計樣本", `${fmtNumber(todaySummary.statistics_sample_count ?? quality.statistics_sample_count)} 期`)}
         </div>
         <h3>系統健康</h3>
         <div class="grid">
           ${metric("健康狀態", statusText(systemHealth.status || status), statusClass(systemHealth.status || status))}
           ${metric("同步狀態", syncOk ? "已同步" : `落後 ${fmtNumber(collector.lag_count)} 期`, syncOk ? "status-ok" : "status-warning")}
-          ${metric("警告數", fmtNumber(asList(systemHealth.warnings || warnings).length))}
         </div>
         ${warnings.length ? `<div class="notice warn">資料更新中：${warnings.map((item) => safe(item)).join("、")}</div>` : ""}
         <h3>AI 學習狀態</h3>
@@ -2107,7 +2104,6 @@
         <h3>版本資訊</h3>
         <div class="grid">
           ${metric("Model", safe(versionInfo.model_version || model.model_version || "尚無資料"))}
-          ${metric("Feature", safe(versionInfo.feature_version || model.feature_version || "尚無資料"))}
           ${metric("Release", safe(versionInfo.release_version || model.release_version || "尚無資料"))}
           ${metric("Generation", safe(versionInfo.production_generation || model.production_generation || "尚無資料"))}
         </div>
