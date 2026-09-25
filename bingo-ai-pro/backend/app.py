@@ -357,7 +357,7 @@ def _schedule_collector_jobs() -> None:
             collector_scheduler_enabled=False,
             collector_startup_job_registered=False,
             collector_interval_job_registered=False,
-            official_collector_interval_job_registered=False,
+            official_collector_interval_job_registered=LATEST_OFFICIAL_SCHEDULER_ENABLED,
         )
         return
     scheduler.add_job(
