@@ -2077,7 +2077,6 @@
         <h3>AI 流程</h3>
         <div class="grid">
           ${metric("推薦狀態", statusText(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"), statusClass(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"))}
-          ${metric("部分降級", (aiFlow.partial || payload.status === "partial") ? "是" : "否", (aiFlow.partial || payload.status === "partial") ? "status-warning" : "status-ok")}
         </div>
         <h3>系統健康</h3>
         <div class="grid">
