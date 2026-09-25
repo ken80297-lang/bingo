@@ -858,7 +858,7 @@ def test_verified_learning_rejects_zero_cloud_learning_used_updates(monkeypatch)
 def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch):
     from api import runtime_diagnostics
 
-    monkeypatch.setattr("database.collector_store.get_official_draw_by_issue", lambda issue, verified_only=True: None)
+    monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [])
     result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
     assert result == {"status": "rejected", "reason": "verified_official_draw_required", "issue": "115054089"}
 
@@ -866,7 +866,7 @@ def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch
 def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypatch):
     from api import runtime_diagnostics
 
-    monkeypatch.setattr("database.collector_store.get_official_draw_by_issue", lambda issue, verified_only=True: {"issue": issue, "numbers": list(range(1, 21))})
+    monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [{"issue": "115054089", "numbers": list(range(1, 21))}])
     captured = {}
     def fake_create(issue, **kwargs):
         captured.update({"issue": issue, **kwargs})
