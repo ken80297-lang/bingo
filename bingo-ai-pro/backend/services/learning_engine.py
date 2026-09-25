@@ -627,11 +627,27 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
 
     # Keep the monkeypatchable single-record seam for tests/non-cloud runs;
     # Production cloud uses the one-transaction batch path.
+    production_cloud_batch = getattr(upsert_learning_record, "__module__", "") == "database.learning_store"
     saved = (
         upsert_learning_records(records)
-        if getattr(upsert_learning_record, "__module__", "") == "database.learning_store"
+        if production_cloud_batch
         else [upsert_learning_record(record) for record in records]
     )
+    if production_cloud_batch:
+        cloud_saved = [
+            result for result in saved
+            if result.get("status") == "ok" and result.get("storage") == "cloud"
+        ]
+        if len(records) != EXPECTED_RECORDS_PER_TARGET or len(cloud_saved) != EXPECTED_RECORDS_PER_TARGET:
+            return {
+                "status": "error",
+                "reason": "learning_snapshot_cloud_save_required",
+                "source_issue": source_issue,
+                "target_issue": target_issue,
+                "records": len(records),
+                "saved": saved,
+                "pending_resolution": pending_resolution,
+            }
     return {
         "status": "ok",
         "source_issue": source_issue,
@@ -930,7 +946,11 @@ def evaluate_verified_issue(issue: str) -> dict:
                 "learning_queue": {"status": "skipped"},
                 "adaptive_weights": {"status": "skipped", "reason": "incomplete_learning_record_set"},
             }
-        saved = [upsert_learning_record(record) for record in records]
+        saved = (
+            upsert_learning_records(records)
+            if getattr(upsert_learning_record, "__module__", "") == "database.learning_store"
+            else [upsert_learning_record(record) for record in records]
+        )
         if status == "ok":
             cloud_saved = [
                 result for result in saved
