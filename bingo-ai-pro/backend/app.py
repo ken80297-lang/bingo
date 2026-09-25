@@ -631,6 +631,51 @@ def startup_event() -> None:
         f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
     )
 
+    if os.getenv("LATEST_OFFICIAL_SYNC_ON_STARTUP_ONCE", "").strip().lower() == "true":
+        try:
+            from services.latest_sync import process_latest_official_draw
+
+            latest_sync_once_result = process_latest_official_draw()
+            print(
+                "LATEST_OFFICIAL_SYNC_STARTUP_ONCE "
+                + json.dumps(latest_sync_once_result, ensure_ascii=False, sort_keys=True, default=str),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"LATEST_OFFICIAL_SYNC_STARTUP_ONCE_ERROR {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+    closed_loop_once_issue = os.getenv("CLOSED_LOOP_PREDICTION_ON_STARTUP_ISSUE", "").strip()
+    if closed_loop_once_issue:
+        try:
+            if os.getenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "").strip().lower() != "true":
+                print(
+                    f"CLOSED_LOOP_STARTUP_ONCE status=rejected reason=diagnostic_disabled issue={closed_loop_once_issue}",
+                    flush=True,
+                )
+            else:
+                from api.runtime_diagnostics import api_closed_loop_prediction_once
+
+                closed_loop_result = api_closed_loop_prediction_once(closed_loop_once_issue)
+                print(
+                    "CLOSED_LOOP_STARTUP_ONCE "
+                    + json.dumps(
+                        {"issue": closed_loop_once_issue, "result": closed_loop_result},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    flush=True,
+                )
+        except Exception as exc:
+            print(
+                f"CLOSED_LOOP_STARTUP_ONCE_ERROR issue={closed_loop_once_issue} "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
     if os.getenv("LEARNING_HISTORY_CACHE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
         try:
             import time
