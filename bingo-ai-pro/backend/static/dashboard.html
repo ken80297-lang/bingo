@@ -2057,7 +2057,6 @@
       const payload = cardThree || {};
       const learning = payload.learning || {};
       const collector = payload.collector || {};
-      const model = payload.ai_model || {};
       const system = payload.system || {};
       const sections = payload.sections || {};
       const latestProcessing = sections.latest_processing || {};
@@ -2095,9 +2094,7 @@
         </div>
         <h3>版本資訊</h3>
         <div class="grid">
-          ${metric("Model", safe(versionInfo.model_version || model.model_version || "尚無資料"))}
-          ${metric("Release", safe(versionInfo.release_version || model.release_version || "尚無資料"))}
-          ${metric("Generation", safe(versionInfo.production_generation || model.production_generation || "尚無資料"))}
+          ${metric("版本", safe(versionInfo.release_version || payload.ai_model?.release_version || "尚無資料"))}
         </div>
 
       `;
