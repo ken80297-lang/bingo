@@ -21,6 +21,7 @@ from database.learning_store import (
     get_learning_status_counts,
     mark_learning_weight_changed,
     upsert_learning_record,
+    upsert_learning_records,
 )
 from database.official_draw_store import get_official_draw_by_issue
 from database.prediction_history_store import (
@@ -624,7 +625,7 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
             }
         )
 
-    saved = [upsert_learning_record(record) for record in records]
+    saved = upsert_learning_records(records)
     return {
         "status": "ok",
         "source_issue": source_issue,
