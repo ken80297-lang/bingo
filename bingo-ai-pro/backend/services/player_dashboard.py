@@ -3083,7 +3083,6 @@ def _card_one_payload(
     current_draw: dict | None,
     latest_official_draw: dict | None,
     next_prediction: dict,
-    previous_verification: dict | None,
     rule_library: dict | None,
 ) -> dict:
     prediction_numbers = _as_int_list(
@@ -3097,7 +3096,6 @@ def _card_one_payload(
         "current_draw": current_draw,
         "latest_official_draw": latest_official_draw,
         "next_prediction": next_prediction,
-        "previous_verification": previous_verification,
         "rule_library": rule_library or _empty_rule_library(),
         "official_numbers": official_numbers,
         "official_super_number": official_super_number,
@@ -3732,7 +3730,6 @@ def _build_player_dashboard_summary_payload(
             current_draw=current,
             latest_official_draw=latest_official_draw,
             next_prediction=next_prediction,
-            previous_verification=previous_verification,
             rule_library=rule_library,
         )
         card_two = _card_two_empty(next_prediction.get("based_on_issue"))
@@ -3964,7 +3961,6 @@ def _build_player_dashboard_summary_payload(
         current_draw=current,
         latest_official_draw=latest_official_draw,
         next_prediction=next_prediction,
-        previous_verification=previous_verification,
         rule_library=rule_library,
     )
     card_three_payload = _card_three_payload(
