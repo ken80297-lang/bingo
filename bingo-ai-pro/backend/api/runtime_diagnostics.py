@@ -116,3 +116,124 @@ def api_card_two_ordering_benchmark() -> dict:
 @router.post("/runtime-diagnostics/card-two-stepwise-latency-benchmark")
 def api_card_two_stepwise_latency_benchmark() -> dict:
     return run_card_two_stepwise_latency_benchmark()
+
+
+@router.api_route("/runtime-diagnostics/learning-history-cache-benchmark", methods=["GET", "POST"])
+def api_learning_history_cache_benchmark() -> dict:
+    """Read-only cold/warm benchmark for the process-local analysis history cache."""
+    import time
+
+    from database.analysis_store import clear_analysis_history_cache, get_cached_analysis_history
+
+    clear_analysis_history_cache()
+    cold_started = time.perf_counter()
+    cold_rows, cold_meta = get_cached_analysis_history(100)
+    cold_ms = round((time.perf_counter() - cold_started) * 1000.0, 2)
+
+    warm_started = time.perf_counter()
+    warm_rows, warm_meta = get_cached_analysis_history(100)
+    warm_ms = round((time.perf_counter() - warm_started) * 1000.0, 2)
+
+    print(
+        f"LEARNING_HISTORY_CACHE_BENCHMARK read_only=true cold_source={cold_meta.get('source')} "
+        f"cold_ms={cold_ms} warm_source={warm_meta.get('source')} warm_ms={warm_ms} "
+        f"records={len(warm_rows or [])}",
+        flush=True,
+    )
+    return {
+        "status": "ok",
+        "read_only": True,
+        "cold": {"source": cold_meta.get("source"), "ms": cold_ms, "records": len(cold_rows or [])},
+        "warm": {"source": warm_meta.get("source"), "ms": warm_ms, "records": len(warm_rows or [])},
+    }
+
+
+@router.get("/runtime-diagnostics/adaptive-voting-readonly")
+def api_adaptive_voting_readonly() -> dict:
+    """Read-only proof that persisted adaptive state is schema-compatible and safely gated."""
+    from database.adaptive_weight_store import get_active_adaptive_weights
+    from services.voting_engine import _adaptive_multiplier, V7_ADAPTIVE_WEIGHT_KEYS
+
+    adaptive = get_active_adaptive_weights()
+    strategy = (adaptive or {}).get("strategy")
+    multipliers = {name: _adaptive_multiplier(name, adaptive) for name in V7_ADAPTIVE_WEIGHT_KEYS}
+    return {
+        "status": "ok",
+        "read_only": True,
+        "record_found": bool(adaptive),
+        "strategy": strategy,
+        "v7_enabled": strategy == "v7_models",
+        "version": (adaptive or {}).get("version"),
+        "missing_weight": (adaptive or {}).get("missing_weight"),
+        "pattern_weight": (adaptive or {}).get("pattern_weight"),
+        "multipliers": multipliers,
+    }
+
+
+@router.api_route("/runtime-diagnostics/learning-compute-benchmark", methods=["GET", "POST"])
+def api_learning_compute_benchmark() -> dict:
+    """Read-only benchmark for the V7 learning input load and model computation."""
+    import time
+
+    from database.analysis_store import get_analysis_history
+    from services.model_engine import run_all_models
+
+    started = time.perf_counter()
+    history_started = time.perf_counter()
+    draws = get_analysis_history(100)
+    history_ms = round((time.perf_counter() - history_started) * 1000.0, 2)
+
+    models_started = time.perf_counter()
+    payload = run_all_models(100, draws=draws)
+    models_ms = round((time.perf_counter() - models_started) * 1000.0, 2)
+    models = payload.get("models") or []
+    total_ms = round((time.perf_counter() - started) * 1000.0, 2)
+    print(
+        f"LEARNING_COMPUTE_BENCHMARK read_only=true history_records={len(draws or [])} "
+        f"learning_history_load_ms={history_ms} learning_models_compute_ms={models_ms} total_ms={total_ms}",
+        flush=True,
+    )
+
+    return {
+        "status": "ok",
+        "read_only": True,
+        "history_records": len(draws or []),
+        "learning_history_load_ms": history_ms,
+        "learning_models_compute_ms": models_ms,
+        "total_ms": total_ms,
+        "models": [
+            {
+                "name": model.get("name") or model.get("model_name"),
+                "candidate_count": len(model.get("candidates") or model.get("numbers") or []),
+            }
+            for model in models
+        ],
+    }
+
+
+@router.get("/runtime-diagnostics/adaptive-walk-forward-ab")
+def api_adaptive_walk_forward_ab(limit: int = 600, warmup: int = 100) -> dict:
+    """Bounded read-only OFF/ON/random walk-forward comparison."""
+    from database.collector_store import get_draw_history
+    from scripts.walk_forward_adaptive_ab import run
+
+    bounded_limit = max(121, min(int(limit or 600), 2000))
+    bounded_warmup = max(100, min(int(warmup or 100), bounded_limit - 1))
+    result = run(get_draw_history(bounded_limit), warmup=bounded_warmup)
+    summary = result.get("summary") or {}
+    print(
+        "ADAPTIVE_WALK_FORWARD_AB "
+        + __import__("json").dumps(
+            {"read_only": True, "limit": bounded_limit, "warmup": bounded_warmup, "summary": summary},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    return {
+        "status": "ok",
+        "read_only": True,
+        "limit": bounded_limit,
+        "summary": summary,
+    }
+

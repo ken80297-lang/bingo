@@ -532,6 +532,59 @@ def _row_to_summary_record(row: Any) -> dict:
     }
 
 
+
+def mark_learning_weight_changed(issue: str, changed: bool = True) -> dict:
+    """Mark the strict learning ledger rows whose evaluation produced adaptive weights."""
+    generation = get_production_generation()
+    cloud_error = None
+    if _cloud_enabled():
+        try:
+            with _cloud_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update learning_history
+                        set weight_changed = %s, updated_at = now()
+                        where issue = %s
+                          and prediction_type = 'live_prediction'
+                          and verification_status = 'verified'
+                          and learned_status = 'learned'
+                          and production_generation = %s
+                        """,
+                        (bool(changed), str(issue), generation),
+                        prepare=False,
+                    )
+                    affected = int(cur.rowcount or 0)
+                conn.commit()
+            return {"status": "ok", "storage": "cloud", "updated": affected}
+        except Exception as exc:
+            logger.exception("cloud learning weight_changed update failed")
+            cloud_error = str(exc)
+
+    try:
+        with _sqlite_connection() as conn:
+            cursor = conn.execute(
+                """
+                update learning_history
+                set weight_changed = ?, updated_at = ?
+                where issue = ?
+                  and prediction_type = 'live_prediction'
+                  and verification_status = 'verified'
+                  and learned_status = 'learned'
+                  and production_generation = ?
+                """,
+                (1 if changed else 0, _now(), str(issue), generation),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "storage": "sqlite",
+                "updated": int(cursor.rowcount or 0),
+                "cloud_error": cloud_error,
+            }
+    except Exception as exc:
+        return {"status": "error", "storage": "none", "error": str(exc), "cloud_error": cloud_error}
+
 def get_learning_records(
     limit: int = 100,
     offset: int = 0,
@@ -595,6 +648,77 @@ def get_learning_records(
     )
     return [_row_to_record(row) for row in rows]
 
+
+
+def get_complete_live_learning_records(
+    window: int = 100,
+    *,
+    page_size: int = 500,
+    max_rows: int = 10000,
+) -> list[dict]:
+    """Return rows for the newest complete 18-row verified+learned live targets.
+
+    Pagination intentionally carries issue groups across page boundaries. A target
+    is complete only when it contains exactly the six formal model names at each
+    of top_n 5/10/20, with no duplicate model/top_n pair.
+    """
+    window = max(1, int(window or 100))
+    page_size = max(1, min(int(page_size or 500), 500))
+    max_rows = max(page_size, int(max_rows or 10000))
+    expected_models = {"laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"}
+    expected_top_n = {5, 10, 20}
+    expected_pairs = {(model, top_n) for model in expected_models for top_n in expected_top_n}
+
+    selected: list[dict] = []
+    pending_issue: str | None = None
+    pending_rows: list[dict] = []
+    offset = 0
+    exhausted = False
+
+    def accept(rows: list[dict]) -> bool:
+        if len(rows) != len(expected_pairs):
+            return False
+        pairs = {
+            (str(row.get("model_name") or ""), int(row.get("top_n") or 0))
+            for row in rows
+        }
+        return pairs == expected_pairs
+
+    while offset < max_rows and len(selected) // len(expected_pairs) < window:
+        batch = get_learning_records(
+            limit=min(page_size, max_rows - offset),
+            offset=offset,
+            prediction_type="live_prediction",
+            verification_status="verified",
+            learned_status="learned",
+        )
+        if not batch:
+            exhausted = True
+            break
+        offset += len(batch)
+
+        for row in batch:
+            issue = str(row.get("issue") or "")
+            if not issue:
+                continue
+            if pending_issue is None:
+                pending_issue = issue
+            if issue != pending_issue:
+                if accept(pending_rows):
+                    selected.extend(pending_rows)
+                    if len(selected) // len(expected_pairs) >= window:
+                        return selected[: window * len(expected_pairs)]
+                pending_issue = issue
+                pending_rows = []
+            pending_rows.append(row)
+
+        if len(batch) < page_size:
+            exhausted = True
+            break
+
+    if exhausted and pending_rows and len(selected) // len(expected_pairs) < window and accept(pending_rows):
+        selected.extend(pending_rows)
+    return selected[: window * len(expected_pairs)]
 
 def get_learning_summary_records(
     limit: int = 100,

@@ -8,11 +8,18 @@ from datetime import datetime
 from typing import Any
 
 from database.analysis_store import get_analysis_history
+from database.adaptive_weight_store import (
+    get_adaptive_weights_by_source_issue,
+    get_latest_adaptive_weights,
+    save_adaptive_weights,
+)
 from database.learning_store import (
+    get_complete_live_learning_records,
     get_learning_model_performance,
     get_learning_records,
     get_learning_summary_records,
     get_learning_status_counts,
+    mark_learning_weight_changed,
     upsert_learning_record,
 )
 from database.official_draw_store import get_official_draw_by_issue
@@ -27,7 +34,7 @@ from services.official_verification import official_statistics
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "22.1"
+ENGINE_VERSION = "22.1"  # learning closed-loop CI
 OBSERVATION_VERSION = "22.1.5"
 OBSERVATION_CACHE_TTL_SECONDS = 30
 LEARNING_STATUS_CACHE_TTL_SECONDS = 60
@@ -180,6 +187,40 @@ def _as_int_list(values: Any) -> list[int]:
         if 1 <= number <= 80 and number not in numbers:
             numbers.append(number)
     return numbers
+
+
+def _valid_learning_snapshot_record(record: dict) -> bool:
+    model_name = str(record.get("model_name") or "")
+    try:
+        top_n = int(record.get("top_n") or 0)
+        predicted_count = int(record.get("predicted_count") or len(record.get("predicted_numbers") or []))
+    except Exception:
+        return False
+    return (
+        model_name in EXPECTED_LIVE_MODELS
+        and top_n in EXPECTED_TOP_N
+        and predicted_count > 0
+        and bool(record.get("predicted_numbers"))
+        and bool(record.get("prediction_snapshot"))
+    )
+
+
+def _is_complete_learning_record_set(records: list[dict]) -> bool:
+    valid_records = [record for record in records if _valid_learning_snapshot_record(record)]
+    valid_combos = {
+        (str(record.get("model_name") or ""), int(record.get("top_n") or 0))
+        for record in valid_records
+    }
+    expected_combos = {
+        (model_name, top_n)
+        for model_name in EXPECTED_LIVE_MODELS
+        for top_n in EXPECTED_TOP_N
+    }
+    return (
+        len(records) == EXPECTED_RECORDS_PER_TARGET
+        and len(valid_records) == EXPECTED_RECORDS_PER_TARGET
+        and valid_combos == expected_combos
+    )
 
 
 def _analysis_by_issue(issue: str) -> dict:
@@ -442,14 +483,15 @@ def _cached_observation() -> dict | None:
 def capture_prediction_snapshot(issue: str | None = None) -> dict:
     if issue:
         records = _learning_snapshots_for_issue(str(issue))
-        if records:
-            first = records[0]
+        valid_records = [record for record in records if _valid_learning_snapshot_record(record)]
+        if _is_complete_learning_record_set(records):
+            first = valid_records[0]
             return {
                 "status": "ok",
                 "issue": str(issue),
                 "prediction_snapshot": first.get("prediction_snapshot") or {},
                 "analysis_snapshot": first.get("analysis_snapshot") or {},
-                "learning_records": records,
+                "learning_records": valid_records,
             }
 
     return {
@@ -477,16 +519,17 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
     if target_issue:
         pending_resolution = _resolve_pending_snapshot(source_issue, target_issue)
     existing = _learning_snapshots_for_issue(snapshot_issue)
-    if existing:
+    valid_existing = [record for record in existing if _valid_learning_snapshot_record(record)]
+    if _is_complete_learning_record_set(existing):
         return {
             "status": "ok",
             "skipped": True,
-            "message": "live prediction snapshot already exists",
+            "message": "complete live prediction snapshot already exists",
             "source_issue": source_issue,
             "target_issue": target_issue,
-            "history_cutoff_issue": existing[0].get("history_cutoff_issue"),
-            "prediction_created_at": existing[0].get("prediction_created_at"),
-            "records": len(existing),
+            "history_cutoff_issue": valid_existing[0].get("history_cutoff_issue"),
+            "prediction_created_at": valid_existing[0].get("prediction_created_at"),
+            "records": len(valid_existing),
             "pending_resolution": pending_resolution,
         }
 
@@ -603,7 +646,20 @@ def _learning_records_from_prediction(prediction: dict, official: dict | None, a
     learned_status = "learned" if verification_status == "verified" else "pending"
     learned_at = datetime.utcnow().isoformat() if learned_status == "learned" else None
 
-    model_names = list(model_scores.keys()) if model_scores else ["ensemble"]
+    model_names = [
+        model_name
+        for model_name in EXPECTED_LIVE_MODELS
+        if model_name != "ensemble" and model_name in model_scores
+    ]
+    # Recovery is allowed to produce formal learned rows only when the
+    # immutable prediction_history row contains all five V7 model outputs.
+    # Older fast-path rows often contain only production_fast_path (or no
+    # per-model scores); those rows are evidence of a prediction, not evidence
+    # of six-model learning.
+    expected_base_models = [name for name in EXPECTED_LIVE_MODELS if name != "ensemble"]
+    if set(model_names) != set(expected_base_models):
+        return []
+
     records = []
     for model_name in model_names:
         candidates = _model_candidates(model_name, model_scores, fallback_numbers)
@@ -646,8 +702,151 @@ def _learning_records_from_prediction(prediction: dict, official: dict | None, a
                     "error_message": None,
                 }
             )
+
+    ensemble_numbers = fallback_numbers
+    for top_n in TOP_N_VALUES:
+        top_numbers = ensemble_numbers[:top_n]
+        result = calculate_model_result(top_numbers, official_numbers) if official_numbers else {
+            "hit_numbers": [],
+            "hit_count": 0,
+            "predicted_count": len(top_numbers),
+            "precision_score": 0,
+            "official_coverage": 0,
+        }
+        records.append(
+            {
+                "issue": issue,
+                "source_issue": prediction.get("issue"),
+                "target_issue": issue,
+                "history_cutoff_issue": prediction.get("issue"),
+                "prediction_created_at": prediction.get("predict_time"),
+                "draw_time": (official or {}).get("draw_time") or prediction.get("predict_time"),
+                "model_name": "ensemble",
+                "model_version": DEFAULT_MODEL_VERSION,
+                "prediction_type": "live_prediction",
+                "predicted_numbers": top_numbers,
+                "predicted_scores": {"recovered_from": "prediction_history"},
+                "model_weight": {"weight": 1.0},
+                "official_numbers": official_numbers,
+                "hit_numbers": result["hit_numbers"],
+                "predicted_count": result["predicted_count"],
+                "hit_count": result["hit_count"],
+                "precision_score": result["precision_score"],
+                "official_coverage": result["official_coverage"],
+                "rank_score": _rank_score(result["hit_count"], top_n),
+                "top_n": top_n,
+                "prediction_snapshot": prediction,
+                "analysis_snapshot": analysis,
+                "verification_status": verification_status,
+                "learned_status": learned_status,
+                "learned_at": learned_at,
+                "error_message": None,
+            }
+        )
     return records
 
+
+V7_ADAPTIVE_MODELS = ("laowanjia", "hotcold", "missing", "pattern", "balance")
+V7_ADAPTIVE_MIN_SAMPLES = 20
+V7_ADAPTIVE_WINDOW = 100
+
+
+def update_v7_adaptive_weights(source_issue: str) -> dict:
+    existing = get_adaptive_weights_by_source_issue(str(source_issue))
+    if existing:
+        evidence = mark_learning_weight_changed(str(source_issue), True)
+        if evidence.get("status") != "ok" or evidence.get("storage") != "cloud" or int(evidence.get("updated") or 0) != EXPECTED_RECORDS_PER_TARGET:
+            return {
+                "status": "error",
+                "reason": "adaptive_weight_evidence_reconciliation_required",
+                "source_issue": str(source_issue),
+                "version": existing.get("version"),
+                "weight_id": existing.get("id"),
+                "evidence": evidence,
+            }
+        return {
+            "status": "ok",
+            "reason": "already_updated",
+            "source_issue": str(source_issue),
+            "version": existing.get("version"),
+            "weight_id": existing.get("id"),
+            "evidence": evidence,
+        }
+
+    # Build the adaptive window only from strict, complete 18/18 verified+learned
+    # target issues. Fetch enough rows for 100 complete targets (18 each) and
+    # reject every target that does not satisfy the same snapshot contract used
+    # by the realtime learning path.
+    strict_rows = get_complete_live_learning_records(window=V7_ADAPTIVE_WINDOW)
+    by_issue: dict[str, list[dict]] = {}
+    for row in strict_rows:
+        by_issue.setdefault(str(row.get("issue") or ""), []).append(row)
+    complete_issues = [
+        issue for issue, rows in by_issue.items()
+        if issue and _is_complete_learning_record_set(rows)
+    ]
+    complete_issues = sorted(complete_issues, key=lambda value: int(value) if value.isdigit() else -1, reverse=True)
+    complete_issues = complete_issues[:V7_ADAPTIVE_WINDOW]
+    if len(complete_issues) < V7_ADAPTIVE_MIN_SAMPLES:
+        return {"status": "skipped", "reason": "insufficient_complete_targets", "complete_targets": len(complete_issues)}
+
+    selected = [row for issue in complete_issues for row in by_issue[issue]]
+    top20 = [row for row in selected if int(row.get("top_n") or 0) == 20 and row.get("model_name") in V7_ADAPTIVE_MODELS]
+    by_model: dict[str, list[dict]] = {name: [] for name in V7_ADAPTIVE_MODELS}
+    for row in top20:
+        by_model[str(row.get("model_name"))].append(row)
+    minimum = min(len(by_model[name]) for name in V7_ADAPTIVE_MODELS)
+    if minimum < V7_ADAPTIVE_MIN_SAMPLES:
+        return {"status": "skipped", "reason": "insufficient_samples", "minimum_samples": minimum}
+
+    scores = {
+        name: sum(float(row.get("hit_count") or 0) for row in by_model[name]) / len(by_model[name])
+        for name in V7_ADAPTIVE_MODELS
+    }
+    peer_mean = sum(scores.values()) / len(scores) if scores else 0.0
+    raw = {name: 1.0 + ((score - peer_mean) / max(1.0, peer_mean)) * 0.5 for name, score in scores.items()}
+    raw = {name: max(0.8, min(1.2, value)) for name, value in raw.items()}
+    normalizer = sum(raw.values()) / len(raw) or 1.0
+    weights = {name: round(value / normalizer, 6) for name, value in raw.items()}
+
+    previous = get_latest_adaptive_weights() or {}
+    version = int(previous.get("version") or 0) + 1
+    payload = {
+        "version": version,
+        "strategy": "v7_models",
+        "window": len(complete_issues),
+        "laowanjia_weight": weights["laowanjia"],
+        "hot_cold_weight": weights["hotcold"],
+        "missing_weight": weights["missing"],
+        "pattern_weight": weights["pattern"],
+        "balance_weight": weights["balance"],
+        "tail_weight": None,
+        "random_weight": None,
+        "average_hits": round(peer_mean, 4),
+        "hit_rate": round(peer_mean / 20.0, 6),
+        "source_evaluation_id": int(str(source_issue)),
+        "is_active": True,
+    }
+    saved = save_adaptive_weights(payload)
+    if saved.get("status") != "ok" or saved.get("storage") != "cloud":
+        return {"status": "error", "reason": "adaptive_weight_cloud_save_required", "save": saved}
+    evidence = mark_learning_weight_changed(str(source_issue), True)
+    if evidence.get("status") != "ok" or evidence.get("storage") != "cloud" or int(evidence.get("updated") or 0) != EXPECTED_RECORDS_PER_TARGET:
+        return {
+            "status": "error",
+            "reason": "adaptive_weight_evidence_update_required",
+            "save": saved,
+            "evidence": evidence,
+        }
+    return {
+        "status": "ok",
+        "source_issue": str(source_issue),
+        "version": version,
+        "complete_targets": len(complete_issues),
+        "weights": weights,
+        "save": saved,
+        "evidence": evidence,
+    }
 
 def evaluate_verified_issue(issue: str) -> dict:
     start = time.perf_counter()
@@ -714,8 +913,32 @@ def evaluate_verified_issue(issue: str) -> dict:
                 records.append(updated)
         else:
             return {"status": "missing_snapshot", "issue": issue, "saved": []}
-        saved = [upsert_learning_record(record) for record in records]
         status = "ok" if official else "pending_official"
+        if status == "ok" and not _is_complete_learning_record_set(records):
+            return {
+                "status": "missing_snapshot",
+                "issue": issue,
+                "records": len(records),
+                "saved": [],
+                "learning_queue": {"status": "skipped"},
+                "adaptive_weights": {"status": "skipped", "reason": "incomplete_learning_record_set"},
+            }
+        saved = [upsert_learning_record(record) for record in records]
+        if status == "ok":
+            cloud_saved = [
+                result for result in saved
+                if result.get("status") == "ok" and result.get("storage") == "cloud"
+            ]
+            if len(cloud_saved) != EXPECTED_RECORDS_PER_TARGET:
+                return {
+                    "status": "error",
+                    "reason": "learning_cloud_save_required",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": {"status": "skipped"},
+                    "adaptive_weights": {"status": "skipped", "reason": "learning_cloud_save_required"},
+                }
         record_operation_event(
             component="learning",
             event_type="learning_evaluation",
@@ -734,7 +957,19 @@ def evaluate_verified_issue(issue: str) -> dict:
                 duration_ms=_duration_ms(start),
             )
         learning_queue = {"status": "skipped"}
+        adaptive_weights = {"status": "skipped"}
         if status == "ok":
+            adaptive_weights = update_v7_adaptive_weights(str(issue))
+            if adaptive_weights.get("status") == "error":
+                return {
+                    "status": "error",
+                    "reason": "adaptive_learning_failed",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": {"status": "skipped"},
+                    "adaptive_weights": adaptive_weights,
+                }
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
 
@@ -742,6 +977,20 @@ def evaluate_verified_issue(issue: str) -> dict:
             except Exception as exc:
                 logger.exception("prediction history learning queue update failed")
                 learning_queue = {"status": "error", "message": str(exc)}
+            if (
+                learning_queue.get("status") != "ok"
+                or learning_queue.get("storage") != "cloud"
+                or int(learning_queue.get("updated") or 0) < 1
+            ):
+                return {
+                    "status": "error",
+                    "reason": "learning_used_cloud_update_required",
+                    "issue": issue,
+                    "records": len(records),
+                    "saved": saved,
+                    "learning_queue": learning_queue,
+                    "adaptive_weights": adaptive_weights,
+                }
             invalidate_learning_status_cache()
         return {
             "status": status,
@@ -749,6 +998,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "records": len(records),
             "saved": saved,
             "learning_queue": learning_queue,
+            "adaptive_weights": adaptive_weights,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")

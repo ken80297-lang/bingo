@@ -151,11 +151,26 @@ def model_e_balance(draws: list[dict]) -> dict:
                 candidates.append(evens[len(evens) // 2])
     tail_counter = Counter(number % 10 for number in _all_numbers(draws[:30]))
     candidates.sort(key=lambda number: (tail_counter.get(number % 10, 0), number))
+
+    # The primary balance pool can be sparse because ten Bingo draws usually
+    # cover most of 1..80. Backfill deterministically so every V7 model votes
+    # with the same 20-candidate contract.
+    frequency = Counter(_all_numbers(draws[:30]))
+    fallback = list(range(1, 81))
+    fallback.sort(
+        key=lambda number: (
+            frequency.get(number, 0),
+            tail_counter.get(number % 10, 0),
+            number in recent_numbers,
+            number,
+        )
+    )
+    candidates.extend(number for number in fallback if number not in candidates)
     return _model_payload("balance", candidates, 72, "Balance 模型平衡大小、單雙、區間與尾數分布。")
 
 
-def run_all_models(limit: int = 100) -> dict:
-    draws = _recent_draws(limit)
+def run_all_models(limit: int = 100, draws: list[dict] | None = None) -> dict:
+    draws = draws if draws is not None else _recent_draws(limit)
     models = [
         model_a_laowanjia(draws),
         model_b_hotcold(draws),

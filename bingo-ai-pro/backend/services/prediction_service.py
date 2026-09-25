@@ -496,6 +496,21 @@ def create_for_official_draw(
             previous_strategy_version = existing_strategy["previous_strategy_version"]
             force = True
 
+        from database.analysis_store import get_cached_analysis_history
+        mark = time.perf_counter()
+        learning_analysis_history, learning_history_cache = get_cached_analysis_history(
+            100,
+            based_on_issue=based_on,
+        )
+        _stage_done(
+            stages,
+            "learning_history_load",
+            mark,
+            records=len(learning_analysis_history or []),
+            source=learning_history_cache.get("source"),
+            cache_reason=learning_history_cache.get("cache_reason"),
+        )
+
         recommendation_context = {
             "source": source,
             "trigger": trigger,
@@ -505,6 +520,7 @@ def create_for_official_draw(
             "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
             "regenerated_reason": regenerated_reason,
             "previous_strategy_version": previous_strategy_version,
+            "learning_analysis_history": learning_analysis_history,
         }
         mark = time.perf_counter()
         recommendation_result = calculate_fast_recommendation(
@@ -671,7 +687,7 @@ def create_for_official_draw(
         record["model_version"] = MODEL_VERSION
         record["feature_version"] = FEATURE_VERSION
         model_scores = record.get("model_scores") if isinstance(record.get("model_scores"), dict) else {}
-        fast_path_scores = model_scores.get("production_fast_path") if isinstance(model_scores.get("production_fast_path"), dict) else {}
+        fast_path_scores = recommendation.get("production_fast_path") if isinstance(recommendation.get("production_fast_path"), dict) else {}
         fast_path_scores.update(
             {
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
@@ -679,18 +695,44 @@ def create_for_official_draw(
                 "previous_strategy_version": previous_strategy_version,
             }
         )
-        model_scores["production_fast_path"] = fast_path_scores
+        # Keep V7 model_scores clean for learning snapshots. Fast-path
+        # provenance is stored separately so it is not counted as a seventh
+        # learning model.
         record["model_scores"] = model_scores
+        record["fast_path_strategy_version"] = FAST_PATH_STRATEGY_VERSION
+        record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
+        snapshot_result = {"status": "skipped", "reason": "prediction_not_persisted"}
+        if saved.get("status") == "ok":
+            snapshot_mark = time.perf_counter()
+            try:
+                from services.learning_engine import save_live_prediction_snapshot
+
+                snapshot_result = save_live_prediction_snapshot(recommendation)
+            except Exception as exc:
+                logger.exception("live prediction snapshot save failed")
+                snapshot_result = {"status": "error", "message": str(exc)}
+            _stage_done(
+                stages,
+                "learning_snapshot_save",
+                snapshot_mark,
+                status=snapshot_result.get("status"),
+                records=snapshot_result.get("records"),
+                message=snapshot_result.get("message"),
+            )
         completed_at = _now()
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
+            snapshot_ok = (
+                snapshot_result.get("status") == "ok"
+                and int(snapshot_result.get("records") or 0) == 18
+            )
             _record_event(
                 event_type="prediction_created",
-                status="ok",
+                status="ok" if snapshot_ok else "warning",
                 based_on_issue=based_on,
                 target_issue=target,
                 source=source,
@@ -713,6 +755,9 @@ def create_for_official_draw(
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,
+                "learning_snapshot": snapshot_result,
+                "learning_snapshot_complete": snapshot_ok,
+                "learning_snapshot_warning": None if snapshot_ok else "learning_snapshot_incomplete",
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"

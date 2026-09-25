@@ -451,6 +451,44 @@ def calculate_fast_recommendation(
             previous_numbers=previous_numbers,
             trace=trace,
         )
+
+        # Preserve the lightweight fast-path recommendation as the production
+        # output, but capture the five V7 model candidates for the learning
+        # ledger. This restores 6 models x Top5/10/20 snapshots without
+        # replacing the fast-path 20-number selection with V7 voting.
+        from services.model_engine import run_all_models
+
+        learning_models_started = time.perf_counter()
+        learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
+        learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
+        learning_models = learning_models_payload.get("models") or []
+        learning_model_scores = {
+            str(model.get("model")): {
+                "label": model.get("label"),
+                "confidence": float(model.get("confidence") or 0),
+                "reason": model.get("reason"),
+                "candidate_numbers": _recommendation_numbers(model.get("candidate_numbers")),
+            }
+            for model in learning_models
+            if model.get("model")
+        }
+        learning_votes: Counter[int] = Counter()
+        for model in learning_models:
+            confidence_value = float(model.get("confidence") or 0)
+            for rank, number in enumerate(_recommendation_numbers(model.get("candidate_numbers"))):
+                learning_votes[number] += max(1, confidence_value / 20) + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
+        learning_ranked = [number for number, _ in learning_votes.most_common(RECOMMENDATION_NUMBER_COUNT)]
+        learning_final_candidates = sorted(learning_ranked)
+        learning_winning_model = (
+            max(learning_model_scores.items(), key=lambda item: item[1]["confidence"])[0]
+            if learning_model_scores
+            else None
+        )
+        learning_confidence = (
+            round(sum(item["confidence"] for item in learning_model_scores.values()) / len(learning_model_scores), 2)
+            if learning_model_scores
+            else 0
+        )
         _trace_step(
             trace,
             model_name="Production Fast Path",
@@ -473,25 +511,28 @@ def calculate_fast_recommendation(
             "data_quality_status": "ok",
             "super_recommendation": {"recommended": [{"number": analysis.get("super_number")}]} if analysis.get("super_number") else {"recommended": []},
             "sync": {"status": "ok", "simulation_issue": source_issue, "recommendation_issue": source_issue, "super_issue": source_issue},
-            "model_scores": {
-                "production_fast_path": {
-                    "label": "Production Fast Path",
-                    "confidence": confidence,
-                    "candidate_numbers": numbers,
-                    "reason": "Built from latest analysis with zone, tail, source balance, and previous overlap control.",
-                    "diversity": diversity,
-                    "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
-                    "regenerated_reason": context.get("regenerated_reason"),
-                    "previous_strategy_version": context.get("previous_strategy_version"),
-                }
+            "model_scores": learning_model_scores,
+            "production_fast_path": {
+                "label": "Production Fast Path",
+                "confidence": confidence,
+                "candidate_numbers": numbers,
+                "reason": "Built from latest analysis with zone, tail, source balance, and previous overlap control.",
+                "diversity": diversity,
+                "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
+                "regenerated_reason": context.get("regenerated_reason"),
+                "previous_strategy_version": context.get("previous_strategy_version"),
             },
             "winning_model": "production_fast_path",
             "model_voting": {
-                "status": "skipped",
-                "reason": "production_fast_path_does_not_run_v7_voting",
-                "final_candidates": numbers,
-                "confidence": confidence,
-                "model_scores": {},
+                "status": learning_models_payload.get("status", "ok"),
+                "reason": "learning_snapshot_only_fast_path_output_unchanged",
+                "final_candidates": learning_final_candidates,
+                "confidence": learning_confidence,
+                "model_scores": learning_model_scores,
+                "winning_model": learning_winning_model,
+                "models": learning_models,
+                "compute_ms": learning_models_compute_ms,
+                "history_records": len(context.get("learning_analysis_history") or []),
             },
             "recommendation_trace": trace,
             "recommendation_output": output,

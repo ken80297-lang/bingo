@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from collections import Counter
 from datetime import datetime
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+
+_ANALYSIS_HISTORY_CACHE_LOCK = threading.RLock()
+_ANALYSIS_HISTORY_CACHE: list[dict] = []
+_ANALYSIS_HISTORY_CACHE_MAX = 100
 
 V6_COLUMNS = {
     "cluster_level": ("text", "text"),
@@ -595,6 +600,51 @@ def _record_params(record: dict, include_updated_at: bool = False) -> tuple:
     return params
 
 
+def _analysis_issue_sort_key(record: dict) -> tuple[int, str]:
+    issue = str((record or {}).get("issue") or "")
+    try:
+        return (1, f"{int(issue):020d}")
+    except (TypeError, ValueError):
+        return (0, issue)
+
+
+def _update_analysis_history_cache(record: dict) -> None:
+    issue = str((record or {}).get("issue") or "")
+    if not issue:
+        return
+    with _ANALYSIS_HISTORY_CACHE_LOCK:
+        retained = [item for item in _ANALYSIS_HISTORY_CACHE if str(item.get("issue") or "") != issue]
+        retained.append(dict(record))
+        retained.sort(key=_analysis_issue_sort_key, reverse=True)
+        _ANALYSIS_HISTORY_CACHE[:] = retained[:_ANALYSIS_HISTORY_CACHE_MAX]
+
+
+def clear_analysis_history_cache() -> None:
+    with _ANALYSIS_HISTORY_CACHE_LOCK:
+        _ANALYSIS_HISTORY_CACHE.clear()
+
+
+def get_cached_analysis_history(limit: int = 100, *, based_on_issue: str | None = None) -> tuple[list[dict], dict]:
+    limit = max(1, min(int(limit or 100), _ANALYSIS_HISTORY_CACHE_MAX))
+    expected_issue = str(based_on_issue or "")
+    with _ANALYSIS_HISTORY_CACHE_LOCK:
+        cached = [dict(item) for item in _ANALYSIS_HISTORY_CACHE[:limit]]
+    cache_complete = len(cached) >= limit
+    cache_current = not expected_issue or any(str(item.get("issue") or "") == expected_issue for item in cached)
+    if cache_complete and cache_current:
+        return cached, {"source": "memory", "records": len(cached), "based_on_issue": expected_issue or None}
+
+    records = get_analysis_history(limit)
+    with _ANALYSIS_HISTORY_CACHE_LOCK:
+        _ANALYSIS_HISTORY_CACHE[:] = [dict(item) for item in records[:_ANALYSIS_HISTORY_CACHE_MAX]]
+    return records, {
+        "source": "database",
+        "records": len(records),
+        "based_on_issue": expected_issue or None,
+        "cache_reason": "cold_or_incomplete" if not cache_complete else "stale_based_on_issue",
+    }
+
+
 def save_analysis_history(draw: dict) -> dict:
     if not draw.get("issue"):
         return {"status": "error", "storage": None, "error": "missing issue"}
@@ -605,6 +655,7 @@ def save_analysis_history(draw: dict) -> dict:
 
     try:
         _save_cloud(record)
+        _update_analysis_history_cache(record)
         return {"status": "ok", "storage": "cloud", "issue": record.get("issue")}
     except Exception as exc:
         logger.exception("cloud analysis_history upsert failed")
@@ -612,6 +663,8 @@ def save_analysis_history(draw: dict) -> dict:
 
     try:
         _save_sqlite(record)
+        # Cloud analysis_history is the production source of truth for the prediction cache.
+        # Do not promote SQLite-only degraded writes into the in-memory production snapshot.
         return {
             "status": "ok",
             "storage": "sqlite",
@@ -913,6 +966,56 @@ def get_analysis_history_by_issue_with_timing(
     timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000, 2)
     return record, timing
 
+
+
+def get_analysis_history_with_timing(
+    limit: int = 100,
+    *,
+    use_dashboard_read_pool: bool = False,
+) -> tuple[list[dict], dict[str, Any]]:
+    cloud_connection_factory = _dashboard_read_connection if use_dashboard_read_pool else None
+    rows, timing = _query_with_fallback_timing(
+        """
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql="""
+        select issue, draw_time, numbers, super_number, big_small, odd_even,
+               consecutive_numbers, repeated_numbers, hot_numbers, cold_numbers,
+               missing_numbers, difference_values, diagonal_pattern,
+               laowanjia_score, ai_score, created_at, updated_at,
+               cluster_level, cluster_score, twins, consecutive, three_star,
+               four_star, five_star, six_star, diagonal_score, gap_score,
+               tail_distribution, hot_zone, cold_zone, patch_numbers,
+               laowanjia_score, pattern, ai_pattern
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit ?
+        """,
+        cloud_connection_factory=cloud_connection_factory,
+    )
+    transform_started = time.perf_counter()
+    records = [_row_to_record(row) for row in rows]
+    timing["transform_ms"] = round((time.perf_counter() - transform_started) * 1000.0, 2)
+    timing["total_with_transform_ms"] = round(
+        float(timing.get("total_ms") or 0.0) + timing["transform_ms"], 2
+    )
+    timing["query_tag"] = "analysis_history.recent"
+    return records, timing
 
 def get_analysis_history(limit: int = 100) -> list[dict]:
     rows = _query_with_fallback(

@@ -45,6 +45,8 @@ def init_adaptive_weight_tables() -> dict:
                         balance_weight double precision,
                         tail_weight double precision,
                         random_weight double precision,
+                        missing_weight double precision,
+                        pattern_weight double precision,
                         average_hits double precision,
                         hit_rate double precision,
                         source_evaluation_id bigint,
@@ -54,6 +56,8 @@ def init_adaptive_weight_tables() -> dict:
                     )
                     """
                 )
+                cur.execute("alter table adaptive_weights add column if not exists missing_weight double precision")
+                cur.execute("alter table adaptive_weights add column if not exists pattern_weight double precision")
             conn.commit()
         results["cloud"] = "available"
     except Exception:
@@ -82,6 +86,11 @@ def init_adaptive_weight_tables() -> dict:
                 )
                 """
             )
+            existing = {row[1] for row in conn.execute("pragma table_info(adaptive_weights)").fetchall()}
+            if "missing_weight" not in existing:
+                conn.execute("alter table adaptive_weights add column missing_weight real")
+            if "pattern_weight" not in existing:
+                conn.execute("alter table adaptive_weights add column pattern_weight real")
         results["sqlite"] = "available"
     except Exception:
         logger.exception("failed to initialize sqlite adaptive_weights table")
@@ -99,6 +108,8 @@ def _weight_params(weights: dict) -> tuple:
         weights.get("balance_weight"),
         weights.get("tail_weight"),
         weights.get("random_weight"),
+        weights.get("missing_weight"),
+        weights.get("pattern_weight"),
         weights.get("average_hits"),
         weights.get("hit_rate"),
         weights.get("source_evaluation_id"),
@@ -116,10 +127,10 @@ def _save_cloud(weights: dict) -> int:
                 (
                     version, strategy, "window",
                     laowanjia_weight, hot_cold_weight, balance_weight,
-                    tail_weight, random_weight, average_hits, hit_rate,
+                    tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                     source_evaluation_id, is_active, updated_at
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 returning id
                 """,
                 _weight_params(weights),
@@ -138,10 +149,10 @@ def _save_sqlite(weights: dict) -> int:
             (
                 version, strategy, "window",
                 laowanjia_weight, hot_cold_weight, balance_weight,
-                tail_weight, random_weight, average_hits, hit_rate,
+                tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                 source_evaluation_id, is_active, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*_weight_params(weights), _now()),
         )
@@ -181,14 +192,19 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    sqlite_params: tuple | None = None,
+) -> list[Any]:
     try:
         return _query_cloud(sql, params)
     except Exception:
         logger.exception("cloud adaptive weights query failed")
 
     try:
-        return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params)
+        return _query_sqlite(sqlite_sql or sql.replace("%s", "?"), params if sqlite_params is None else sqlite_params)
     except Exception:
         logger.exception("sqlite adaptive weights query failed")
         return []
@@ -205,37 +221,95 @@ def _row_to_weights(row: Any) -> dict:
         "balance_weight": row[6],
         "tail_weight": row[7],
         "random_weight": row[8],
-        "average_hits": row[9],
-        "hit_rate": row[10],
-        "source_evaluation_id": row[11],
-        "is_active": bool(row[12]),
-        "created_at": str(row[13]) if row[13] is not None else None,
-        "updated_at": str(row[14]) if row[14] is not None else None,
+        "missing_weight": row[9],
+        "pattern_weight": row[10],
+        "average_hits": row[11],
+        "hit_rate": row[12],
+        "source_evaluation_id": row[13],
+        "is_active": bool(row[14]),
+        "created_at": str(row[15]) if row[15] is not None else None,
+        "updated_at": str(row[16]) if row[16] is not None else None,
     }
 
 
 def get_active_adaptive_weights() -> dict | None:
+    # A V7 row is eligible to affect predictions only after its source issue's
+    # current-generation 18-row learning ledger is complete, weight_changed is
+    # persisted, and the corresponding verified prediction has learning_used.
+    from config.production_scope import get_production_generation
+
+    generation = get_production_generation()
     rows = _query_with_fallback(
         """
-        select id, version, strategy, "window",
-               laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
-               source_evaluation_id, is_active, created_at, updated_at
-        from adaptive_weights
-        where is_active = true
-        order by updated_at desc, id desc
+        select aw.id, aw.version, aw.strategy, aw."window",
+               aw.laowanjia_weight, aw.hot_cold_weight, aw.balance_weight,
+               aw.tail_weight, aw.random_weight, aw.missing_weight, aw.pattern_weight, aw.average_hits, aw.hit_rate,
+               aw.source_evaluation_id, aw.is_active, aw.created_at, aw.updated_at
+        from adaptive_weights aw
+        where aw.is_active = true
+          and (
+            aw.strategy <> 'v7_models'
+            or (
+              select count(distinct (lh.model_name, lh.top_n))
+              from learning_history lh
+              where lh.issue = aw.source_evaluation_id::text
+                and lh.prediction_type = 'live_prediction'
+                and lh.verification_status = 'verified'
+                and lh.learned_status = 'learned'
+                and lh.weight_changed = true
+                and lh.production_generation = %s
+                and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                and lh.top_n in (5,10,20)
+            ) = 18
+            and exists (
+              select 1
+              from prediction_history ph
+              where ph.prediction_issue = aw.source_evaluation_id::text
+                and ph.prediction_status = 'verified'
+                and ph.learning_used = true
+                and ph.production_generation = %s
+                and ph.production_valid = true
+            )
+          )
+        order by aw.updated_at desc, aw.id desc
         limit 1
         """,
         sqlite_sql="""
-        select id, version, strategy, "window",
-               laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
-               source_evaluation_id, is_active, created_at, updated_at
-        from adaptive_weights
-        where is_active = 1
-        order by updated_at desc, id desc
+        select aw.id, aw.version, aw.strategy, aw."window",
+               aw.laowanjia_weight, aw.hot_cold_weight, aw.balance_weight,
+               aw.tail_weight, aw.random_weight, aw.missing_weight, aw.pattern_weight, aw.average_hits, aw.hit_rate,
+               aw.source_evaluation_id, aw.is_active, aw.created_at, aw.updated_at
+        from adaptive_weights aw
+        where aw.is_active = 1
+          and (
+            aw.strategy <> 'v7_models'
+            or (
+              select count(distinct lh.model_name || ':' || cast(lh.top_n as text))
+              from learning_history lh
+              where lh.issue = cast(aw.source_evaluation_id as text)
+                and lh.prediction_type = 'live_prediction'
+                and lh.verification_status = 'verified'
+                and lh.learned_status = 'learned'
+                and lh.weight_changed = 1
+                and lh.production_generation = ?
+                and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                and lh.top_n in (5,10,20)
+            ) = 18
+            and exists (
+              select 1
+              from prediction_history ph
+              where ph.prediction_issue = cast(aw.source_evaluation_id as text)
+                and ph.prediction_status = 'verified'
+                and ph.learning_used = 1
+                and ph.production_generation = ?
+                and ph.production_valid = 1
+            )
+          )
+        order by aw.updated_at desc, aw.id desc
         limit 1
         """,
+        params=(generation, generation),
+        sqlite_params=(generation, generation),
     )
     return _row_to_weights(rows[0]) if rows else None
 
@@ -245,10 +319,42 @@ def get_latest_adaptive_weights() -> dict | None:
         """
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc
+        limit 1
+        """,
+    )
+    return _row_to_weights(rows[0]) if rows else None
+
+
+def get_adaptive_weights_by_source_issue(source_issue: str) -> dict | None:
+    """Return a persisted V7 update for one source issue, if it already exists."""
+    try:
+        source_id = int(str(source_issue))
+    except (TypeError, ValueError):
+        return None
+    rows = _query_with_fallback(
+        """
+        select id, version, strategy, "window",
+               laowanjia_weight, hot_cold_weight, balance_weight,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
+               source_evaluation_id, is_active, created_at, updated_at
+        from adaptive_weights
+        where strategy = 'v7_models' and source_evaluation_id = %s
+        order by id desc
+        limit 1
+        """,
+        (source_id,),
+        sqlite_sql="""
+        select id, version, strategy, "window",
+               laowanjia_weight, hot_cold_weight, balance_weight,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
+               source_evaluation_id, is_active, created_at, updated_at
+        from adaptive_weights
+        where strategy = 'v7_models' and source_evaluation_id = ?
+        order by id desc
         limit 1
         """,
     )
@@ -260,7 +366,7 @@ def get_adaptive_weight_history(limit: int = 20) -> list[dict]:
         """
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc
@@ -270,7 +376,7 @@ def get_adaptive_weight_history(limit: int = 20) -> list[dict]:
         sqlite_sql="""
         select id, version, strategy, "window",
                laowanjia_weight, hot_cold_weight, balance_weight,
-               tail_weight, random_weight, average_hits, hit_rate,
+               tail_weight, random_weight, missing_weight, pattern_weight, average_hits, hit_rate,
                source_evaluation_id, is_active, created_at, updated_at
         from adaptive_weights
         order by updated_at desc, id desc

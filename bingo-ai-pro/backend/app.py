@@ -631,6 +631,95 @@ def startup_event() -> None:
         f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
     )
 
+    if os.getenv("LEARNING_HISTORY_CACHE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            import time
+            from database.analysis_store import clear_analysis_history_cache, get_cached_analysis_history
+
+            clear_analysis_history_cache()
+            cold_started = time.perf_counter()
+            cold_rows, cold_meta = get_cached_analysis_history(100)
+            cold_ms = round((time.perf_counter() - cold_started) * 1000.0, 2)
+            warm_started = time.perf_counter()
+            warm_rows, warm_meta = get_cached_analysis_history(100)
+            warm_ms = round((time.perf_counter() - warm_started) * 1000.0, 2)
+            print(
+                f"LEARNING_HISTORY_CACHE_BENCHMARK read_only=true cold_source={cold_meta.get('source')} "
+                f"cold_ms={cold_ms} warm_source={warm_meta.get('source')} warm_ms={warm_ms} "
+                f"cold_records={len(cold_rows or [])} warm_records={len(warm_rows or [])}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"LEARNING_HISTORY_CACHE_BENCHMARK_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+    if os.getenv("LEARNING_COMPUTE_BENCHMARK_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from scripts.learning_compute_benchmark import main as run_learning_compute_benchmark
+
+            run_learning_compute_benchmark()
+        except Exception as exc:
+            print(
+                f"LEARNING_COMPUTE_BENCHMARK_ERROR {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+
+    if os.getenv("ADAPTIVE_VOTING_PROBE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.adaptive_weight_store import get_active_adaptive_weights
+            from services.voting_engine import _adaptive_multiplier, V7_ADAPTIVE_WEIGHT_KEYS
+
+            adaptive = get_active_adaptive_weights()
+            strategy = (adaptive or {}).get("strategy")
+            multipliers = {name: _adaptive_multiplier(name, adaptive) for name in V7_ADAPTIVE_WEIGHT_KEYS}
+            print(
+                "ADAPTIVE_VOTING_PROBE read_only=true "
+                f"record_found={bool(adaptive)} strategy={strategy} version={(adaptive or {}).get('version')} "
+                f"v7_enabled={strategy == 'v7_models'} missing_weight={(adaptive or {}).get('missing_weight')} "
+                f"pattern_weight={(adaptive or {}).get('pattern_weight')} multipliers={multipliers}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"ADAPTIVE_VOTING_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+
+    if os.getenv("ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.analysis_store import get_analysis_history
+            from scripts.walk_forward_adaptive_ab import run as run_adaptive_walk_forward_ab
+
+            history = get_analysis_history(1000)
+            if len(history) < 120:
+                print(
+                    "ADAPTIVE_WALK_FORWARD_AB_ERROR "
+                    + json.dumps(
+                        {"reason": "insufficient_history", "records": len(history), "required_minimum": 120},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            else:
+                result = run_adaptive_walk_forward_ab(history, warmup=100)
+                print(
+                    "ADAPTIVE_WALK_FORWARD_AB "
+                    + json.dumps(
+                        {
+                            "read_only": True,
+                            "source": "analysis_history",
+                            "records": len(history),
+                            "limit": 600,
+                            "warmup": 100,
+                            "summary": result.get("summary") or {},
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
+
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
