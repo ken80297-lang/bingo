@@ -152,6 +152,7 @@ def api_learning_history_cache_benchmark() -> dict:
 def api_closed_loop_prediction_once(issue: str) -> dict:
     """Explicit single-shot production-path prediction diagnostic for one verified official issue."""
     from database.collector_store import get_draw_history
+    from database import get_connection
     from services.prediction_service import create_for_official_draw
 
     normalized = str(issue or "").strip()
@@ -159,9 +160,30 @@ def api_closed_loop_prediction_once(issue: str) -> dict:
         return {"status": "rejected", "reason": "diagnostic_disabled", "issue": normalized}
     if not normalized.isdigit() or len(normalized) < 6:
         return {"status": "rejected", "reason": "invalid_issue", "issue": normalized}
+
+    # Production mutation is allowed only for an issue independently recorded as
+    # a validated official draw. Fail closed on any verification-store error.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select numbers
+                    from official_draw_history
+                    where issue = %s
+                      and verification_status = 'validated'
+                    limit 1
+                    """,
+                    (normalized,),
+                )
+                verified_row = cur.fetchone()
+    except Exception:
+        return {"status": "rejected", "reason": "official_verification_unavailable", "issue": normalized}
+
+    verified_numbers = (verified_row[0] if verified_row else None) or []
     official = next((row for row in get_draw_history(200) if str(row.get("issue")) == normalized), None)
     numbers = (official or {}).get("numbers") or []
-    if not official or len(numbers) != 20:
+    if not verified_row or len(verified_numbers) != 20 or not official or len(numbers) != 20:
         return {"status": "rejected", "reason": "verified_official_draw_required", "issue": normalized}
     result = create_for_official_draw(normalized, source="runtime_diagnostics", trigger="manual_closed_loop_once", force=False)
     return {"status": "ok", "issue": normalized, "result": result}
