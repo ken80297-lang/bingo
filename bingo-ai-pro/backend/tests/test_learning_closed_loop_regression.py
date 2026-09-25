@@ -560,6 +560,9 @@ def _complete_learning_rows(issue: str):
                 "prediction_type": "live_prediction",
                 "verification_status": "verified",
                 "learned_status": "learned",
+                "predicted_count": top_n,
+                "predicted_numbers": list(range(1, top_n + 1)),
+                "prediction_snapshot": {"source_issue": issue},
                 "hit_count": 5,
             })
     return rows
