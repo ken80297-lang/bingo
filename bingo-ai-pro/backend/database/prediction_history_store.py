@@ -3691,7 +3691,12 @@ def get_prediction_history_records(limit: int = 100) -> list[dict]:
     return records
 
 
-def get_prediction_history_summary_records(\n    limit: int = 100,\n    *,\n    diagnostic_component: str | None = None,\n    include_event_metadata: bool = True,\n) -> list[dict]:
+def get_prediction_history_summary_records(
+    limit: int = 100,
+    *,
+    diagnostic_component: str | None = None,
+    include_event_metadata: bool = True,
+) -> list[dict]:
     total_started = time.perf_counter()
     diagnostics_enabled = diagnostic_component == "card_two_history"
     _ensure_initialized()
