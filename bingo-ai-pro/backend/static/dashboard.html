@@ -1712,8 +1712,6 @@
         : (data.next && data.next.laowanjia) || {};
       const history = player ? (player.history || {}) : (data.next && data.next.history) || {};
       const alerts = player && player.next_prediction ? (player.next_prediction.alerts || {}) : (data.next && data.next.alerts) || {};
-      const previousVerification = player ? (player.previous_verification || {}) : {};
-      window.__previousVerification = previousVerification || {};
       const currentDraw = player ? (player.current_draw || {}) : {};
       const counts = player ? (player.data_counts || {}) : {};
       const sync = player ? (player.sync || {}) : (data.system || {});
@@ -1732,9 +1730,9 @@
         console.warn("[dashboard] card one render failed", error);
       }
       renderCardTwo(cardTwo);
-      renderCardThree(cardThree, previousVerification);
+      renderCardThree(cardThree);
       renderAlerts(alerts, data.analysisLatest || {});
-      renderHistory(history, previousVerification, counts, player ? (player.prediction_history || []) : []);
+      renderHistory(history, counts, player ? (player.prediction_history || []) : []);
       renderSync(syncForDisplay, currentDraw, counts, data.collectorStatus || {});
       renderWake(data.wakeStatus || {}, syncForDisplay || {});
       renderContinuity(data.collectorGaps || {});
@@ -2048,7 +2046,7 @@
       return `<div class="analysis-report-rule">${html}</div>`;
     }
 
-    function renderCardThree(cardThree, verification) {
+    function renderCardThree(cardThree) {
       const payload = cardThree || {};
        const system = payload.system || {};
       const sections = payload.sections || {};
@@ -2121,7 +2119,7 @@
       `;
     }
 
-    function renderHistory(history, verification, counts, historyRecords = []) {
+    function renderHistory(history, counts, historyRecords = []) {
       const records = asList(historyRecords).filter((item) => item && item.production_valid !== false && item.prediction_issue);
       if (!records.length) {
         document.getElementById("cardHistory").innerHTML = `<h2>歷史推薦紀錄</h2><div class="empty">${safe(history && history.message, "尚未累積正式推薦紀錄，系統會持續保存後續推薦。")}</div>`;
