@@ -3740,7 +3740,7 @@ def _build_player_dashboard_summary_payload(
         lambda: _timed_component_stage(
             "card_two_history",
             "prediction_history_summary_records",
-            lambda: get_prediction_history_records(100, diagnostic_component="card_two_history"),
+            lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT, diagnostic_component="card_two_history", include_event_metadata=False),
         ),
     )
 
