@@ -597,6 +597,8 @@ def startup_event() -> None:
         f"catch_up_enabled={str(CATCH_UP_SCHEDULER_ENABLED).lower()} "
         f"collector_raw={_env_raw('COLLECTOR_SCHEDULER_ENABLED')} "
         f"collector_enabled={str(COLLECTOR_SCHEDULER_ENABLED).lower()} "
+        f"latest_official_raw={_env_raw('LATEST_OFFICIAL_SCHEDULER_ENABLED')} "
+        f"latest_official_enabled={str(LATEST_OFFICIAL_SCHEDULER_ENABLED).lower()} "
         f"legacy_refresh_raw={_env_raw('LEGACY_REFRESH_SCHEDULER_ENABLED')} "
         f"legacy_refresh_enabled={str(LEGACY_REFRESH_SCHEDULER_ENABLED).lower()} "
         f"daily_recovery_raw={_env_raw('DAILY_RECOVERY_ENABLED')} "
@@ -618,6 +620,7 @@ def startup_event() -> None:
             _run_operations_db_init()
         _schedule_background_cache_jobs()
         _schedule_production_catch_up_jobs()
+        _schedule_latest_official_job()
         _schedule_collector_jobs()
         _schedule_data_quality_jobs()
         if DAILY_RECOVERY_ENABLED:
