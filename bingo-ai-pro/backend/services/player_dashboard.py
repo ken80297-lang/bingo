@@ -3174,18 +3174,6 @@ def _card_three_payload(
         "next_prediction_status": next_prediction.get("status") or "unknown",
         "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
         "sections": sections,
-        "learning": {
-            "status": "ready" if (prediction_stats or {}).get("sample_size") else "waiting_data",
-            "sample_size": (prediction_stats or {}).get("sample_size", 0),
-            "history_limit": (prediction_stats or {}).get("history_limit"),
-            "average_hits": (prediction_stats or {}).get("average_hits", 0),
-            "three_star_rate": (prediction_stats or {}).get("three_star_rate", 0),
-            "four_star_rate": (prediction_stats or {}).get("four_star_rate", 0),
-            "five_star_rate": (prediction_stats or {}).get("five_star_rate", 0),
-            "super_hit_rate": (prediction_stats or {}).get("super_hit_rate", 0),
-            "pending_learning": (prediction_stats or {}).get("pending_learning", 0),
-            "verified_waiting_learning": (prediction_stats or {}).get("verified_waiting_learning", 0),
-        },
         "data_quality": {
             "draw_count": data_counts.get("draw_count", 0),
             "prediction_count": data_counts.get("prediction_count", 0),
@@ -3206,20 +3194,6 @@ def _card_three_payload(
             "timeout_steps": timeout_steps,
             "stale_steps": stale_steps,
             "timing_steps": timings,
-        },
-        "collector": {
-            "latest_issue": sync.get("official_latest_issue") or sync.get("detected_latest_issue"),
-            "database_latest_issue": sync.get("database_latest_issue"),
-            "lag_count": sync.get("lag_count", 0),
-            "is_synced": sync.get("is_synced"),
-            "last_successful_collection": sync.get("last_successful_collection"),
-        },
-        "ai_model": {
-            "model_version": next_prediction.get("model_version") or active_release.get("model_version"),
-            "feature_version": next_prediction.get("feature_version") or active_release.get("feature_version"),
-            "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
-            "git_commit_hash": next_prediction.get("git_commit_hash") or active_release.get("git_commit_hash"),
-            "production_generation": next_prediction.get("production_generation") or production_scope.get("production_generation"),
         },
     }
 
