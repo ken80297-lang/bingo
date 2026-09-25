@@ -121,6 +121,10 @@ PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS = 4.5
 PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 2.0
 PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS = 1.0
+# Aggregates are part of dashboard consistency, not a best-effort decoration. Production
+# normally completes this query in ~1.6s, so give it a bounded window that still fits
+# inside the 4.5s global dashboard budget.
+PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS = 2.0
 PLAYER_DASHBOARD_HISTORY_LIMIT = 10
 CARD_TWO_TITLE = "📖 AI 驗證與分析報告"
 CARD_TWO_RULE_ORDER = [
@@ -3862,7 +3866,7 @@ def _build_player_dashboard_summary_payload(
         "prediction_aggregates",
         aggregates_future,
         deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+        timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
         timings=timings,
         warnings=warnings,
         fallback={},
