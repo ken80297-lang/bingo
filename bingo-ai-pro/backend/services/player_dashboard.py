@@ -3121,7 +3121,6 @@ def _card_three_payload(
     prediction_stats: dict,
     sync: dict,
     active_release: dict | None,
-    timings: list[dict],
     warnings: list[str],
     partial: bool,
 ) -> dict:
