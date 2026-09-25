@@ -335,8 +335,19 @@ def _select_collector_target_draw(database_issue: Any, source_draws: list[dict])
     if source_number is None:
         return None, source_issue, "source_latest_issue_unavailable"
 
+    by_issue = {str(draw.get("issue")): draw for draw in source_draws}
+    source_latest_draw = by_issue.get(str(source_number))
+
     if database_number is None:
-        return max(source_draws, key=lambda item: _issue_int(item.get("issue")) or 0), source_issue, None
+        return source_latest_draw, source_issue, "latest_issue_priority" if LATEST_ISSUE_PRIORITY else None
+
+    if source_number < database_number:
+        return None, source_issue, "source_latest_behind_database"
+
+    if LATEST_ISSUE_PRIORITY and not HISTORICAL_CATCHUP_ENABLED:
+        if source_number == database_number:
+            return by_issue.get(str(database_number)), source_issue, "database_already_at_source_latest"
+        return source_latest_draw, source_issue, "latest_issue_priority"
 
     target_number = database_number + 1
     if target_number > source_number:
@@ -345,11 +356,9 @@ def _select_collector_target_draw(database_issue: Any, source_draws: list[dict])
             return current_draw, source_issue, "database_already_at_source_latest"
         return None, source_issue, "target_waiting_for_source"
 
-    by_issue = {str(draw.get("issue")): draw for draw in source_draws}
     target_draw = by_issue.get(str(target_number))
     if target_draw:
         return target_draw, source_issue, None
-    source_latest_draw = by_issue.get(str(source_number))
     if source_latest_draw:
         return source_latest_draw, source_issue, "gap_jump_to_source_latest"
     return None, source_issue, "target_issue_not_in_source_page"
