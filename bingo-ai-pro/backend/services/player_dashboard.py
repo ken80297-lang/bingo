@@ -767,7 +767,6 @@ def _component_result(
     *,
     deadline: float,
     timeout_seconds: float,
-    timings: list[dict],
     warnings: list[str],
     fallback=None,
     component_metadata: dict[str, dict] | None = None,
@@ -3121,22 +3120,12 @@ def _card_three_payload(
     next_prediction: dict,
     prediction_stats: dict,
     sync: dict,
-    aggregates: dict | None,
-    production_scope: dict | None,
     active_release: dict | None,
     timings: list[dict],
     warnings: list[str],
     partial: bool,
 ) -> dict:
-    aggregates = aggregates if isinstance(aggregates, dict) else {}
-    production_scope = production_scope if isinstance(production_scope, dict) else {}
     active_release = active_release if isinstance(active_release, dict) else {}
-    timeout_steps = [item["step"] for item in timings if item.get("result") == "timeout"]
-    stale_steps = [
-        item["step"]
-        for item in timings
-        if item.get("result") in {"stale", "skipped", "error"}
-    ]
     sections = {
         "latest_processing": {
             "label": "最新處理資訊",
@@ -3174,15 +3163,7 @@ def _card_three_payload(
         "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
         "sections": sections,
         "system": {
-            "sync": sync,
-            "production_scope": production_scope,
-            "active_release": active_release,
-            "aggregates_stale": bool(aggregates.get("stale")),
-            "partial": partial,
             "warnings": warnings,
-            "timeout_steps": timeout_steps,
-            "stale_steps": stale_steps,
-            "timing_steps": timings,
         },
     }
 
@@ -3223,7 +3204,6 @@ def get_player_card_one_snapshot(
         official_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         component_metadata=component_metadata,
         dashboard_generation_id=dashboard_generation_id,
@@ -3239,7 +3219,6 @@ def get_player_card_one_snapshot(
         kuaishou_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback={},
         component_metadata=component_metadata,
@@ -3311,7 +3290,6 @@ def get_player_card_one_snapshot(
             prediction_future,
             deadline=deadline,
             timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-            timings=timings,
             warnings=warnings,
             component_metadata=component_metadata,
             dashboard_generation_id=dashboard_generation_id,
@@ -3638,7 +3616,6 @@ def _build_player_dashboard_summary_uncached() -> dict:
             total_start=total_start,
             deadline=deadline,
             warnings=warnings,
-            timings=timings,
             generated_at=generated_at,
             dashboard_generation_id=dashboard_generation_id,
             component_metadata=component_metadata,
@@ -3664,7 +3641,6 @@ def _build_player_dashboard_summary_payload(
     # deferred until after Card One to avoid starving official_draw.
     card_one = get_player_card_one_snapshot(
         deadline=deadline,
-        timings=timings,
         warnings=warnings,
         component_metadata=component_metadata,
         dashboard_generation_id=dashboard_generation_id,
@@ -3770,10 +3746,7 @@ def _build_player_dashboard_summary_payload(
             next_prediction=next_prediction,
             prediction_stats=prediction_stats,
             sync=sync,
-            aggregates=aggregates,
-            production_scope=production_scope,
             active_release=active_release,
-            timings=timings,
             warnings=warnings,
             partial=partial,
         )
@@ -3843,7 +3816,6 @@ def _build_player_dashboard_summary_payload(
         aggregates_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback={},
         component_metadata=component_metadata,
@@ -3855,7 +3827,6 @@ def _build_player_dashboard_summary_payload(
             previous_future,
             deadline=deadline,
             timeout_seconds=PLAYER_DASHBOARD_PREVIOUS_VERIFICATION_TIMEOUT_SECONDS,
-            timings=timings,
             warnings=warnings,
             component_metadata=component_metadata,
             dashboard_generation_id=dashboard_generation_id,
@@ -3873,7 +3844,6 @@ def _build_player_dashboard_summary_payload(
         card_two_history_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback=_load_component_cache("card_two_history", []),
         component_metadata=component_metadata,
@@ -3886,7 +3856,6 @@ def _build_player_dashboard_summary_payload(
         analysis_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback={},
         component_metadata=component_metadata,
@@ -3897,7 +3866,6 @@ def _build_player_dashboard_summary_payload(
         release_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback={},
         component_metadata=component_metadata,
@@ -3908,7 +3876,6 @@ def _build_player_dashboard_summary_payload(
         "production_scope",
         production_scope_payload,
         deadline=deadline,
-        timings=timings,
         warnings=warnings,
         fallback={},
         cache_name="production_scope",
@@ -3960,7 +3927,6 @@ def _build_player_dashboard_summary_payload(
         card_two_future,
         deadline=deadline,
         timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
         warnings=warnings,
         fallback=_card_two_empty(previous_target_issue),
         component_metadata=component_metadata,
@@ -4008,10 +3974,7 @@ def _build_player_dashboard_summary_payload(
         next_prediction=next_prediction,
         prediction_stats=prediction_stats,
         sync=sync,
-        aggregates=aggregates,
-        production_scope=production_scope,
         active_release=active_release,
-        timings=timings,
         warnings=warnings,
         partial=partial,
     )
