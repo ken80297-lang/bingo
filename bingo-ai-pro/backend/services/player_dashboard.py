@@ -3593,11 +3593,16 @@ def _dashboard_health(
             issue_consistent = issue_consistent and (
                 min(abs(card_two_int - item) for item in completed_lifecycle_checks) <= 1
             )
-    live_components = sum(1 for item in component_metadata.values() if item.get("source") == "live")
-    cached_components = sum(1 for item in component_metadata.values() if item.get("source") == "cache")
-    fallback_components = sum(1 for item in component_metadata.values() if item.get("source") == "fallback")
-    failed_components = sum(1 for item in component_metadata.values() if item.get("result") == "error")
-    stale_components = sum(1 for item in component_metadata.values() if item.get("stale"))
+    live_component_names = [name for name, item in component_metadata.items() if item.get("source") == "live"]
+    cached_component_names = [name for name, item in component_metadata.items() if item.get("source") == "cache"]
+    fallback_component_names = [name for name, item in component_metadata.items() if item.get("source") == "fallback"]
+    failed_component_names = [name for name, item in component_metadata.items() if item.get("result") == "error"]
+    stale_component_names = [name for name, item in component_metadata.items() if item.get("stale")]
+    live_components = len(live_component_names)
+    cached_components = len(cached_component_names)
+    fallback_components = len(fallback_component_names)
+    failed_components = len(failed_component_names)
+    stale_components = len(stale_component_names)
     status = "healthy"
     if failed_components:
         status = "broken"
@@ -3628,6 +3633,11 @@ def _dashboard_health(
         "cached_components": cached_components,
         "fallback_components": fallback_components,
         "failed_components": failed_components,
+        "live_component_names": live_component_names,
+        "cached_component_names": cached_component_names,
+        "fallback_component_names": fallback_component_names,
+        "failed_component_names": failed_component_names,
+        "stale_component_names": stale_component_names,
         "issue_consistent": issue_consistent,
         "dashboard_generation_id": generation_id,
         "official_issue": official_text,
