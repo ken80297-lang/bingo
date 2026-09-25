@@ -2800,6 +2800,7 @@ def _card_two_from_record(
     requested_issue: Any = None,
     diagnostics: dict | None = None,
     use_dashboard_read_pool: bool = False,
+    include_rules: bool = True,
 ) -> dict:
     total_started = time.perf_counter()
     if not record:
@@ -2887,29 +2888,40 @@ def _card_two_from_record(
         number_started,
         matched_count=len(matched_numbers),
     )
-    analysis_started = time.perf_counter()
-    if use_dashboard_read_pool:
-        analysis, analysis_timing = _timed_component_stage(
-            "card_two",
-            "analysis_lookup",
-            lambda: _card_two_analysis_by_issue_with_timing(record.get("issue"), use_dashboard_read_pool=True),
+    rules: list[dict] = []
+    if include_rules:
+        analysis_started = time.perf_counter()
+        if use_dashboard_read_pool:
+            analysis, analysis_timing = _timed_component_stage(
+                "card_two",
+                "analysis_lookup",
+                lambda: _card_two_analysis_by_issue_with_timing(record.get("issue"), use_dashboard_read_pool=True),
+            )
+        else:
+            analysis = _timed_component_stage(
+                "card_two",
+                "analysis_lookup",
+                lambda: _card_two_analysis_by_issue(record.get("issue")),
+            )
+            analysis_timing = {"query_count": 1 if record.get("issue") else 0, "db_calls": 1 if record.get("issue") else 0}
+        _card_two_diag_stage(
+            diagnostics,
+            "_card_two_from_record.analysis_lookup",
+            analysis_started,
+            **dict(analysis_timing or {}),
         )
+        rules_started = time.perf_counter()
+        rules = _card_two_rules(analysis, record, official_numbers, diagnostics=diagnostics)
+        _card_two_diag_stage(diagnostics, "_card_two_from_record.rule_processing", rules_started, rule_count=len(rules))
     else:
-        analysis = _timed_component_stage(
-            "card_two",
-            "analysis_lookup",
-            lambda: _card_two_analysis_by_issue(record.get("issue")),
+        _card_two_diag_stage(
+            diagnostics,
+            "_card_two_from_record.rules_deferred",
+            time.perf_counter(),
+            query_count=0,
+            db_calls=0,
+            rule_count=0,
         )
-        analysis_timing = {"query_count": 1 if record.get("issue") else 0, "db_calls": 1 if record.get("issue") else 0}
-    _card_two_diag_stage(
-        diagnostics,
-        "_card_two_from_record.analysis_lookup",
-        analysis_started,
-        **dict(analysis_timing or {}),
-    )
-    rules_started = time.perf_counter()
-    rules = _card_two_rules(analysis, record, official_numbers, diagnostics=diagnostics)
-    _card_two_diag_stage(diagnostics, "_card_two_from_record.rule_processing", rules_started, rule_count=len(rules))
     payload_started = time.perf_counter()
     result = {
         "title": CARD_TWO_TITLE,
@@ -3998,6 +4010,7 @@ def _build_player_dashboard_summary_payload(
             previous_target_issue,
             diagnostics=diagnostics,
             use_dashboard_read_pool=True,
+            include_rules=False,
         )
 
     card_two_future, _ = _submit_component(
