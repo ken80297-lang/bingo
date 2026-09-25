@@ -492,10 +492,12 @@ def test_adaptive_updater_requires_all_models_and_minimum_samples(monkeypatch):
     assert result["reason"] == "insufficient_complete_targets"
     assert saved == []
 
+    # Strict closed-loop gating is target-based. With no complete 18-record
+    # targets, legacy per-model sample rows must not bypass the gate.
     rows.append({"model_name": "balance", "sample_size": 19, "average_hits": 5.0})
     result = learning_engine.update_v7_adaptive_weights("115099901")
     assert result["status"] == "skipped"
-    assert result["reason"] == "insufficient_samples"
+    assert result["reason"] == "insufficient_complete_targets"
     assert saved == []
 
 
@@ -624,6 +626,11 @@ def test_adaptive_updater_uses_full_100_complete_target_window(monkeypatch):
         learning_engine,
         "save_adaptive_weights",
         lambda payload: saved.append(dict(payload)) or {"status": "ok", "storage": "cloud", "weight_id": 10},
+    )
+    monkeypatch.setattr(
+        learning_engine,
+        "mark_learning_weight_changed",
+        lambda issue, changed=True: {"status": "ok", "storage": "cloud", "updated": 18},
     )
 
     result = learning_engine.update_v7_adaptive_weights("115300101")
