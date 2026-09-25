@@ -631,6 +631,22 @@ def startup_event() -> None:
         f"startup_recovery_delay_seconds=8 system_status_cache_delay_seconds=5"
     )
 
+    if os.getenv("LATEST_OFFICIAL_SYNC_ON_STARTUP_ONCE", "").strip().lower() == "true":
+        try:
+            from services.latest_sync import process_latest_official_draw
+
+            latest_sync_once_result = process_latest_official_draw()
+            print(
+                "LATEST_OFFICIAL_SYNC_STARTUP_ONCE "
+                + json.dumps(latest_sync_once_result, ensure_ascii=False, sort_keys=True, default=str),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"LATEST_OFFICIAL_SYNC_STARTUP_ONCE_ERROR {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
     closed_loop_once_issue = os.getenv("CLOSED_LOOP_PREDICTION_ON_STARTUP_ISSUE", "").strip()
     if closed_loop_once_issue:
         try:
