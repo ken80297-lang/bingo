@@ -3708,7 +3708,6 @@ def get_prediction_history_summary_records(
             diagnostics_enabled=diagnostics_enabled,
             total_started=total_started,
             include_event_metadata=include_event_metadata,
-            include_event_metadata=include_event_metadata,
         )
 
 
@@ -3718,7 +3717,6 @@ def _get_prediction_history_summary_records_loaded(
     diagnostic_component: str | None,
     diagnostics_enabled: bool,
     total_started: float,
-    include_event_metadata: bool = True,
     include_event_metadata: bool = True,
 ) -> list[dict]:
     main_query_started = time.perf_counter()
