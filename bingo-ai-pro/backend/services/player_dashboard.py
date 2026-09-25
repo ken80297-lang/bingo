@@ -3471,25 +3471,21 @@ def _dashboard_health(
     *,
     official_issue: Any,
     next_prediction: dict | None,
-    previous_verification: dict | None,
     aggregates: dict | None,
     card_two_history: list[dict] | None,
     generation_id: str,
 ) -> dict:
     next_prediction = next_prediction or {}
-    previous_verification = previous_verification or {}
     aggregates = aggregates or {}
     card_two_history = card_two_history or []
     official_text = str(official_issue) if official_issue is not None else None
     prediction_source_issue = next_prediction.get("source_issue") or next_prediction.get("based_on_issue")
     prediction_target_issue = next_prediction.get("target_issue") or next_prediction.get("prediction_issue")
-    verification_issue = previous_verification.get("target_issue") or previous_verification.get("displayed_target_issue")
     aggregate_issue = aggregates.get("latest_issue")
     card_two_issue = (card_two_history[0].get("prediction_issue") if card_two_history else None)
     checks = [
         official_text,
         str(prediction_source_issue) if prediction_source_issue is not None else None,
-        str(verification_issue) if verification_issue is not None else None,
         str(aggregate_issue) if aggregate_issue is not None else None,
         str(card_two_issue) if card_two_issue is not None else None,
     ]
@@ -3510,7 +3506,7 @@ def _dashboard_health(
     # when it is historical, the completed lifecycle independently.
     completed_lifecycle_checks = [
         _as_int(item)
-        for item in (verification_issue, aggregate_issue)
+        for item in (aggregate_issue,)
         if item
     ]
     if len(completed_lifecycle_checks) > 1:
@@ -3544,16 +3540,14 @@ def _dashboard_health(
     elif stale_components:
         status = "degraded"
     logger.warning(
-        "dashboard_consistency generation_id=%s official_issue=%s prediction_source_issue=%s prediction_target_issue=%s verification_issue=%s aggregate_issue=%s card_two_issue=%s prediction_source=%s verification_source=%s aggregate_source=%s consistent=%s status=%s",
+        "dashboard_consistency generation_id=%s official_issue=%s prediction_source_issue=%s prediction_target_issue=%s aggregate_issue=%s card_two_issue=%s prediction_source=%s aggregate_source=%s consistent=%s status=%s",
         generation_id,
         official_text,
         prediction_source_issue,
         prediction_target_issue,
-        verification_issue,
         aggregate_issue,
         card_two_issue,
         (component_metadata.get("next_prediction_snapshot") or {}).get("source"),
-        (component_metadata.get("previous_verification") or {}).get("source"),
         (component_metadata.get("prediction_aggregates") or {}).get("source"),
         issue_consistent,
         status,
@@ -3574,7 +3568,6 @@ def _dashboard_health(
         "official_issue": official_text,
         "prediction_source_issue": str(prediction_source_issue) if prediction_source_issue is not None else None,
         "prediction_target_issue": str(prediction_target_issue) if prediction_target_issue is not None else None,
-        "verification_issue": str(verification_issue) if verification_issue is not None else None,
         "aggregate_issue": str(aggregate_issue) if aggregate_issue is not None else None,
         "card_two_issue": str(card_two_issue) if card_two_issue is not None else None,
     }
@@ -3767,7 +3760,6 @@ def _build_player_dashboard_summary_payload(
             component_metadata,
             official_issue=detected_latest_issue,
             next_prediction=next_prediction,
-            previous_verification=previous_verification,
             aggregates=aggregates,
             card_two_history=[],
             generation_id=dashboard_generation_id,
@@ -3999,7 +3991,6 @@ def _build_player_dashboard_summary_payload(
         component_metadata,
         official_issue=detected_latest_issue or official_issue,
         next_prediction=next_prediction,
-        previous_verification=previous_verification,
         aggregates=aggregates,
         card_two_history=card_two_history,
         generation_id=dashboard_generation_id,
