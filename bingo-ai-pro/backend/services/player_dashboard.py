@@ -3708,6 +3708,21 @@ def _build_player_dashboard_summary_payload(
     component_metadata: dict[str, dict],
 ) -> dict:
 
+    # Start Card One first so the authoritative official draw gets first access
+    # to the small dashboard read pool. Aggregate/history work is intentionally
+    # deferred until after Card One to avoid starving official_draw.
+    card_one = get_player_card_one_snapshot(
+        deadline=deadline,
+        timings=timings,
+        warnings=warnings,
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
+    )
+    current = card_one["current"]
+    official = card_one["official"]
+    next_prediction = card_one["next_prediction"]
+    detected_latest_issue = card_one["detected_latest_issue"]
+
     aggregates_future, _ = _submit_component(
         "prediction_aggregates",
         lambda: _timed_component_stage(
@@ -3729,17 +3744,6 @@ def _build_player_dashboard_summary_payload(
         ),
     )
 
-    card_one = get_player_card_one_snapshot(
-        deadline=deadline,
-        timings=timings,
-        warnings=warnings,
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    )
-    current = card_one["current"]
-    official = card_one["official"]
-    next_prediction = card_one["next_prediction"]
-    detected_latest_issue = card_one["detected_latest_issue"]
     if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
         next_prediction["sync_status"] = "database_behind"
         next_prediction["recommendation_warning"] = (
