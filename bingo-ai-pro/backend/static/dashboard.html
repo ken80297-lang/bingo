@@ -744,21 +744,8 @@
       <article class="card" id="cardNext"></article>
       <article class="card" id="cardTwo"></article>
       <article class="card" id="cardReasons"></article>
-      <article class="card" id="cardAlerts"></article>
-      <article class="card" id="cardHistory"></article>
-      <article class="card" id="cardSync"></article>
-      <article class="card" id="cardWake"></article>
-      <article class="card" id="cardContinuity"></article>
-      <article class="card" id="cardPipeline"></article>
-      <article class="card" id="cardOfficial"></article>
-      <article class="card" id="cardOperations"></article>
-      <article class="card" id="cardEvolution"></article>
     </section>
 
-    <details>
-      <summary>進階資訊 / Developer</summary>
-      <pre id="developerInfo">載入中</pre>
-    </details>
   </main>
 
   <script>
@@ -782,23 +769,11 @@
     const DASHBOARD_SLOW_STAGGER_MS = 1000;
 
     const apis = {
-      playerSummary: "/api/dashboard/player-summary",
-      next: "/api/next-prediction",
-      system: "/api/system/status",
-      official: "/api/official/statistics",
-      health: "/api/pipeline/health",
-      operations: "/api/operations/summary",
-      evolution: "/api/strategy-evolution/latest",
-      evolutionHistory: "/api/strategy-evolution/history",
-      collectorStatus: "/api/collector/status",
-      collectorGaps: "/api/collector/gaps",
-      latestSync: "/api/collector/latest-sync",
-      wakeStatus: "/api/health/wake-status",
-      analysisLatest: "/api/analysis/latest"
+      playerSummary: "/api/dashboard/player-summary"
     };
 
-    const fastApiKeys = ["playerSummary", "system", "wakeStatus"];
-    const slowApiKeys = Object.keys(apis).filter((key) => !fastApiKeys.includes(key));
+    const fastApiKeys = ["playerSummary"];
+    const slowApiKeys = [];
     const pollState = {
       latest: {},
       timers: [],
@@ -1560,12 +1535,8 @@
       stopPolling();
       if (!ensurePollingLeader()) return;
       startLeaderHeartbeat();
-      loadApiGroup(initial ? fastApiKeys : ["playerSummary", "system"]);
+      loadApiGroup(["playerSummary"]);
       scheduleTimer(() => loadApiGroup(["playerSummary"]), DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS);
-      scheduleTimer(() => loadApiGroup(["system"]), DASHBOARD_SYSTEM_INTERVAL_MS);
-      scheduleTimer(() => loadApiGroup(["latestSync"]), DASHBOARD_LATEST_SYNC_INTERVAL_MS);
-      scheduleTimer(() => loadApiGroup(["wakeStatus"], false), DASHBOARD_WAKE_STATUS_INTERVAL_MS);
-      scheduleSlowApiStagger({ immediate: false });
     }
 
     function startHiddenPolling() {
@@ -1707,49 +1678,16 @@
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const next = normalizeNext(data);
       const officialDraw = normalizeOfficialDraw(data);
-      const laowanjia = player && player.next_prediction && player.next_prediction.laowanjia
-        ? player.next_prediction.laowanjia
-        : (data.next && data.next.laowanjia) || {};
-      const history = player ? (player.history || {}) : (data.next && data.next.history) || {};
-      const alerts = player && player.next_prediction ? (player.next_prediction.alerts || {}) : (data.next && data.next.alerts) || {};
-      const currentDraw = player ? (player.current_draw || {}) : {};
-      const counts = player ? (player.data_counts || {}) : {};
-      const sync = player ? (player.sync || {}) : (data.system || {});
-      const latestSync = isUsableSyncPayload(data.latestSync) ? data.latestSync : {};
-      const syncForDisplay = Object.keys(latestSync).length ? latestSync : sync;
       const cardTwo = normalizeCardTwo(data);
       const cardThree = normalizeCardThree(data);
 
       const errorBox = document.getElementById("errorBox");
       errorBox.style.display = errors.length ? "block" : "none";
-      errorBox.textContent = errors.length ? "部分資料暫時無法取得，其他卡片已先顯示。" : "";
+      errorBox.textContent = errors.length ? "Dashboard 資料暫時無法取得。" : "";
 
-      try {
-        renderNext(next, officialDraw);
-      } catch (error) {
-        console.warn("[dashboard] card one render failed", error);
-      }
+      try { renderNext(next, officialDraw); } catch (error) { console.warn("[dashboard] card one render failed", error); }
       renderCardTwo(cardTwo);
       renderCardThree(cardThree);
-      renderAlerts(alerts, data.analysisLatest || {});
-      renderHistory(history, counts, player ? (player.prediction_history || []) : []);
-      renderSync(syncForDisplay, currentDraw, counts, data.collectorStatus || {});
-      renderWake(data.wakeStatus || {}, syncForDisplay || {});
-      renderContinuity(data.collectorGaps || {});
-      renderPipeline(data.health || {}, data.collectorStatus || {});
-      renderOfficial(data.official || {});
-      renderOperations(data.operations || {});
-      renderEvolution(data.evolution || {}, data.evolutionHistory || {});
-      document.getElementById("developerInfo").textContent = JSON.stringify({
-        system: data.system,
-        health: data.health,
-        collector: data.collectorStatus,
-        gaps: data.collectorGaps,
-        latest_sync: data.latestSync,
-        wake_status: data.wakeStatus,
-        official: data.official,
-        operations_status: data.operations && data.operations.status
-      }, null, 2);
     }
 
     function isUsableSyncPayload(payload) {
