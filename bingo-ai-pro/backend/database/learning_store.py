@@ -380,85 +380,105 @@ def upsert_learning_record(record: dict) -> dict:
 
 
 def upsert_learning_records(records: list[dict]) -> list[dict]:
-    """Upsert a batch using one cloud checkout and one transaction.
+    """Upsert a batch with one set-based cloud statement and one transaction.
 
-    The per-record conflict semantics and returned result shape stay compatible
-    with upsert_learning_record(). If the cloud batch fails, preserve the
-    existing per-record fallback behavior.
+    The conflict key and per-record result shape remain compatible with
+    upsert_learning_record(). A cloud failure preserves the existing fallback
+    path; formal callers still enforce Cloud-only success.
     """
     if not records:
         return []
     if _cloud_enabled():
         try:
-            saved: list[dict] = []
+            row_template = """(
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+            )"""
+            values_sql = ",\n".join(row_template for _ in records)
+            params = tuple(value for record in records for value in _record_params(record))
             with _cloud_connection() as conn:
                 with conn.cursor() as cur:
-                    for record in records:
-                        cur.execute(
-                            """
-                            insert into learning_history
-                            (
-                                issue, source_issue, target_issue, history_cutoff_issue,
-                                prediction_created_at, draw_time, model_name, model_version, prediction_type,
-                                predicted_numbers, predicted_scores, model_weight, official_numbers, hit_numbers,
-                                predicted_count, hit_count, precision_score, official_coverage,
-                                rank_score, top_n, prediction_snapshot,
-                                analysis_snapshot, verification_status, learned_status, learned_at,
-                                error_message, production_generation, sample_issue, snapshot_status,
-                                feature_version, model_version_before, model_version_after,
-                                weight_changed, applied_to_prediction_issue, resolved_at,
-                                resolved_to_issue, updated_at
-                            )
-                            values (
-                                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
-                                %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
-                            )
-                            on conflict (issue, model_name, model_version, prediction_type, top_n)
-                            do update set
-                                draw_time = excluded.draw_time,
-                                source_issue = excluded.source_issue,
-                                target_issue = excluded.target_issue,
-                                history_cutoff_issue = excluded.history_cutoff_issue,
-                                prediction_created_at = coalesce(learning_history.prediction_created_at, excluded.prediction_created_at),
-                                predicted_numbers = excluded.predicted_numbers,
-                                predicted_scores = excluded.predicted_scores,
-                                model_weight = excluded.model_weight,
-                                official_numbers = excluded.official_numbers,
-                                hit_numbers = excluded.hit_numbers,
-                                predicted_count = excluded.predicted_count,
-                                hit_count = excluded.hit_count,
-                                precision_score = excluded.precision_score,
-                                official_coverage = excluded.official_coverage,
-                                rank_score = excluded.rank_score,
-                                prediction_snapshot = excluded.prediction_snapshot,
-                                analysis_snapshot = excluded.analysis_snapshot,
-                                verification_status = excluded.verification_status,
-                                learned_status = excluded.learned_status,
-                                learned_at = excluded.learned_at,
-                                error_message = excluded.error_message,
-                                production_generation = excluded.production_generation,
-                                sample_issue = excluded.sample_issue,
-                                snapshot_status = excluded.snapshot_status,
-                                feature_version = excluded.feature_version,
-                                model_version_before = excluded.model_version_before,
-                                model_version_after = excluded.model_version_after,
-                                weight_changed = excluded.weight_changed,
-                                applied_to_prediction_issue = excluded.applied_to_prediction_issue,
-                                resolved_at = excluded.resolved_at,
-                                resolved_to_issue = excluded.resolved_to_issue,
-                                updated_at = now()
-                            returning id
-                            """,
-                            _record_params(record),
-                            prepare=False,
+                    cur.execute(
+                        f"""
+                        insert into learning_history
+                        (
+                            issue, source_issue, target_issue, history_cutoff_issue,
+                            prediction_created_at, draw_time, model_name, model_version, prediction_type,
+                            predicted_numbers, predicted_scores, model_weight, official_numbers, hit_numbers,
+                            predicted_count, hit_count, precision_score, official_coverage,
+                            rank_score, top_n, prediction_snapshot,
+                            analysis_snapshot, verification_status, learned_status, learned_at,
+                            error_message, production_generation, sample_issue, snapshot_status,
+                            feature_version, model_version_before, model_version_after,
+                            weight_changed, applied_to_prediction_issue, resolved_at,
+                            resolved_to_issue, updated_at
                         )
-                        saved.append({"status": "ok", "storage": "cloud", "id": int(cur.fetchone()[0])})
+                        values {values_sql}
+                        on conflict (issue, model_name, model_version, prediction_type, top_n)
+                        do update set
+                            draw_time = excluded.draw_time,
+                            source_issue = excluded.source_issue,
+                            target_issue = excluded.target_issue,
+                            history_cutoff_issue = excluded.history_cutoff_issue,
+                            prediction_created_at = coalesce(learning_history.prediction_created_at, excluded.prediction_created_at),
+                            predicted_numbers = excluded.predicted_numbers,
+                            predicted_scores = excluded.predicted_scores,
+                            model_weight = excluded.model_weight,
+                            official_numbers = excluded.official_numbers,
+                            hit_numbers = excluded.hit_numbers,
+                            predicted_count = excluded.predicted_count,
+                            hit_count = excluded.hit_count,
+                            precision_score = excluded.precision_score,
+                            official_coverage = excluded.official_coverage,
+                            rank_score = excluded.rank_score,
+                            prediction_snapshot = excluded.prediction_snapshot,
+                            analysis_snapshot = excluded.analysis_snapshot,
+                            verification_status = excluded.verification_status,
+                            learned_status = excluded.learned_status,
+                            learned_at = excluded.learned_at,
+                            error_message = excluded.error_message,
+                            production_generation = excluded.production_generation,
+                            sample_issue = excluded.sample_issue,
+                            snapshot_status = excluded.snapshot_status,
+                            feature_version = excluded.feature_version,
+                            model_version_before = excluded.model_version_before,
+                            model_version_after = excluded.model_version_after,
+                            weight_changed = excluded.weight_changed,
+                            applied_to_prediction_issue = excluded.applied_to_prediction_issue,
+                            resolved_at = excluded.resolved_at,
+                            resolved_to_issue = excluded.resolved_to_issue,
+                            updated_at = now()
+                        returning id, issue, model_name, model_version, prediction_type, top_n
+                        """,
+                        params,
+                        prepare=False,
+                    )
+                    returned = cur.fetchall()
                 conn.commit()
-            return saved
+            ids = {
+                (str(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5] or 0)): int(row[0])
+                for row in returned
+            }
+            return [
+                {
+                    "status": "ok",
+                    "storage": "cloud",
+                    "id": ids[
+                        (
+                            str(record.get("issue")),
+                            str(record.get("model_name")),
+                            str(record.get("model_version")),
+                            str(record.get("prediction_type")),
+                            int(record.get("top_n") or 0),
+                        )
+                    ],
+                }
+                for record in records
+            ]
         except Exception:
-            logger.exception("cloud learning_history batch upsert failed; using existing fallback path")
+            logger.exception("cloud learning_history set-based upsert failed; using existing fallback path")
     return [upsert_learning_record(record) for record in records]
 
 def _query_cloud(sql: str, params: tuple = ()) -> list[Any]:
