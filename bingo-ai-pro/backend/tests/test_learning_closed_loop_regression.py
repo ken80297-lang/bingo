@@ -855,9 +855,18 @@ def test_verified_learning_rejects_zero_cloud_learning_used_updates(monkeypatch)
     assert adaptive_calls == ["115700001"]
 
 
+def test_closed_loop_prediction_once_disabled_by_default(monkeypatch):
+    from api import runtime_diagnostics
+
+    monkeypatch.delenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", raising=False)
+    result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
+    assert result == {"status": "rejected", "reason": "diagnostic_disabled", "issue": "115054089"}
+
+
 def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch):
     from api import runtime_diagnostics
 
+    monkeypatch.setenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "true")
     monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [])
     result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
     assert result == {"status": "rejected", "reason": "verified_official_draw_required", "issue": "115054089"}
@@ -866,6 +875,7 @@ def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch
 def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypatch):
     from api import runtime_diagnostics
 
+    monkeypatch.setenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "true")
     monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [{"issue": "115054089", "numbers": list(range(1, 21))}])
     captured = {}
     def fake_create(issue, **kwargs):

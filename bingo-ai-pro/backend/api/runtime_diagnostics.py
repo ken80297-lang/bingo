@@ -155,6 +155,8 @@ def api_closed_loop_prediction_once(issue: str) -> dict:
     from services.prediction_service import create_for_official_draw
 
     normalized = str(issue or "").strip()
+    if os.getenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "").strip().lower() != "true":
+        return {"status": "rejected", "reason": "diagnostic_disabled", "issue": normalized}
     if not normalized.isdigit() or len(normalized) < 6:
         return {"status": "rejected", "reason": "invalid_issue", "issue": normalized}
     official = next((row for row in get_draw_history(200) if str(row.get("issue")) == normalized), None)
