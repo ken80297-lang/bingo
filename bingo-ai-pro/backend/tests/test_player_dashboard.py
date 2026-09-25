@@ -60,6 +60,7 @@ def _prediction() -> dict:
 def test_player_dashboard_component_timeout_defaults():
     assert player_dashboard.PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS == 2.0
     assert player_dashboard.PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS == 1.0
+    assert player_dashboard.PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS == 2.0
     assert player_dashboard.PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS == 4.5
 
 
