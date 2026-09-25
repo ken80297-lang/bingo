@@ -863,19 +863,70 @@ def test_closed_loop_prediction_once_disabled_by_default(monkeypatch):
     assert result == {"status": "rejected", "reason": "diagnostic_disabled", "issue": "115054089"}
 
 
+class _ClosedLoopVerificationCursor:
+    def __init__(self, row):
+        self.row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql, params):
+        assert "official_draw_history" in sql
+        assert "verification_status = 'validated'" in sql
+        assert params == ("115054089",)
+
+    def fetchone(self):
+        return self.row
+
+
+class _ClosedLoopVerificationConnection:
+    def __init__(self, row):
+        self.row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return _ClosedLoopVerificationCursor(self.row)
+
+
 def test_closed_loop_prediction_once_requires_verified_official_draw(monkeypatch):
     from api import runtime_diagnostics
+    import database
 
     monkeypatch.setenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "true")
+    monkeypatch.setattr(database, "get_connection", lambda: _ClosedLoopVerificationConnection(None))
     monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [])
     result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
     assert result == {"status": "rejected", "reason": "verified_official_draw_required", "issue": "115054089"}
 
 
-def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypatch):
+def test_closed_loop_prediction_once_fails_closed_when_verification_store_unavailable(monkeypatch):
     from api import runtime_diagnostics
+    import database
 
     monkeypatch.setenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "true")
+
+    def fail_connection():
+        raise RuntimeError("verification store unavailable")
+
+    monkeypatch.setattr(database, "get_connection", fail_connection)
+    result = runtime_diagnostics.api_closed_loop_prediction_once("115054089")
+    assert result == {"status": "rejected", "reason": "official_verification_unavailable", "issue": "115054089"}
+
+
+def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypatch):
+    from api import runtime_diagnostics
+    import database
+
+    monkeypatch.setenv("ENABLE_CLOSED_LOOP_PRODUCTION_DIAGNOSTIC", "true")
+    monkeypatch.setattr(database, "get_connection", lambda: _ClosedLoopVerificationConnection((list(range(1, 21)),)))
     monkeypatch.setattr("database.collector_store.get_draw_history", lambda limit=200: [{"issue": "115054089", "numbers": list(range(1, 21))}])
     captured = {}
     def fake_create(issue, **kwargs):
