@@ -2199,6 +2199,19 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
     source = analysis or {}
     snapshot = _rule_snapshot_for_dashboard(source, prediction)
     snapshot_rules = snapshot.get("rules") or []
+    summary = snapshot.get("dashboard_analysis_summary")
+    if not isinstance(summary, dict):
+        summary = {
+            "laowanjia_score": source.get("laowanjia_score"),
+            "hot_zone": source.get("hot_zone") or [],
+            "cold_zone": source.get("cold_zone"),
+            "three_star": source.get("three_star"),
+            "four_star": source.get("four_star"),
+            "five_star": source.get("five_star"),
+            "six_star": source.get("six_star"),
+            "super_number_trajectory_recovery": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
+            "cluster_aftershock_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
+        }
     rules = [_rule_snapshot_item_to_dashboard(item) for item in snapshot_rules]
     completed = sum(1 for item in rules if item.get("status") == "ready")
     labels_by_key = {key: label for key, label in RULE_LIBRARY_NAMES}
@@ -2231,17 +2244,17 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         "summary": f"本期主要依據：{'、'.join(primary[:3])}" if primary else "尚未建立完整分析摘要",
         "primary_rules": primary,
         "rules": rules,
-        "laowanjia_index": source.get("laowanjia_score"),
-        "hot_zones": source.get("hot_zone") or [],
-        "cold_zone": source.get("cold_zone"),
+        "laowanjia_index": summary.get("laowanjia_score"),
+        "hot_zones": summary.get("hot_zone") or [],
+        "cold_zone": summary.get("cold_zone"),
         "star_prediction": {
-            "three_star": source.get("three_star"),
-            "four_star": source.get("four_star"),
-            "five_star": source.get("five_star"),
-            "six_star": source.get("six_star"),
+            "three_star": summary.get("three_star"),
+            "four_star": summary.get("four_star"),
+            "five_star": summary.get("five_star"),
+            "six_star": summary.get("six_star"),
         },
-        "super_trajectory": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
-        "cluster_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
+        "super_trajectory": summary.get("super_number_trajectory_recovery") or {},
+        "cluster_recovery": summary.get("cluster_aftershock_recovery") or {},
     }
 
 
