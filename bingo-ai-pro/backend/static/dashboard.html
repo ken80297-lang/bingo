@@ -914,11 +914,6 @@
       return !Number.isNaN(new Date(normalized).getTime());
     };
 
-    const sortPairs = (pairs) => asList(pairs)
-      .map((pair) => normalizeNumbers(pair).slice(0, 2))
-      .filter((pair) => pair.length === 2)
-      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-
     const formatDateTime = (value) => {
       if (!value) return "尚無資料";
       const rawText = String(value).trim();
@@ -1430,16 +1425,6 @@
         high_probability_numbers: normalizeNumbers(rawHighProbability),
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
-        super_number: raw.super_number,
-        three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
-        four_star: normalizeNumbers(raw.four_star || asList(raw.main_numbers).slice(0, 4)),
-        five_star: normalizeNumbers(raw.five_star || []),
-        six_star: normalizeNumbers(raw.six_star || []),
-        consecutive: sortPairs(raw.consecutive || []),
-        tails: normalizeNumbers(raw.tails || []),
-        big_small: raw.big_small,
-        odd_even: raw.odd_even,
-        source: raw.source,
         phase: raw.phase || release.phase || "28",
         release_version: raw.release_version || release.release_version,
         git_commit_hash: gitCommit,
