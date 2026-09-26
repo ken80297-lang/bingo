@@ -1406,13 +1406,6 @@
         prediction_issue: raw.prediction_issue || raw.target_issue,
         based_on_issue: raw.based_on_issue || raw.source_issue,
         based_on_draw_time: raw.based_on_draw_time || raw.source_draw_time,
-        based_on_draw_exists: raw.based_on_draw_exists,
-        status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
-        stale_status: raw.stale_status,
-        lag_issues: raw.lag_issues,
-        expected_draw_time: raw.expected_draw_time,
-        target_draw_time: raw.target_draw_time || raw.expected_draw_time,
-        generated_at: raw.generated_at || raw.created_at,
         confidence: raw.confidence,
         confidence_available: Number.isFinite(Number(rawConfidence)),
         confidence_percent: confidencePercentValue(rawConfidence),
@@ -1423,7 +1416,6 @@
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
         component_metadata: componentMeta,
-        reasons: raw.reasons || [],
         rule_library: raw.rule_library || cardOne.rule_library || {}
       };
     }
