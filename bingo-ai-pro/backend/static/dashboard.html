@@ -1405,7 +1405,7 @@
       const cardOne = player && player.card_one ? player.card_one : {};
       const raw = cardOne.next_prediction || (player && player.next_prediction) || {};
       const componentMeta = raw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
-      const release = (player && (player.active_release || player.release)) || {};
+      const release = (player && player.active_release) || {};
       const scope = (player && player.production_scope) || {};
       const gitCommit = raw.git_commit_hash || release.git_commit_hash || "";
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
