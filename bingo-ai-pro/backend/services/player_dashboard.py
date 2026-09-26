@@ -3920,7 +3920,6 @@ def _build_player_dashboard_summary_payload(
         "active_release": active_release,
         "sync": sync,
         "card_one": card_one_payload,
-        "next_prediction": next_prediction,
         "card_two": card_two,
         "card_three": card_three_payload,
         "previous_verification": previous_verification,
