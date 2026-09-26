@@ -13,14 +13,12 @@ from services import player_dashboard
 
 
 def _reset_dashboard_state() -> None:
-    player_dashboard._PLAYER_SUMMARY_CACHE["payload"] = None
-    player_dashboard._PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
-    for key, value in list(player_dashboard._PLAYER_COMPONENT_CACHE.items()):
-        player_dashboard._PLAYER_COMPONENT_CACHE[key] = [] if isinstance(value, list) else None
+    # Use the production invalidation path so late futures from a prior test
+    # cannot repopulate the next test's component cache generation.
+    player_dashboard.invalidate_player_dashboard_cache("test_reset")
     player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {}
     player_dashboard._PLAYER_COMPONENT_CACHE["analysis"] = {}
     player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
-    player_dashboard._PLAYER_COMPONENT_IN_FLIGHT.clear()
     for key in player_dashboard._PLAYER_RUNTIME_METRICS:
         player_dashboard._PLAYER_RUNTIME_METRICS[key] = 0
 
