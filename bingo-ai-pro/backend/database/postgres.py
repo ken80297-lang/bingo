@@ -77,6 +77,11 @@ def _get_dashboard_read_pool():
         return _DASHBOARD_READ_POOL
 
 
+def wait_for_dashboard_read_pool(timeout: float) -> None:
+    pool = _get_dashboard_read_pool()
+    pool.wait(timeout=timeout)
+
+
 @contextmanager
 def dashboard_read_connection():
     pool = _get_dashboard_read_pool()
