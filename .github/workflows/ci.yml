@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dashboard-rule-library-from-snapshot-summary
   schedule:
     - cron: '0 2 * * *'
 
@@ -20,7 +21,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install backend dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
       - name: Run backend lint / tests
         run: python -m pytest -q
 
