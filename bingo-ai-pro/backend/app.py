@@ -762,32 +762,11 @@ def startup_event() -> None:
                 ready = False
                 for attempt in range(1, 7):
                     try:
-                        warmup_started = threading.Event()
-                        warmup_error: list[Exception] = []
-
-                        def _warm_dashboard_connection() -> None:
-                            try:
-                                with dashboard_read_connection() as conn:
-                                    warmup_started.set()
-                                    with conn.cursor() as cur:
-                                        cur.execute("select 1")
-                                        cur.fetchone()
-                            except Exception as exc:
-                                warmup_error.append(exc)
-                                warmup_started.set()
-
-                        warmup_thread = threading.Thread(target=_warm_dashboard_connection)
-                        warmup_thread.start()
-                        warmup_started.wait(timeout=2.0)
-                        with dashboard_read_connection() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute("select 1")
-                                cur.fetchone()
-                        warmup_thread.join(timeout=2.0)
-                        if warmup_thread.is_alive():
-                            raise RuntimeError("dashboard read pool warm-up timed out")
-                        if warmup_error:
-                            raise warmup_error[0]
+                        for _ in range(2):
+                            with dashboard_read_connection() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("select 1")
+                                    cur.fetchone()
                         ready = True
                         print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_READY attempt={attempt} warmed_connections=2", flush=True)
                         break
