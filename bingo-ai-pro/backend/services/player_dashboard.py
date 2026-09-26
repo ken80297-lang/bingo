@@ -3135,11 +3135,13 @@ def _card_three_payload(
     sections = {
         "latest_processing": {
             "label": "最新處理資訊",
-                "last_successful_collection": sync.get("last_successful_collection"),
+            "current_issue": (current_draw or {}).get("issue"),
+            "last_successful_collection": sync.get("last_successful_collection"),
         },
         "ai_flow": {
             "label": "AI 流程",
-            },
+            "next_prediction_status": next_prediction.get("status") or "unknown",
+        },
         "system_health": {
             "label": "系統健康",
             "status": "partial" if partial else "ok",
@@ -3162,14 +3164,11 @@ def _card_three_payload(
     return {
         "title": "🤖 AI 運作中心",
         "status": "partial" if partial else "ok",
-        "current_issue": (current_draw or {}).get("issue"),
-        "next_prediction_status": next_prediction.get("status") or "unknown",
         "sections": sections,
         "system": {
             "warnings": warnings,
         },
     }
-
 
 def _last_summary_cache() -> dict | None:
     if not _PLAYER_SUMMARY_CACHE_LOCK.acquire(blocking=False):
