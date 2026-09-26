@@ -3918,7 +3918,6 @@ def _build_player_dashboard_summary_payload(
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
-        "sync": sync,
         "card_one": card_one_payload,
         "card_two": card_two,
         "card_three": card_three_payload,
