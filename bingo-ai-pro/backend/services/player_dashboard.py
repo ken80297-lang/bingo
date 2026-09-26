@@ -2202,7 +2202,22 @@ def _rule_library(
     snapshot: dict | None = None,
 ) -> dict:
     source = analysis or {}
-    snapshot = snapshot if isinstance(snapshot, dict) else _rule_snapshot_for_dashboard(source, prediction)
+    if isinstance(snapshot, dict):
+        if not snapshot:
+            source_issue = _valid_production_issue(
+                source.get("issue") or prediction.get("issue") or prediction.get("based_on_issue")
+            )
+            target_issue = _valid_production_issue(
+                prediction.get("prediction_issue") or prediction.get("target_issue")
+            )
+            snapshot = build_rule_snapshot(
+                source,
+                prediction,
+                source_issue=source_issue,
+                target_issue=target_issue,
+            )
+    else:
+        snapshot = _rule_snapshot_for_dashboard(source, prediction)
     snapshot_rules = snapshot.get("rules") or []
     summary = snapshot.get("dashboard_analysis_summary")
     if not isinstance(summary, dict):
@@ -3839,7 +3854,7 @@ def _build_player_dashboard_summary_payload(
     rule_library = _rule_library(
         analysis,
         next_prediction,
-        snapshot=rule_snapshot if rule_snapshot else None,
+        snapshot=rule_snapshot,
     )
     _store_component_cache("rule_library", rule_library)
     next_prediction["rule_library"] = rule_library
