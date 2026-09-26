@@ -3921,7 +3921,6 @@ def _build_player_dashboard_summary_payload(
         "card_one": card_one_payload,
         "card_two": card_two,
         "card_three": card_three_payload,
-        "prediction_history": production_history,
         "data_counts": data_counts,
         "history": prediction_stats,
         "aggregates": aggregates if isinstance(aggregates, dict) else {},
