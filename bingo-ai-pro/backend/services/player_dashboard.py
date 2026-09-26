@@ -3900,20 +3900,14 @@ def _build_player_dashboard_summary_payload(
             include_rules=False,
         )
 
-    card_two_future, _ = _submit_component(
+    card_two = _run_inline_step(
         "card_two",
         build_card_two_snapshot,
-    )
-    card_two = _component_result(
-        "card_two",
-        card_two_future,
         deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
         timings=timings,
         warnings=warnings,
         fallback=_card_two_empty(previous_target_issue),
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
+        cache_name="card_two",
     ) or _card_two_empty(previous_target_issue)
 
     database_issue = (current or {}).get("issue")
