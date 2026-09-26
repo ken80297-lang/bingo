@@ -3860,6 +3860,7 @@ def _build_player_dashboard_summary_payload(
         "production_scope",
         production_scope_payload,
         deadline=deadline,
+        timings=timings,
         warnings=warnings,
         fallback={},
         cache_name="production_scope",
