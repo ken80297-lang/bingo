@@ -762,13 +762,18 @@ def startup_event() -> None:
                 for attempt in range(1, 7):
                     try:
                         warmup_started = threading.Event()
+                        warmup_error: list[Exception] = []
 
                         def _warm_dashboard_connection() -> None:
-                            with dashboard_read_connection() as conn:
+                            try:
+                                with dashboard_read_connection() as conn:
+                                    warmup_started.set()
+                                    with conn.cursor() as cur:
+                                        cur.execute("select 1")
+                                        cur.fetchone()
+                            except Exception as exc:
+                                warmup_error.append(exc)
                                 warmup_started.set()
-                                with conn.cursor() as cur:
-                                    cur.execute("select 1")
-                                    cur.fetchone()
 
                         warmup_thread = threading.Thread(target=_warm_dashboard_connection)
                         warmup_thread.start()
@@ -780,6 +785,8 @@ def startup_event() -> None:
                         warmup_thread.join(timeout=2.0)
                         if warmup_thread.is_alive():
                             raise RuntimeError("dashboard read pool warm-up timed out")
+                        if warmup_error:
+                            raise warmup_error[0]
                         ready = True
                         print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_READY attempt={attempt} warmed_connections=2", flush=True)
                         break
