@@ -3542,7 +3542,7 @@ def _dashboard_health(
     elif stale_components:
         status = "degraded"
     logger.warning(
-        "dashboard_consistency generation_id=%s official_issue=%s prediction_source_issue=%s prediction_target_issue=%s aggregate_issue=%s card_two_issue=%s prediction_source=%s aggregate_source=%s consistent=%s status=%s",
+        "dashboard_consistency generation_id=%s official_issue=%s prediction_source_issue=%s prediction_target_issue=%s aggregate_issue=%s card_two_issue=%s prediction_source=%s aggregate_source=%s consistent=%s status=%s cached=%s fallback=%s stale=%s",
         generation_id,
         official_text,
         prediction_source_issue,
@@ -3553,6 +3553,9 @@ def _dashboard_health(
         (component_metadata.get("prediction_aggregates") or {}).get("source"),
         issue_consistent,
         status,
+        cached_component_names,
+        fallback_component_names,
+        stale_component_names,
     )
     return {
         "status": status,
