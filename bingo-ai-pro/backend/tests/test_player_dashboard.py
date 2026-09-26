@@ -200,3 +200,85 @@ def test_player_summary_late_component_result_populates_cache(monkeypatch):
 
     cached = player_dashboard._PLAYER_COMPONENT_CACHE.get("official_draw")
     assert cached["issue"] == "115040900"
+
+
+def test_rule_library_prefers_snapshot_dashboard_analysis_summary(monkeypatch):
+    analysis = {
+        "laowanjia_score": 1,
+        "hot_zone": ["legacy-hot"],
+        "cold_zone": ["legacy-cold"],
+        "three_star": [["legacy"]],
+        "ai_score": {
+            "super_number_trajectory_recovery": {"confidence": 1},
+            "cluster_aftershock_recovery": {"confidence": 2},
+        },
+    }
+    snapshot_summary = {
+        "laowanjia_score": 72.5,
+        "hot_zone": ["01-10"],
+        "cold_zone": ["71-80"],
+        "three_star": [[1, 2, 3]],
+        "four_star": [[1, 2, 3, 4]],
+        "five_star": None,
+        "six_star": None,
+        "super_number_trajectory_recovery": {"confidence": 70, "candidate_numbers": [40, 41]},
+        "cluster_aftershock_recovery": {"confidence": 66, "candidate_numbers": [15, 16]},
+    }
+    monkeypatch.setattr(
+        player_dashboard,
+        "_rule_snapshot_for_dashboard",
+        lambda source, prediction: {
+            "rules": [],
+            "aggregate": {},
+            "dashboard_analysis_summary": snapshot_summary,
+        },
+    )
+
+    result = player_dashboard._rule_library(analysis, _prediction())
+
+    assert result["laowanjia_index"] == 72.5
+    assert result["hot_zones"] == ["01-10"]
+    assert result["cold_zone"] == ["71-80"]
+    assert result["star_prediction"] == {
+        "three_star": [[1, 2, 3]],
+        "four_star": [[1, 2, 3, 4]],
+        "five_star": None,
+        "six_star": None,
+    }
+    assert result["super_trajectory"] == {"confidence": 70, "candidate_numbers": [40, 41]}
+    assert result["cluster_recovery"] == {"confidence": 66, "candidate_numbers": [15, 16]}
+
+
+def test_rule_library_falls_back_to_legacy_analysis_without_snapshot_summary(monkeypatch):
+    analysis = {
+        "laowanjia_score": 61.5,
+        "hot_zone": ["11-20"],
+        "cold_zone": ["61-70"],
+        "three_star": [[3, 4, 5]],
+        "four_star": [[3, 4, 5, 6]],
+        "five_star": None,
+        "six_star": None,
+        "ai_score": {
+            "super_number_trajectory_recovery": {"confidence": 55, "candidate_numbers": [30]},
+            "cluster_aftershock_recovery": {"confidence": 54, "candidate_numbers": [31]},
+        },
+    }
+    monkeypatch.setattr(
+        player_dashboard,
+        "_rule_snapshot_for_dashboard",
+        lambda source, prediction: {"rules": [], "aggregate": {}},
+    )
+
+    result = player_dashboard._rule_library(analysis, _prediction())
+
+    assert result["laowanjia_index"] == analysis["laowanjia_score"]
+    assert result["hot_zones"] == analysis["hot_zone"]
+    assert result["cold_zone"] == analysis["cold_zone"]
+    assert result["star_prediction"] == {
+        "three_star": analysis["three_star"],
+        "four_star": analysis["four_star"],
+        "five_star": None,
+        "six_star": None,
+    }
+    assert result["super_trajectory"] == analysis["ai_score"]["super_number_trajectory_recovery"]
+    assert result["cluster_recovery"] == analysis["ai_score"]["cluster_aftershock_recovery"]
