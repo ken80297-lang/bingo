@@ -2305,17 +2305,6 @@ def _rule_snapshot_for_dashboard(
             else:
                 stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
             snapshot = (stored or {}).get("snapshot_json") if isinstance(stored, dict) else None
-            _card_two_diag_stage(
-                diagnostics,
-                "_card_two_rules.rule_snapshot_lookup",
-                lookup_started,
-                **dict(lookup_timing or {}),
-                found=bool(stored),
-                snapshot_valid=isinstance(snapshot, dict) and bool(snapshot.get("rules")),
-                source_issue=source_issue,
-                target_issue=target_issue,
-                hidden_db_calls=int((lookup_timing or {}).get("db_calls") or 0),
-            )
             snapshot_source_issue = _valid_production_issue(snapshot.get("source_issue")) if isinstance(snapshot, dict) else None
             snapshot_target_issue = _valid_production_issue(snapshot.get("target_issue")) if isinstance(snapshot, dict) else None
             snapshot_issue_match = (
@@ -2323,7 +2312,22 @@ def _rule_snapshot_for_dashboard(
                 and (not snapshot_source_issue or snapshot_source_issue == source_issue)
                 and (not target_issue or not snapshot_target_issue or snapshot_target_issue == target_issue)
             )
-            if snapshot_issue_match and snapshot.get("rules"):
+            snapshot_valid = bool(snapshot_issue_match and snapshot.get("rules"))
+            _card_two_diag_stage(
+                diagnostics,
+                "_card_two_rules.rule_snapshot_lookup",
+                lookup_started,
+                **dict(lookup_timing or {}),
+                found=bool(stored),
+                snapshot_valid=snapshot_valid,
+                snapshot_issue_match=snapshot_issue_match,
+                source_issue=source_issue,
+                target_issue=target_issue,
+                snapshot_source_issue=snapshot_source_issue,
+                snapshot_target_issue=snapshot_target_issue,
+                hidden_db_calls=int((lookup_timing or {}).get("db_calls") or 0),
+            )
+            if snapshot_valid:
                 return snapshot
         except Exception:
             logger.exception("dashboard rule snapshot lookup failed")
