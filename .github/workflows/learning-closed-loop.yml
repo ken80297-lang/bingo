@@ -14,8 +14,6 @@ on:
       - "bingo-ai-pro/backend/services/voting_engine.py"
       - "bingo-ai-pro/backend/tests/test_learning_closed_loop_regression.py"
       - ".github/workflows/learning-closed-loop.yml"
-      - "bingo-ai-pro/backend/services/player_dashboard.py"
-      - "bingo-ai-pro/backend/tests/test_player_dashboard.py"
   workflow_dispatch:
 
 jobs:
