@@ -2320,8 +2320,8 @@ def _rule_snapshot_for_dashboard(
             snapshot_target_issue = _valid_production_issue(snapshot.get("target_issue")) if isinstance(snapshot, dict) else None
             snapshot_issue_match = (
                 isinstance(snapshot, dict)
-                and snapshot_source_issue == source_issue
-                and (not target_issue or snapshot_target_issue == target_issue)
+                and (not snapshot_source_issue or snapshot_source_issue == source_issue)
+                and (not target_issue or not snapshot_target_issue or snapshot_target_issue == target_issue)
             )
             if snapshot_issue_match and snapshot.get("rules"):
                 return snapshot
