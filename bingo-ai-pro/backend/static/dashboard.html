@@ -1350,7 +1350,7 @@
       pollState.leaderHeartbeatTimer = null;
     }
 
-    function startVisiblePolling({ initial = false } = {}) {
+    function startVisiblePolling() {
       stopPolling();
       if (!ensurePollingLeader()) return;
       startLeaderHeartbeat();
@@ -1365,7 +1365,7 @@
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        startVisiblePolling({ initial: false });
+        startVisiblePolling();
       } else {
         startHiddenPolling();
       }
@@ -1387,7 +1387,7 @@
         }
         if (event.key === DASHBOARD_LEADER_KEY && document.visibilityState === "visible" && !pollState.isLeader) {
           const lease = safeReadLeaderLease();
-          if (!lease || Number(lease.expiresAt || 0) <= Date.now()) startVisiblePolling({ initial: false });
+          if (!lease || Number(lease.expiresAt || 0) <= Date.now()) startVisiblePolling();
         }
       });
     }
@@ -1814,7 +1814,7 @@
       loadApiGroup(["playerSummary"]);
     });
     if (document.visibilityState === "visible") {
-      startVisiblePolling({ initial: true });
+      startVisiblePolling();
     } else {
       startHiddenPolling();
     }
