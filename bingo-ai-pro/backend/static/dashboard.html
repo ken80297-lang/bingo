@@ -833,12 +833,6 @@
       return n.toFixed(2).replace(/\.?0+$/, "");
     };
 
-    const percent = (value) => {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return "0%";
-      return `${fmtNumber(n > 1 ? n : n * 100)}%`;
-    };
-
     const confidencePercentValue = (value, fallback = 0) => {
       const n = Number(value);
       if (!Number.isFinite(n)) return fallback;
