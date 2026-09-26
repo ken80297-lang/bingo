@@ -83,6 +83,23 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
         80,
     ]
     assert snapshot["fast_path_sources"]["latest_draw_numbers"] == [3, 4, 5, 6, 7, 8]
+    assert snapshot["dashboard_analysis_summary"] == {
+        "laowanjia_score": 72.5,
+        "hot_zone": ["01-10"],
+        "cold_zone": ["71-80"],
+        "three_star": [[1, 2, 3]],
+        "four_star": [[1, 2, 3, 4]],
+        "five_star": None,
+        "six_star": None,
+        "super_number_trajectory_recovery": {
+            "confidence": 70,
+            "candidate_numbers": [40, 41],
+        },
+        "cluster_aftershock_recovery": {
+            "confidence": 66,
+            "candidate_numbers": [15, 16],
+        },
+    }
 
     rules = {item["key"]: item for item in snapshot["rules"]}
     assert rules["diagonal"]["score"] == 24

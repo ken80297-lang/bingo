@@ -275,12 +275,28 @@ def build_rule_snapshot(
             "history_cutoff_issue": resolved_source_issue,
         },
         "fast_path_sources": _build_fast_path_sources(analysis),
+        "dashboard_analysis_summary": _build_dashboard_analysis_summary(analysis),
         "rules": rules,
         "aggregate": {
             "completed_count": len(ready_rules),
             "total_count": len(rules),
             "primary_rules": [item["key"] for item in primary],
         },
+    }
+
+
+def _build_dashboard_analysis_summary(analysis: dict) -> dict:
+    ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
+    return {
+        "laowanjia_score": analysis.get("laowanjia_score"),
+        "hot_zone": analysis.get("hot_zone") or [],
+        "cold_zone": analysis.get("cold_zone"),
+        "three_star": analysis.get("three_star"),
+        "four_star": analysis.get("four_star"),
+        "five_star": analysis.get("five_star"),
+        "six_star": analysis.get("six_star"),
+        "super_number_trajectory_recovery": ai_score.get("super_number_trajectory_recovery") or {},
+        "cluster_aftershock_recovery": ai_score.get("cluster_aftershock_recovery") or {},
     }
 
 
