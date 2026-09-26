@@ -3816,6 +3816,14 @@ def _build_player_dashboard_summary_payload(
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
 
     if cached_aggregates:
+        aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
+        logger.warning(
+            "dashboard_component_cache_hit component=prediction_aggregates age_ms=%s ttl_seconds=%s",
+            round(max(0.0, time.monotonic() - aggregate_cache_updated_at) * 1000, 2)
+            if aggregate_cache_updated_at is not None
+            else None,
+            PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
+        )
         aggregates = dict(cached_aggregates)
         component_metadata["prediction_aggregates"] = _component_metadata(
             "prediction_aggregates",
