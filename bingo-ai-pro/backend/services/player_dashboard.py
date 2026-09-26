@@ -3164,9 +3164,6 @@ def _card_three_payload(
     return {
         "title": "🤖 AI 運作中心",
         "status": "partial" if partial else "ok",
-        "current_issue": (current_draw or {}).get("issue"),
-        "next_prediction_status": next_prediction.get("status") or "unknown",
-        "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
         "sections": sections,
         "system": {
             "warnings": warnings,

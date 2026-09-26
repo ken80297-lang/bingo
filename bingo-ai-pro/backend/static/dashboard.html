@@ -1767,7 +1767,7 @@
 
     function renderCardThree(cardThree) {
       const payload = cardThree || {};
-       const system = payload.system || {};
+      const system = payload.system || {};
       const sections = payload.sections || {};
       const latestProcessing = sections.latest_processing || {};
       const aiFlow = sections.ai_flow || {};
@@ -1786,7 +1786,7 @@
         </div>
         <h3>AI 流程</h3>
         <div class="grid">
-          ${metric("推薦狀態", statusText(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"), statusClass(aiFlow.next_prediction_status || payload.next_prediction_status || "unknown"))}
+          ${metric("推薦狀態", statusText(aiFlow.next_prediction_status || "unknown"), statusClass(aiFlow.next_prediction_status || "unknown"))}
         </div>
         <h3>系統健康</h3>
         <div class="grid">
