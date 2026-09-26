@@ -1483,8 +1483,8 @@
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
       const rawNumbers = raw.numbers || [];
       return {
-        issue: raw.issue || raw.latest_issue,
-        draw_time: raw.draw_time || raw.official_draw_time || raw.source_draw_time || raw.collected_at,
+        issue: raw.issue,
+        draw_time: raw.draw_time || raw.collected_at,
         raw_numbers: rawNumbers,
         numbers: normalizeNumbers(rawNumbers),
         super_number: raw.super_number,
