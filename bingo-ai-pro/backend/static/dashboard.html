@@ -759,18 +759,11 @@
     const DASHBOARD_LEADER_TTL_MS = 30 * 1000;
     const DASHBOARD_LEADER_HEARTBEAT_MS = 10 * 1000;
     const DASHBOARD_PLAYER_SUMMARY_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_SYSTEM_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_LATEST_SYNC_INTERVAL_MS = 120 * 1000;
-    const DASHBOARD_WAKE_STATUS_INTERVAL_MS = 300 * 1000;
-    const DASHBOARD_SLOW_INTERVAL_MS = 5 * 60 * 1000;
-    const DASHBOARD_SLOW_INITIAL_DELAY_MS = 10 * 1000;
-    const DASHBOARD_SLOW_STAGGER_MS = 1000;
 
     const apis = {
       playerSummary: "/api/dashboard/player-summary"
     };
 
-    const fastApiKeys = ["playerSummary"];
     const pollState = {
       latest: {},
       timers: [],
@@ -1354,11 +1347,6 @@
       }
     }
 
-    async function loadAll() {
-      if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
-      await loadApiGroup(fastApiKeys);
-    }
-
     async function loadApiGroup(keys, renderAfter = true) {
       if (document.visibilityState !== "visible" || !pollState.isLeader) return;
       document.getElementById("refreshState").textContent = "Loading";
@@ -1457,35 +1445,9 @@
       return timer;
     }
 
-    function clearSlowApiTimeouts() {
-      pollState.slowTimeouts.forEach((timer) => clearTimeout(timer));
-      pollState.slowTimeouts = [];
-    }
-
- = {}) {
-      if (document.visibilityState !== "visible" || !pollState.isLeader) return;
-      clearSlowApiTimeouts();
-      slowApiKeys.forEach((key, index) => {
-        const delay = immediate ? index * DASHBOARD_SLOW_STAGGER_MS : DASHBOARD_SLOW_INITIAL_DELAY_MS + (index * DASHBOARD_SLOW_STAGGER_MS);
-        const timer = setTimeout(() => {
-          if (document.visibilityState === "visible" && pollState.isLeader) loadApiGroup([key]);
-        }, delay);
-        pollState.slowTimeouts.push(timer);
-      });
-      if (pollState.slowTimersScheduled) return;
-      scheduleTimer(() => {
-        const key = slowApiKeys[pollState.slowCursor % slowApiKeys.length];
-        pollState.slowCursor += 1;
-        loadApiGroup([key]);
-      }, DASHBOARD_SLOW_INTERVAL_MS);
-      pollState.slowTimersScheduled = true;
-    }
-
     function stopPolling() {
       pollState.timers.forEach((timer) => clearInterval(timer));
       pollState.timers = [];
-      clearSlowApiTimeouts();
-      pollState.slowTimersScheduled = false;
       if (pollState.leaderHeartbeatTimer) clearInterval(pollState.leaderHeartbeatTimer);
       pollState.leaderHeartbeatTimer = null;
     }
@@ -2004,7 +1966,10 @@
       return "status-unknown";
     }
 
-    document.getElementById("refreshButton").addEventListener("click", loadAll);
+    document.getElementById("refreshButton").addEventListener("click", () => {
+      if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
+      loadApiGroup(["playerSummary"]);
+    });
     if (document.visibilityState === "visible") {
       startVisiblePolling({ initial: true });
     } else {
