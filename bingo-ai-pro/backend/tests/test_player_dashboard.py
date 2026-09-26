@@ -125,8 +125,8 @@ def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monke
         player_dashboard,
         "_rule_snapshot_for_dashboard",
         lambda analysis, prediction, **kwargs: {
-            "rules": [],
-            "aggregate": {},
+            "rules": [{"key": "hot", "label": "熱門", "status": "ready", "score": 80}],
+            "aggregate": {"primary_rules": ["hot"]},
             "dashboard_analysis_summary": {
                 "laowanjia_score": 70,
                 "hot_zone": ["01-10"],
