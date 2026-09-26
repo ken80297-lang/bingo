@@ -2195,10 +2195,43 @@ def _rule_snapshot_item_to_dashboard(item: dict) -> dict:
     }
 
 
-def _rule_library(analysis: dict | None, prediction: dict) -> dict:
+def _rule_library(
+    analysis: dict | None,
+    prediction: dict,
+    *,
+    snapshot: dict | None = None,
+) -> dict:
     source = analysis or {}
-    snapshot = _rule_snapshot_for_dashboard(source, prediction)
+    if isinstance(snapshot, dict):
+        if not snapshot:
+            source_issue = _valid_production_issue(
+                source.get("issue") or prediction.get("issue") or prediction.get("based_on_issue")
+            )
+            target_issue = _valid_production_issue(
+                prediction.get("prediction_issue") or prediction.get("target_issue")
+            )
+            snapshot = build_rule_snapshot(
+                source,
+                prediction,
+                source_issue=source_issue,
+                target_issue=target_issue,
+            )
+    else:
+        snapshot = _rule_snapshot_for_dashboard(source, prediction)
     snapshot_rules = snapshot.get("rules") or []
+    summary = snapshot.get("dashboard_analysis_summary")
+    if not isinstance(summary, dict):
+        summary = {
+            "laowanjia_score": source.get("laowanjia_score"),
+            "hot_zone": source.get("hot_zone") or [],
+            "cold_zone": source.get("cold_zone"),
+            "three_star": source.get("three_star"),
+            "four_star": source.get("four_star"),
+            "five_star": source.get("five_star"),
+            "six_star": source.get("six_star"),
+            "super_number_trajectory_recovery": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
+            "cluster_aftershock_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
+        }
     rules = [_rule_snapshot_item_to_dashboard(item) for item in snapshot_rules]
     completed = sum(1 for item in rules if item.get("status") == "ready")
     labels_by_key = {key: label for key, label in RULE_LIBRARY_NAMES}
@@ -2231,17 +2264,17 @@ def _rule_library(analysis: dict | None, prediction: dict) -> dict:
         "summary": f"本期主要依據：{'、'.join(primary[:3])}" if primary else "尚未建立完整分析摘要",
         "primary_rules": primary,
         "rules": rules,
-        "laowanjia_index": source.get("laowanjia_score"),
-        "hot_zones": source.get("hot_zone") or [],
-        "cold_zone": source.get("cold_zone"),
+        "laowanjia_index": summary.get("laowanjia_score"),
+        "hot_zones": summary.get("hot_zone") or [],
+        "cold_zone": summary.get("cold_zone"),
         "star_prediction": {
-            "three_star": source.get("three_star"),
-            "four_star": source.get("four_star"),
-            "five_star": source.get("five_star"),
-            "six_star": source.get("six_star"),
+            "three_star": summary.get("three_star"),
+            "four_star": summary.get("four_star"),
+            "five_star": summary.get("five_star"),
+            "six_star": summary.get("six_star"),
         },
-        "super_trajectory": ((source.get("ai_score") or {}).get("super_number_trajectory_recovery") or {}),
-        "cluster_recovery": ((source.get("ai_score") or {}).get("cluster_aftershock_recovery") or {}),
+        "super_trajectory": summary.get("super_number_trajectory_recovery") or {},
+        "cluster_recovery": summary.get("cluster_aftershock_recovery") or {},
     }
 
 
@@ -2249,6 +2282,8 @@ def _rule_snapshot_for_dashboard(
     analysis: dict,
     prediction: dict,
     diagnostics: dict | None = None,
+    *,
+    build_fallback: bool = True,
 ) -> dict:
     source_issue = _valid_production_issue(
         analysis.get("issue") or prediction.get("issue") or prediction.get("based_on_issue")
@@ -2270,18 +2305,29 @@ def _rule_snapshot_for_dashboard(
             else:
                 stored = get_rule_snapshot(source_issue=source_issue, target_issue=target_issue)
             snapshot = (stored or {}).get("snapshot_json") if isinstance(stored, dict) else None
+            snapshot_source_issue = _valid_production_issue(snapshot.get("source_issue")) if isinstance(snapshot, dict) else None
+            snapshot_target_issue = _valid_production_issue(snapshot.get("target_issue")) if isinstance(snapshot, dict) else None
+            snapshot_issue_match = (
+                isinstance(snapshot, dict)
+                and (not snapshot_source_issue or snapshot_source_issue == source_issue)
+                and (not target_issue or not snapshot_target_issue or snapshot_target_issue == target_issue)
+            )
+            snapshot_valid = bool(snapshot_issue_match and snapshot.get("rules"))
             _card_two_diag_stage(
                 diagnostics,
                 "_card_two_rules.rule_snapshot_lookup",
                 lookup_started,
                 **dict(lookup_timing or {}),
                 found=bool(stored),
-                snapshot_valid=isinstance(snapshot, dict) and bool(snapshot.get("rules")),
+                snapshot_valid=snapshot_valid,
+                snapshot_issue_match=snapshot_issue_match,
                 source_issue=source_issue,
                 target_issue=target_issue,
+                snapshot_source_issue=snapshot_source_issue,
+                snapshot_target_issue=snapshot_target_issue,
                 hidden_db_calls=int((lookup_timing or {}).get("db_calls") or 0),
             )
-            if isinstance(snapshot, dict) and snapshot.get("rules"):
+            if snapshot_valid:
                 return snapshot
         except Exception:
             logger.exception("dashboard rule snapshot lookup failed")
@@ -2296,6 +2342,8 @@ def _rule_snapshot_for_dashboard(
                 target_issue=target_issue,
                 error=True,
             )
+    if not build_fallback:
+        return {}
     build_started = time.perf_counter()
     snapshot = build_rule_snapshot(
         analysis,
@@ -3707,7 +3755,14 @@ def _build_player_dashboard_summary_payload(
             },
         }
 
-    analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+    rule_snapshot = _rule_snapshot_for_dashboard({}, next_prediction, build_fallback=False)
+    snapshot_summary = rule_snapshot.get("dashboard_analysis_summary") if isinstance(rule_snapshot, dict) else None
+    if isinstance(snapshot_summary, dict):
+        analysis_future = None
+        analysis = {}
+    else:
+        analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+        analysis = None
 
     if cached_aggregates:
         aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
@@ -3761,17 +3816,18 @@ def _build_player_dashboard_summary_payload(
     ) or []
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
-    analysis = _component_result(
-        "analysis",
-        analysis_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    if analysis_future is not None:
+        analysis = _component_result(
+            "analysis",
+            analysis_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            fallback={},
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        ) or {}
     active_release = {
         key: next_prediction.get(key)
         for key in (
@@ -3806,7 +3862,11 @@ def _build_player_dashboard_summary_payload(
     )
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
 
-    rule_library = _rule_library(analysis, next_prediction)
+    rule_library = _rule_library(
+        analysis,
+        next_prediction,
+        snapshot=rule_snapshot,
+    )
     _store_component_cache("rule_library", rule_library)
     next_prediction["rule_library"] = rule_library
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
