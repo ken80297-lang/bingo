@@ -3820,12 +3820,12 @@ def _build_player_dashboard_summary_payload(
         component_metadata["prediction_aggregates"] = _component_metadata(
             "prediction_aggregates",
             aggregates,
-            source="cache",
+            source="live",
             result="fresh_cache",
             dashboard_generation_id=dashboard_generation_id,
         )
         aggregates["_component_metadata"] = component_metadata["prediction_aggregates"]
-        aggregates["source"] = "cache"
+        aggregates["source"] = "live"
         aggregates["stale"] = False
         timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", "fresh_cache"))
     else:
