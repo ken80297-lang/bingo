@@ -1074,7 +1074,6 @@
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const raw = player && player.card_three ? player.card_three : {};
       return {
-        title: "🤖 AI 運作中心",
         status: raw.status || (player && player.partial ? "partial" : "ok"),
         sections: raw.sections || {},
         system: raw.system || {}
