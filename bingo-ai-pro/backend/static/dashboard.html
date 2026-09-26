@@ -1481,13 +1481,13 @@
       const cardOne = player && player.card_one ? player.card_one : {};
       const raw = cardOne.latest_official_draw || cardOne.current_draw || (player && (player.latest_official_draw || player.current_draw)) || {};
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
-      const rawNumbers = raw.numbers || raw.latest_numbers || [];
+      const rawNumbers = raw.numbers || [];
       return {
         issue: raw.issue || raw.latest_issue,
-        draw_time: raw.draw_time || raw.official_draw_time || raw.source_draw_time || raw.latest_draw_time || raw.collected_at,
+        draw_time: raw.draw_time || raw.official_draw_time || raw.source_draw_time || raw.collected_at,
         raw_numbers: rawNumbers,
         numbers: normalizeNumbers(rawNumbers),
-        super_number: raw.super_number || raw.latest_super_number,
+        super_number: raw.super_number,
         verification_status: verificationStatus || raw.status || "verified",
         source_scope: raw.source_scope || "unknown"
       };
