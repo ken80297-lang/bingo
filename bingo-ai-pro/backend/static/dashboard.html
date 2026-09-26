@@ -1347,11 +1347,6 @@
       }
     }
 
-    async function loadAll() {
-      if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
-      await loadApiGroup(fastApiKeys);
-    }
-
     async function loadApiGroup(keys, renderAfter = true) {
       if (document.visibilityState !== "visible" || !pollState.isLeader) return;
       document.getElementById("refreshState").textContent = "Loading";
@@ -1997,7 +1992,10 @@
       return "status-unknown";
     }
 
-    document.getElementById("refreshButton").addEventListener("click", loadAll);
+    document.getElementById("refreshButton").addEventListener("click", () => {
+      if (document.visibilityState !== "visible" || !ensurePollingLeader()) return;
+      loadApiGroup(["playerSummary"]);
+    });
     if (document.visibilityState === "visible") {
       startVisiblePolling({ initial: true });
     } else {
