@@ -3829,6 +3829,7 @@ def _build_player_dashboard_summary_payload(
             "prediction_aggregates",
             aggregates,
             source="live",
+            timed_out=False,
             result="fresh_cache",
             dashboard_generation_id=dashboard_generation_id,
         )
