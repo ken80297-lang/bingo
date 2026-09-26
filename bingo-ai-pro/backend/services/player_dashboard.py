@@ -3635,6 +3635,7 @@ def _build_player_dashboard_summary_payload(
     # deferred until after Card One to avoid starving official_draw.
     card_one = get_player_card_one_snapshot(
         deadline=deadline,
+        timings=timings,
         warnings=warnings,
         component_metadata=component_metadata,
         dashboard_generation_id=dashboard_generation_id,
