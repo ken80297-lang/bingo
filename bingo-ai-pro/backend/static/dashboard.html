@@ -1432,7 +1432,6 @@
         high_probability_details: asList(raw.high_probability_details),
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
-        raw_super_candidates: rawSuperCandidates,
         super_candidates: normalizeNumbers(rawSuperCandidates),
         super_number: raw.super_number,
         three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
@@ -1447,9 +1446,7 @@
         big_small: raw.big_small,
         odd_even: raw.odd_even,
         model_scores: raw.model_scores || {},
-        winning_model: raw.winning_model,
         source: raw.source,
-        trigger: raw.trigger,
         phase: raw.phase || release.phase || "28",
         release_version: raw.release_version || release.release_version,
         git_commit_hash: gitCommit,
@@ -1460,10 +1457,8 @@
         model_version: raw.model_version || release.model_version,
         feature_version: raw.feature_version || release.feature_version,
         production_valid: raw.production_valid !== false,
-        is_stale: raw.is_stale,
         component_metadata: componentMeta,
         reasons: raw.reasons || [],
-        recommendation_warning: raw.recommendation_warning,
         rule_library: raw.rule_library || cardOne.rule_library || {}
       };
     }
