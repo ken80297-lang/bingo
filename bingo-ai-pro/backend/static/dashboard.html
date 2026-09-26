@@ -1399,7 +1399,6 @@
       const cardOne = player && player.card_one ? player.card_one : {};
       const raw = cardOne.next_prediction || {};
       const componentMeta = raw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
-      const scope = (player && player.production_scope) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawHighProbability = raw.high_probability_numbers || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
@@ -1423,10 +1422,6 @@
         high_probability_numbers: normalizeNumbers(rawHighProbability),
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
-        production_generation: raw.production_generation || scope.production_generation || release.production_generation,
-        production_start_issue: raw.production_start_issue || scope.production_start_issue || release.production_start_issue,
-        production_start_at: raw.production_start_at || scope.production_start_at || release.production_start_at,
-        production_valid: raw.production_valid !== false,
         component_metadata: componentMeta,
         reasons: raw.reasons || [],
         rule_library: raw.rule_library || cardOne.rule_library || {}
