@@ -2316,7 +2316,14 @@ def _rule_snapshot_for_dashboard(
                 target_issue=target_issue,
                 hidden_db_calls=int((lookup_timing or {}).get("db_calls") or 0),
             )
-            if isinstance(snapshot, dict) and snapshot.get("rules"):
+            snapshot_source_issue = _valid_production_issue(snapshot.get("source_issue")) if isinstance(snapshot, dict) else None
+            snapshot_target_issue = _valid_production_issue(snapshot.get("target_issue")) if isinstance(snapshot, dict) else None
+            snapshot_issue_match = (
+                isinstance(snapshot, dict)
+                and snapshot_source_issue == source_issue
+                and (not target_issue or snapshot_target_issue == target_issue)
+            )
+            if snapshot_issue_match and snapshot.get("rules"):
                 return snapshot
         except Exception:
             logger.exception("dashboard rule snapshot lookup failed")
