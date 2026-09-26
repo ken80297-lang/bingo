@@ -1479,7 +1479,7 @@
     function normalizeOfficialDraw(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
-      const raw = cardOne.latest_official_draw || cardOne.current_draw || (player && (player.latest_official_draw || player.current_draw)) || data.official || {};
+      const raw = cardOne.latest_official_draw || cardOne.current_draw || (player && (player.latest_official_draw || player.current_draw)) || {};
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
       const rawNumbers = raw.numbers || raw.latest_numbers || [];
       return {
