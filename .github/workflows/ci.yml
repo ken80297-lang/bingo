@@ -24,7 +24,19 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pytest
-      - name: Run backend lint / tests
+      - name: Run Phase 2 dashboard snapshot regression
+        run: |
+          python -m pytest -q \
+            tests/test_player_dashboard.py::test_rule_library_prefers_snapshot_dashboard_analysis_summary \
+            tests/test_player_dashboard.py::test_rule_library_falls_back_to_legacy_analysis_without_snapshot_summary \
+            tests/test_player_dashboard.py::test_rule_snapshot_lookup_uses_prediction_source_and_target_when_analysis_is_empty \
+            tests/test_player_dashboard.py::test_rule_snapshot_rejects_mismatched_target_issue \
+            tests/test_player_dashboard.py::test_rule_snapshot_rejects_mismatched_source_issue \
+            tests/test_player_dashboard.py::test_rule_snapshot_without_requested_target_accepts_matching_source \
+            tests/test_player_dashboard.py::test_rule_snapshot_diagnostics_reject_explicit_issue_mismatch \
+            tests/test_player_dashboard.py::test_rule_library_empty_prechecked_snapshot_preserves_fallback_rule_semantics
+      - name: Run full backend suite
+        if: always()
         run: python -m pytest -q
 
   build-frontend:
