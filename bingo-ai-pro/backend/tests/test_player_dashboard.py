@@ -98,6 +98,56 @@ def test_player_summary_fast_path_builds_from_isolated_dependencies(monkeypatch)
     assert payload["stale_steps"] == []
 
 
+
+def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monkeypatch):
+    _reset_dashboard_state()
+    monkeypatch.setattr(player_dashboard, "get_latest_official_draw", _official_draw)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: _prediction())
+    monkeypatch.setattr(player_dashboard, "get_latest_prediction_context", lambda **kwargs: {"draw": _official_draw(), "prediction": _prediction()})
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
+    monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
+    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue, *, include_metadata_lookup=True: {"record": None, "draw": None, "mode": "none"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_latest_analysis_history",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy analysis must not be queried")),
+    )
+    monkeypatch.setattr(
+        player_dashboard,
+        "_rule_snapshot_for_dashboard",
+        lambda analysis, prediction: {
+            "rules": [],
+            "aggregate": {},
+            "dashboard_analysis_summary": {
+                "laowanjia_score": 70,
+                "hot_zone": ["01-10"],
+                "cold_zone": ["71-80"],
+                "three_star": None,
+                "four_star": None,
+                "five_star": None,
+                "six_star": None,
+                "super_number_trajectory_recovery": {},
+                "cluster_aftershock_recovery": {},
+            },
+        },
+    )
+
+    payload = player_dashboard.build_player_dashboard_summary()
+
+    assert payload["status"] == "ok"
+    assert payload["rule_library"]["laowanjia_index"] == 70
+    assert payload["rule_library"]["hot_zones"] == ["01-10"]
+    assert "analysis" not in payload["timing"]["steps"]
+
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
