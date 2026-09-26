@@ -20,7 +20,6 @@ from database.prediction_history_store import get_latest_prediction_history
 from database.prediction_history_store import get_latest_prediction_context
 from database.prediction_history_store import get_previous_verification_summary_snapshot
 from database.prediction_history_store import get_prediction_summary_for_source_target as get_prediction_for_source_target
-from database.prediction_history_store import get_latest_verified_prediction_summary_at_or_before as get_latest_verified_prediction_at_or_before
 from database.prediction_history_store import get_prediction_history_statistics
 from database.prediction_history_store import get_prediction_lifecycle_aggregates
 from database.prediction_history_store import is_production_prediction
@@ -1911,22 +1910,6 @@ def _alerts(numbers: list[int], super_number: int | None) -> dict:
         "consecutive_alert": _alert_level(consecutive),
         "super_alert": _alert_level(3 if super_number else 1),
     }
-
-def _prediction_by_target_issue(target_issue: Any) -> dict | None:
-    issue = _valid_production_issue(target_issue)
-    if not issue:
-        return None
-    try:
-        from database.prediction_history_store import _prediction_records_for_target_issue
-
-        for record in _prediction_records_for_target_issue(issue):
-            if is_production_prediction(record):
-                return record
-    except Exception:
-        logger.exception("dashboard direct prediction lookup failed target_issue=%s", issue)
-    return None
-
-
 def _pending_next_prediction(current_draw: dict | None, detected_latest_issue: Any = None) -> dict:
     database_latest_issue = (current_draw or {}).get("issue")
     current_issue = detected_latest_issue or database_latest_issue
