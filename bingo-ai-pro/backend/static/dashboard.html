@@ -879,18 +879,6 @@
 
     const labelZh = (value) => zhMap[value] || safe(value);
     const numberLabel = (value) => String(Number(value)).padStart(2, "0");
-    const sourceText = (value) => ({
-      official_collector: "官方 Collector",
-      production_history: "正式歷史資料",
-      production_read_layer: "正式讀取層",
-      database: "正式資料庫"
-    }[value] || safe(value, "正式資料"));
-    const triggerText = (value) => ({
-      official_draw_saved: "官方開獎儲存完成",
-      production_read_layer: "正式讀取層",
-      scheduler: "排程觸發"
-    }[value] || safe(value, "正式讀取層"));
-
     const normalizeNumbers = (values) => {
       const source = Array.isArray(values) ? values : [];
       return [...new Set(source.map((value) => Number(value)).filter((number) => Number.isInteger(number) && number >= 1 && number <= 80))]
@@ -979,19 +967,6 @@
       }).format(date);
     };
 
-    const staleStatusText = (status, lag) => {
-      if (status === "normal" || Number(lag) === 0) return "正常";
-      if (status === "waiting_sync" || Number(lag) === 1) return "等待同步";
-      if (status === "possibly_expired") return "可能過期";
-      return safe(status, "尚無資料");
-    };
-
-    const staleStatusClass = (status, lag) => {
-      if (status === "normal" || Number(lag) === 0) return "status-ok";
-      if (status === "waiting_sync" || Number(lag) === 1) return "status-warning";
-      return "status-error";
-    };
-
     const metric = (label, value, extraClass = "") => `
       <div class="metric">
         <div class="label">${label}</div>
@@ -1017,12 +992,6 @@
       const items = asList(values).filter((item) => item !== null && item !== undefined && item !== "");
       if (!items.length) return `<div class="empty">尚無資料</div>`;
       return `<div class="chips">${items.map((item) => `<span class="chip">${Array.isArray(item) ? item.map(numberLabel).join("、") : safe(item)}</span>`).join("")}</div>`;
-    };
-
-    const textList = (values) => {
-      const items = asList(values).filter((item) => item !== null && item !== undefined && item !== "");
-      if (!items.length) return `<div class="empty">尚無資料</div>`;
-      return `<div class="chips">${items.map((item) => `<span class="chip">${safe(item)}</span>`).join("")}</div>`;
     };
 
     const rows = (items) => `<div class="list">${items.join("")}</div>`;
@@ -1200,28 +1169,6 @@
       `;
     }
 
-    function renderPredictionBalance(title, data, leftLabel, rightLabel, leftKey, rightKey) {
-      if (!hasPredictionBalance(data, leftKey, rightKey)) return "";
-      const left = Number(data && data[leftKey]);
-      const right = Number(data && data[rightKey]);
-      const label = data && data.label ? labelZh(data.label) : "資料整理中";
-      const leftText = Number.isFinite(left) ? fmtNumber(left) : "0";
-      const rightText = Number.isFinite(right) ? fmtNumber(right) : "0";
-      return `
-        <div class="compact-section">
-          <div class="compact-heading">
-            <h3>${title}</h3>
-          </div>
-          <div class="trend-summary single">
-            <div class="trend-item">
-              <span>${leftLabel} / ${rightLabel}</span>
-              <strong>${label} ${leftText} / ${rightText}</strong>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
     function hasPredictionBalance(data, leftKey, rightKey) {
       return Number.isFinite(Number(data && data[leftKey]))
         && Number.isFinite(Number(data && data[rightKey]));
@@ -1230,18 +1177,6 @@
     function hasDisplayableConfidence(next) {
       return Boolean(next && next.confidence_available)
         && Number.isFinite(Number(next.confidence_percent));
-    }
-
-    function renderConfidence(next) {
-      if (!hasDisplayableConfidence(next)) return "";
-      return `
-        <div class="compact-section">
-          <div class="compact-heading">
-            <h3>AI 信心</h3>
-          </div>
-          <div class="confidence-badge">AI 信心 ${fmtNumber(next.confidence_percent)}%</div>
-        </div>
-      `;
     }
 
     function renderCardOneSignals(next) {
@@ -1304,21 +1239,6 @@
       const leftText = Number.isFinite(left) ? fmtNumber(left) : "0";
       const rightText = Number.isFinite(right) ? fmtNumber(right) : "0";
       return `<div class="trend-item"><span>${title}</span><strong>${label} ${leftText} / ${rightText}</strong></div>`;
-    }
-
-    function renderCompactTrendSummary(next) {
-      return `
-        <div class="compact-section">
-          <div class="compact-heading">
-            <h3>趨勢摘要</h3>
-            <span class="compact-note">單雙 / 大小</span>
-          </div>
-          <div class="trend-summary">
-            ${renderCompactTrendItem("單雙", next.odd_even_prediction, "odd_count", "even_count")}
-            ${renderCompactTrendItem("大小", next.size_prediction, "small_count", "large_count")}
-          </div>
-        </div>
-      `;
     }
 
     async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
@@ -1695,7 +1615,6 @@
       const cardOneComplete = isCompleteOfficialDraw(officialDraw)
         && isCompletePrediction(next)
         && isCardOneIssueAligned(officialDraw, next);
-      const incomingIssue = issueNumber((officialDraw || {}).issue);
       if (!cardOneComplete && cardOneCommittedHtml) {
         // Card One is atomic: keep the last complete official + prediction
         // snapshot until the next complete aligned snapshot is ready.
@@ -1833,29 +1752,6 @@
       `;
     }
 
-    function renderTailGroups(next) {
-      const groups = asList(next.tail_groups).length
-        ? asList(next.tail_groups)
-        : normalizeNumbers(next.tails).map((tail) => ({ tail, label: `${tail}尾`, numbers: next.candidates.filter((number) => number % 10 === tail) }));
-      if (!groups.length) return `<div class="empty">尚無資料</div>`;
-      return groups.map((group) => `
-        <div class="rule-item">
-          <div class="rule-head"><span>尾${safe(group.tail, String(group.label || "").replace("尾", ""))}</span></div>
-          ${balls(group.numbers)}
-        </div>
-      `).join("");
-    }
-
-    function renderLaowanjiaCompatibilityTemplate() {
-      return `
-        <h2>老玩家分析</h2>
-        <button class="collapse-button" type="button" aria-expanded="false" aria-controls="ruleLibraryBody">
-          <span>展開老玩家分析</span><span>展開查看</span>
-        </button>
-        <div id="ruleLibraryBody" hidden></div>
-      `;
-    }
-
     function renderCardTwoDistributionResult(result) {
       const payload = result || {};
       if (!payload.status_text || payload.hit === null || payload.hit === undefined) return "資料不足";
@@ -1945,20 +1841,6 @@
           <div class="bar"><span style="width:${width}%"></span></div>
         </div>
       `;
-    }
-
-    function wakeStatusText(status) {
-      if (status === "healthy") return "正常";
-      if (status === "delayed") return "可能延遲";
-      if (status === "at_risk") return "即將休眠";
-      return "尚無資料";
-    }
-
-    function wakeStatusClass(status) {
-      if (status === "healthy") return "status-ok";
-      if (status === "delayed") return "status-warning";
-      if (status === "at_risk") return "status-error";
-      return "status-unknown";
     }
 
     document.getElementById("refreshButton").addEventListener("click", () => {
