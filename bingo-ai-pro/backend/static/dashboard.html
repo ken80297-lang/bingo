@@ -1169,11 +1169,6 @@
       `;
     }
 
-    function hasPredictionBalance(data, leftKey, rightKey) {
-      return Number.isFinite(Number(data && data[leftKey]))
-        && Number.isFinite(Number(data && data[rightKey]));
-    }
-
     function hasDisplayableConfidence(next) {
       return Boolean(next && next.confidence_available)
         && Number.isFinite(Number(next.confidence_percent));
@@ -1230,15 +1225,6 @@
       const officialIssue = issueNumber((officialDraw || {}).issue);
       const sourceIssue = issueNumber((next || {}).based_on_issue);
       return Boolean(officialIssue) && officialIssue === sourceIssue;
-    }
-
-    function renderCompactTrendItem(title, data, leftKey, rightKey) {
-      const left = Number(data && data[leftKey]);
-      const right = Number(data && data[rightKey]);
-      const label = data && data.label ? labelZh(data.label) : "資料整理中";
-      const leftText = Number.isFinite(left) ? fmtNumber(left) : "0";
-      const rightText = Number.isFinite(right) ? fmtNumber(right) : "0";
-      return `<div class="trend-item"><span>${title}</span><strong>${label} ${leftText} / ${rightText}</strong></div>`;
     }
 
     async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
@@ -1826,20 +1812,6 @@
           ${metric("版本", safe(versionInfo.release_version || "尚無資料"))}
         </div>
 
-      `;
-    }
-
-    function alertRow(label, item) {
-      const percentValue = Number(item && (item.percent || item.score || item.confidence) || 0);
-      const width = Math.max(0, Math.min(100, percentValue));
-      const stars = Math.max(0, Math.min(5, Number(item && item.stars) || Math.round(width / 20)));
-      return `
-        <div class="row" style="display:block">
-          <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:7px">
-            <span>${label}</span><strong>${"★".repeat(stars)}${"☆".repeat(5 - stars)}</strong>
-          </div>
-          <div class="bar"><span style="width:${width}%"></span></div>
-        </div>
       `;
     }
 
