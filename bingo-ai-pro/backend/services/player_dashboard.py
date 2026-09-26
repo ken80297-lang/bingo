@@ -3781,7 +3781,6 @@ def _build_player_dashboard_summary_payload(
             "production_filtered": True,
             "production_scope": production_scope,
             "active_release": active_release,
-            "release": active_release,
             "current_draw": current,
             "latest_official_draw": latest_official_draw,
             "sync": sync,
@@ -4021,7 +4020,6 @@ def _build_player_dashboard_summary_payload(
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
-        "release": active_release,
         "current_draw": current,
         "latest_official_draw": latest_official_draw,
         "sync": sync,
@@ -4126,7 +4124,6 @@ def _build_player_dashboard_summary_legacy() -> dict:
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
-        "release": active_release,
         "current_draw": current,
         "latest_official_draw": _latest_official_draw_card(official),
         "sync": {
