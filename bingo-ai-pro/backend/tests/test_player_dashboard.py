@@ -73,7 +73,6 @@ def test_player_summary_fast_path_builds_from_isolated_dependencies(monkeypatch)
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
     monkeypatch.setattr(
         player_dashboard,
         "get_previous_verification_summary_snapshot",
@@ -107,7 +106,6 @@ def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monke
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
     monkeypatch.setattr(
         player_dashboard,
         "get_previous_verification_summary_snapshot",
@@ -158,7 +156,6 @@ def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(mon
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
     monkeypatch.setattr(
         player_dashboard,
         "get_previous_verification_summary_snapshot",
@@ -204,7 +201,6 @@ def test_player_summary_old_stored_snapshot_uses_legacy_analysis_once(monkeypatc
     monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
     monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
     monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
     monkeypatch.setattr(
         player_dashboard,
         "get_previous_verification_summary_snapshot",
@@ -532,7 +528,6 @@ def test_player_summary_late_component_result_populates_cache(monkeypatch):
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", slow_official_draw)
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: {"issue": "115040900"})
     monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: _prediction())
-    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
 
     payload = player_dashboard.build_player_dashboard_summary()
     assert payload["current_draw"] is None
