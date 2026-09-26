@@ -649,13 +649,7 @@ def _submit_component(name: str, fn):
                 "started_at": started_at,
             }
         try:
-            if name == "card_two_history":
-                from database.prediction_history_store import card_two_dashboard_execution_context
-
-                with card_two_dashboard_execution_context((started_at - submitted_at) * 1000):
-                    result = fn()
-            else:
-                result = fn()
+            result = fn()
             if lifecycle is not None:
                 lifecycle["execution_completed_at"] = time.perf_counter()
                 if isinstance(result, dict):
