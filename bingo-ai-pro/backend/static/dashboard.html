@@ -1413,13 +1413,9 @@
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
-        target_issue_source: raw.target_issue_source,
         based_on_issue: raw.based_on_issue || raw.source_issue,
         based_on_draw_time: raw.based_on_draw_time || raw.source_draw_time,
-        based_on_time_source: raw.based_on_time_source,
         based_on_draw_exists: raw.based_on_draw_exists,
-        latest_official_issue: raw.latest_official_issue,
-        expected_target_issue: raw.expected_target_issue,
         status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
         stale_status: raw.stale_status,
         lag_issues: raw.lag_issues,
