@@ -3609,6 +3609,7 @@ def _build_player_dashboard_summary_uncached() -> dict:
             total_start=total_start,
             deadline=deadline,
             warnings=warnings,
+            timings=timings,
             generated_at=generated_at,
             dashboard_generation_id=dashboard_generation_id,
             component_metadata=component_metadata,
