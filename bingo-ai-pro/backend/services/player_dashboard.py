@@ -3552,6 +3552,15 @@ def _build_player_dashboard_summary_payload(
     next_prediction = card_one["next_prediction"]
     detected_latest_issue = card_one["detected_latest_issue"]
 
+    card_two_history_future, _ = _submit_component(
+        "card_two_history",
+        lambda: _timed_component_stage(
+            "card_two_history",
+            "prediction_history_summary_records",
+            lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT, diagnostic_component="card_two_history", include_event_metadata=False),
+        ),
+    )
+
     cached_aggregates = _load_fresh_component_cache(
         "prediction_aggregates",
         PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
@@ -3570,15 +3579,6 @@ def _build_player_dashboard_summary_payload(
                 ),
             ),
         )
-
-    card_two_history_future, _ = _submit_component(
-        "card_two_history",
-        lambda: _timed_component_stage(
-            "card_two_history",
-            "prediction_history_summary_records",
-            lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT, diagnostic_component="card_two_history", include_event_metadata=False),
-        ),
-    )
 
     if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
         next_prediction["sync_status"] = "database_behind"
