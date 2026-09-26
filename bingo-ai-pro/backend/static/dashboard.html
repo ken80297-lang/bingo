@@ -1404,9 +1404,6 @@
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
-        based_on_issue: raw.based_on_issue || raw.source_issue,
-        based_on_draw_time: raw.based_on_draw_time || raw.source_draw_time,
-        confidence: raw.confidence,
         confidence_available: Number.isFinite(Number(rawConfidence)),
         confidence_percent: confidencePercentValue(rawConfidence),
         raw_candidates: rawCandidates,
