@@ -1912,14 +1912,6 @@ def _alerts(numbers: list[int], super_number: int | None) -> dict:
         "super_alert": _alert_level(3 if super_number else 1),
     }
 
-
-def _latest_verified_prediction(records: list[dict]) -> dict | None:
-    for record in records:
-        if record.get("winning_numbers") or record.get("prediction_status") == "verified" or record.get("verified_at"):
-            return record
-    return None
-
-
 def _prediction_by_target_issue(target_issue: Any) -> dict | None:
     issue = _valid_production_issue(target_issue)
     if not issue:
@@ -2017,29 +2009,6 @@ def _enrich_dashboard_card_v1(next_prediction: dict, current_draw: dict | None) 
 def _official_super_in_numbers(draw: dict | None, numbers: list[int]) -> int | None:
     super_number = _as_int((draw or {}).get("super_number"))
     return super_number if super_number in numbers else None
-
-
-def _previous_result_for_based_on(target_issue: Any) -> tuple[dict | None, str]:
-    exact = _timed_component_stage(
-        "previous_verification",
-        "prediction_target_lookup",
-        lambda: _prediction_by_target_issue(target_issue),
-    )
-    if exact:
-        return exact, "exact_previous"
-    fallback = (
-        _timed_component_stage(
-            "previous_verification",
-            "latest_verified_fallback_lookup",
-            lambda: get_latest_verified_prediction_at_or_before(str(target_issue)),
-        )
-        if target_issue
-        else None
-    )
-    if fallback:
-        return fallback, "latest_available_verified"
-    return None, "unavailable"
-
 
 def _unavailable_previous_result(requested_target_issue: Any) -> dict:
     return {
@@ -2228,19 +2197,6 @@ RULE_LIBRARY_NAMES = [
     (item["key"], item["label"])
     for item in get_rule_registry()
 ]
-
-
-def _flatten_number_groups(groups: Any) -> list[int]:
-    values: list[Any] = []
-    if isinstance(groups, dict):
-        groups = groups.values()
-    for item in groups or []:
-        if isinstance(item, (list, tuple, set)):
-            values.extend(item)
-        else:
-            values.append(item)
-    return _as_int_list(values)
-
 
 def _rule_snapshot_item_to_dashboard(item: dict) -> dict:
     status = item.get("status")
@@ -3047,30 +3003,6 @@ def _history_stats(history_records: list[dict]) -> dict:
         "pending_learning": pending_learning,
         "verified_waiting_learning": pending_learning,
     }
-
-
-def _future_result(name: str, future, warnings: list[str], fallback=None):
-    try:
-        result = future.result(timeout=PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS)
-        _store_component_cache(name, result)
-        return result
-    except TimeoutError:
-        logger.warning(
-            "player_dashboard_query_timeout component=%s timeout_seconds=%s fallback=last_good_cache",
-            name,
-            PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS,
-        )
-        warnings.append(f"{name} fallback cache")
-        return _load_component_cache(name, fallback)
-    except Exception:
-        logger.warning(
-            "player_dashboard_query_failed component=%s fallback=last_good_cache",
-            name,
-            exc_info=True,
-        )
-        warnings.append(f"{name} fallback cache")
-        return _load_component_cache(name, fallback)
-
 
 def _empty_rule_library() -> dict:
     return {
