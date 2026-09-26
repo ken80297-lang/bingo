@@ -167,7 +167,6 @@ _PLAYER_SUMMARY_BUILD_LOCK = threading.Lock()
 _PLAYER_COMPONENT_CACHE_UPDATED_AT: dict[str, float] = {}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
-    "latest_prediction": None,
     "next_prediction_snapshot": None,
     "prediction_history": [],
     "card_two_history": [],
@@ -295,8 +294,6 @@ def reload_latest_production_snapshot(official_draw: dict | None = None, reason:
     next_prediction["rule_library"] = _load_component_cache("rule_library", _empty_rule_library()) or _empty_rule_library()
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
     _store_component_cache("official_draw", official)
-    if prediction:
-        _store_component_cache("latest_prediction", prediction)
     _store_component_cache("next_prediction_snapshot", next_prediction)
     logger.info(
         "player dashboard latest production snapshot reloaded reason=%s issue=%s target_issue=%s",
@@ -314,8 +311,6 @@ def reload_latest_production_snapshot(official_draw: dict | None = None, reason:
 
 
 def _store_component_cache(name: str, payload: Any) -> bool:
-    if name == "latest_prediction" and payload and not is_production_prediction(payload):
-        return False
     if name == "prediction_history" and isinstance(payload, list):
         payload = [item for item in payload if is_production_prediction(item)]
     existing = _PLAYER_COMPONENT_CACHE.get(name)
@@ -344,8 +339,6 @@ def _load_fresh_component_cache(name: str, ttl_seconds: float, fallback=None):
 def _load_component_cache(name: str, fallback=None):
     cached = _PLAYER_COMPONENT_CACHE.get(name)
     if cached is None:
-        return fallback
-    if name == "latest_prediction" and cached and not is_production_prediction(cached):
         return fallback
     if name == "prediction_history" and isinstance(cached, list):
         cached = [item for item in cached if is_production_prediction(item)]
@@ -3173,8 +3166,6 @@ def get_player_card_one_snapshot(
                 context_draw = current
             else:
                 record = (context or {}).get("prediction")
-            if record:
-                _store_component_cache("latest_prediction", record)
             transform_started = time.perf_counter()
             return _timed_component_stage(
                 "next_prediction_snapshot",
