@@ -1409,7 +1409,6 @@
       const gitCommit = raw.git_commit_hash || release.git_commit_hash || "";
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawHighProbability = raw.high_probability_numbers || [];
-      const rawSuperCandidates = raw.super_candidates || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
@@ -1429,23 +1428,17 @@
         candidates: normalizeNumbers(rawCandidates),
         raw_high_probability_numbers: rawHighProbability,
         high_probability_numbers: normalizeNumbers(rawHighProbability),
-        high_probability_details: asList(raw.high_probability_details),
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
-        super_candidates: normalizeNumbers(rawSuperCandidates),
         super_number: raw.super_number,
         three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
         four_star: normalizeNumbers(raw.four_star || asList(raw.main_numbers).slice(0, 4)),
         five_star: normalizeNumbers(raw.five_star || []),
         six_star: normalizeNumbers(raw.six_star || []),
-        twins: normalizeNumbers(raw.twins || []),
         consecutive: sortPairs(raw.consecutive || []),
-        patch_numbers: normalizeNumbers(raw.patch_numbers || []),
         tails: normalizeNumbers(raw.tails || []),
-        tail_groups: asList(raw.tail_groups),
         big_small: raw.big_small,
         odd_even: raw.odd_even,
-        model_scores: raw.model_scores || {},
         source: raw.source,
         phase: raw.phase || release.phase || "28",
         release_version: raw.release_version || release.release_version,
