@@ -3047,35 +3047,29 @@ def _card_three_payload(
     active_release = active_release if isinstance(active_release, dict) else {}
     sections = {
         "latest_processing": {
-            "label": "最新處理資訊",
             "current_issue": (current_draw or {}).get("issue"),
             "last_successful_collection": sync.get("last_successful_collection"),
         },
         "ai_flow": {
-            "label": "AI 流程",
             "next_prediction_status": next_prediction.get("status") or "unknown",
         },
         "system_health": {
-            "label": "系統健康",
             "status": "partial" if partial else "ok",
             "is_synced": sync.get("is_synced"),
             "lag_count": sync.get("lag_count", 0),
             "warnings": warnings,
         },
         "learning_status": {
-            "label": "AI 學習狀態",
             "status": "ready" if (prediction_stats or {}).get("sample_size") else "waiting_data",
             "sample_size": (prediction_stats or {}).get("sample_size", 0),
             "average_hits": (prediction_stats or {}).get("average_hits", 0),
             "pending_learning": (prediction_stats or {}).get("pending_learning", 0),
         },
         "version_info": {
-            "label": "版本資訊",
             "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
         },
     }
     return {
-        "title": "🤖 AI 運作中心",
         "status": "partial" if partial else "ok",
         "sections": sections,
         "system": {
