@@ -824,13 +824,17 @@ def startup_event() -> None:
             except Exception as exc:
                 print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_ERROR {type(exc).__name__}: {exc}", flush=True)
 
-        scheduler.add_job(
-            _run_player_dashboard_summary_probe,
-            "date",
-            run_date=datetime.now() + timedelta(seconds=12),
-            id="player_dashboard_summary_probe_once",
-            replace_existing=True,
-        )
+        def _delayed_player_dashboard_summary_probe() -> None:
+            import time
+
+            time.sleep(12)
+            _run_player_dashboard_summary_probe()
+
+        threading.Thread(
+            target=_delayed_player_dashboard_summary_probe,
+            name="player-dashboard-summary-probe",
+            daemon=True,
+        ).start()
 
 
     if os.getenv("ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
