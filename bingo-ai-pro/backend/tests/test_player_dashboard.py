@@ -189,6 +189,57 @@ def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(mon
     assert payload["rule_library"]["laowanjia_index"] == 63
     assert payload["rule_library"]["hot_zones"] == ["21-30"]
 
+
+def test_player_summary_old_stored_snapshot_uses_legacy_analysis_once(monkeypatch):
+    _reset_dashboard_state()
+    calls = {"analysis": 0, "snapshot": 0}
+
+    monkeypatch.setattr(player_dashboard, "get_latest_official_draw", _official_draw)
+    monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
+    monkeypatch.setattr(player_dashboard, "get_prediction_for_source_target", lambda source, target: _prediction())
+    monkeypatch.setattr(player_dashboard, "get_latest_prediction_context", lambda **kwargs: {"draw": _official_draw(), "prediction": _prediction()})
+    monkeypatch.setattr(player_dashboard, "get_prediction_history_records", lambda limit=100, **kwargs: [])
+    monkeypatch.setattr(player_dashboard, "get_prediction_lifecycle_aggregates", lambda **kwargs: {})
+    monkeypatch.setattr(player_dashboard, "get_learned_live_target_count", lambda: 0, raising=False)
+    monkeypatch.setattr(player_dashboard, "_prediction_by_target_issue", lambda issue: None)
+    monkeypatch.setattr(player_dashboard, "get_latest_verified_prediction_at_or_before", lambda issue: None)
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_previous_verification_summary_snapshot",
+        lambda issue, *, include_metadata_lookup=True: {"record": None, "draw": None, "mode": "none"},
+    )
+    monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
+
+    def old_snapshot(**kwargs):
+        calls["snapshot"] += 1
+        return {
+            "snapshot_json": {
+                "rules": [{"key": "hot", "label": "熱門", "status": "ready", "score": 80}],
+                "aggregate": {"primary_rules": ["hot"]},
+            }
+        }
+
+    def legacy_analysis():
+        calls["analysis"] += 1
+        return {
+            "issue": "115040900",
+            "laowanjia_score": 64,
+            "hot_zone": ["31-40"],
+            "cold_zone": ["41-50"],
+            "ai_score": {},
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_rule_snapshot", old_snapshot)
+    monkeypatch.setattr(player_dashboard, "get_latest_analysis_history", legacy_analysis)
+
+    payload = player_dashboard.build_player_dashboard_summary()
+
+    assert payload["status"] == "ok"
+    assert calls["analysis"] == 1
+    assert calls["snapshot"] == 1
+    assert payload["rule_library"]["laowanjia_index"] == 64
+    assert payload["rule_library"]["primary_rules"] == ["熱門"]
+
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
