@@ -379,6 +379,46 @@ def test_rule_snapshot_rejects_mismatched_source_issue(monkeypatch):
     assert snapshot == {}
 
 
+
+def test_rule_snapshot_diagnostics_reject_explicit_issue_mismatch(monkeypatch):
+    prediction = _prediction()
+    prediction["issue"] = "115040900"
+    prediction["prediction_issue"] = "115040901"
+    diagnostics = {}
+
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_rule_snapshot_with_timing",
+        lambda **kwargs: (
+            {
+                "snapshot_json": {
+                    "source_issue": "115040899",
+                    "target_issue": "115040901",
+                    "rules": [{"key": "hot", "label": "熱門", "status": "ready", "score": 99}],
+                    "aggregate": {"primary_rules": ["hot"]},
+                }
+            },
+            {"query_count": 1, "db_calls": 1, "connection_path": "test"},
+        ),
+    )
+
+    snapshot = player_dashboard._rule_snapshot_for_dashboard(
+        {},
+        prediction,
+        diagnostics=diagnostics,
+        build_fallback=False,
+    )
+
+    stage = diagnostics["stages"]["_card_two_rules.rule_snapshot_lookup"]
+    assert snapshot == {}
+    assert stage["found"] is True
+    assert stage["snapshot_valid"] is False
+    assert stage["snapshot_issue_match"] is False
+    assert stage["source_issue"] == "115040900"
+    assert stage["target_issue"] == "115040901"
+    assert stage["snapshot_source_issue"] == "115040899"
+    assert stage["snapshot_target_issue"] == "115040901"
+
 def test_rule_snapshot_without_requested_target_accepts_matching_source(monkeypatch):
     prediction = _prediction()
     prediction["issue"] = "115040900"
