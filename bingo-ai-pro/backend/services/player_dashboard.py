@@ -3918,8 +3918,6 @@ def _build_player_dashboard_summary_payload(
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
-        "current_draw": current,
-        "latest_official_draw": latest_official_draw,
         "sync": sync,
         "card_one": card_one_payload,
         "next_prediction": next_prediction,
