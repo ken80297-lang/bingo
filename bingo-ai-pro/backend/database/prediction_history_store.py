@@ -4281,6 +4281,19 @@ def get_prediction_lifecycle_aggregates(
             ),
         ),
     )
+    if diagnostic_component and db_timing:
+        logger.warning(
+            "prediction_aggregate_db_timing component=%s pool_acquire_ms=%s connect_ms=%s execute_ms=%s fetch_ms=%s total_ms=%s result=%s backend_pid=%s connection_hash=%s",
+            diagnostic_component,
+            db_timing.get("pool_acquire_ms"),
+            db_timing.get("connect_ms"),
+            db_timing.get("execute_ms"),
+            db_timing.get("fetch_ms"),
+            db_timing.get("total_ms"),
+            db_timing.get("result"),
+            db_timing.get("backend_pid"),
+            db_timing.get("connection_hash"),
+        )
     row = rows[0] if rows else [0] * 10
     return {
         "total_prediction_count": int(row[0] or 0),
