@@ -322,6 +322,34 @@ def test_rule_snapshot_lookup_uses_prediction_source_and_target_when_analysis_is
     assert snapshot["source_issue"] == "115040900"
     assert snapshot["target_issue"] == "115040901"
 
+
+def test_rule_snapshot_rejects_mismatched_target_issue(monkeypatch):
+    prediction = _prediction()
+    prediction["issue"] = "115040900"
+    prediction["prediction_issue"] = "115040901"
+
+    monkeypatch.setattr(
+        player_dashboard,
+        "get_rule_snapshot",
+        lambda **kwargs: {
+            "snapshot_json": {
+                "source_issue": "115040900",
+                "target_issue": "115040999",
+                "rules": [{"key": "hot", "label": "熱門", "status": "ready", "score": 99}],
+                "aggregate": {"primary_rules": ["hot"]},
+                "dashboard_analysis_summary": {"laowanjia_score": 99},
+            }
+        },
+    )
+
+    snapshot = player_dashboard._rule_snapshot_for_dashboard(
+        {},
+        prediction,
+        build_fallback=False,
+    )
+
+    assert snapshot == {}
+
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
