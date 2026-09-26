@@ -3170,6 +3170,7 @@ def _card_three_payload(
         },
     }
 
+
 def _last_summary_cache() -> dict | None:
     if not _PLAYER_SUMMARY_CACHE_LOCK.acquire(blocking=False):
         return None
