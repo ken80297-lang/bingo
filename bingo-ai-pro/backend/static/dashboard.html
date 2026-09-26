@@ -1413,7 +1413,6 @@
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
-        target_issue_source: raw.target_issue_source,
         based_on_issue: raw.based_on_issue || raw.source_issue,
         based_on_draw_time: raw.based_on_draw_time || raw.source_draw_time,
         based_on_time_source: raw.based_on_time_source,
