@@ -3720,7 +3720,14 @@ def _build_player_dashboard_summary_payload(
             },
         }
 
-    analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+    rule_snapshot = _rule_snapshot_for_dashboard({}, next_prediction)
+    snapshot_summary = rule_snapshot.get("dashboard_analysis_summary") if isinstance(rule_snapshot, dict) else None
+    if isinstance(snapshot_summary, dict):
+        analysis_future = None
+        analysis = {}
+    else:
+        analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+        analysis = None
 
     if cached_aggregates:
         aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
@@ -3774,17 +3781,18 @@ def _build_player_dashboard_summary_payload(
     ) or []
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
-    analysis = _component_result(
-        "analysis",
-        analysis_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    if analysis_future is not None:
+        analysis = _component_result(
+            "analysis",
+            analysis_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            fallback={},
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        ) or {}
     active_release = {
         key: next_prediction.get(key)
         for key in (
@@ -3819,7 +3827,48 @@ def _build_player_dashboard_summary_payload(
     )
     production_history = [_history_item(item) for item in history_records if is_production_prediction(item)]
 
-    rule_library = _rule_library(analysis, next_prediction)
+    if isinstance(snapshot_summary, dict):
+        snapshot_rules = rule_snapshot.get("rules") or []
+        rules = [_rule_snapshot_item_to_dashboard(item) for item in snapshot_rules]
+        completed = sum(1 for item in rules if item.get("status") == "ready")
+        labels_by_key = {key: label for key, label in RULE_LIBRARY_NAMES}
+        snapshot_primary = [
+            labels_by_key.get(key, key)
+            for key in ((rule_snapshot.get("aggregate") or {}).get("primary_rules") or [])
+        ]
+        primary = snapshot_primary or [
+            item["name"]
+            for item in sorted(
+                rules,
+                key=lambda item: (
+                    item.get("status") == "ready",
+                    float(item.get("score") or 0) if str(item.get("score") or "").replace(".", "", 1).isdigit() else 0.0,
+                ),
+                reverse=True,
+            )
+            if item.get("status") == "ready"
+        ][:5]
+        rule_library = {
+            "title": "AI 推薦依據",
+            "completed_count": completed,
+            "total_count": len(snapshot_rules) or len(RULE_LIBRARY_NAMES),
+            "summary": f"本期主要依據：{'、'.join(primary[:3])}" if primary else "尚未建立完整分析摘要",
+            "primary_rules": primary,
+            "rules": rules,
+            "laowanjia_index": snapshot_summary.get("laowanjia_score"),
+            "hot_zones": snapshot_summary.get("hot_zone") or [],
+            "cold_zone": snapshot_summary.get("cold_zone"),
+            "star_prediction": {
+                "three_star": snapshot_summary.get("three_star"),
+                "four_star": snapshot_summary.get("four_star"),
+                "five_star": snapshot_summary.get("five_star"),
+                "six_star": snapshot_summary.get("six_star"),
+            },
+            "super_trajectory": snapshot_summary.get("super_number_trajectory_recovery") or {},
+            "cluster_recovery": snapshot_summary.get("cluster_aftershock_recovery") or {},
+        }
+    else:
+        rule_library = _rule_library(analysis, next_prediction)
     _store_component_cache("rule_library", rule_library)
     next_prediction["rule_library"] = rule_library
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
