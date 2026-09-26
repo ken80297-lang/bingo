@@ -124,7 +124,7 @@ def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monke
     monkeypatch.setattr(
         player_dashboard,
         "_rule_snapshot_for_dashboard",
-        lambda analysis, prediction: {
+        lambda analysis, prediction, **kwargs: {
             "rules": [],
             "aggregate": {},
             "dashboard_analysis_summary": {
@@ -146,7 +146,7 @@ def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monke
     assert payload["status"] == "ok"
     assert payload["rule_library"]["laowanjia_index"] == 70
     assert payload["rule_library"]["hot_zones"] == ["01-10"]
-    assert "analysis" not in payload["timing"]["steps"]
+    assert all(step.get("step") != "analysis" for step in payload["timing"]["steps"])
 
 
 def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(monkeypatch):
