@@ -117,6 +117,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback keeps dashboard read 
 logger = logging.getLogger(__name__)
 
 PLAYER_SUMMARY_TTL_SECONDS = 60
+PLAYER_AGGREGATE_CACHE_TTL_SECONDS = 60
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS = 4.5
 PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 2.0
@@ -166,6 +167,7 @@ CARD_TWO_FINALIZED_DISALLOWED = {
 _PLAYER_SUMMARY_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 _PLAYER_SUMMARY_CACHE_LOCK = threading.RLock()
 _PLAYER_SUMMARY_BUILD_LOCK = threading.Lock()
+_PLAYER_COMPONENT_CACHE_UPDATED_AT: dict[str, float] = {}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
     "latest_prediction": None,
@@ -259,6 +261,7 @@ def invalidate_player_dashboard_cache(reason: str | None = None) -> dict:
         _PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
     for key in list(_PLAYER_COMPONENT_CACHE):
         _PLAYER_COMPONENT_CACHE[key] = None if not isinstance(_PLAYER_COMPONENT_CACHE[key], list) else []
+    _PLAYER_COMPONENT_CACHE_UPDATED_AT.clear()
     with _PLAYER_IN_FLIGHT_LOCK:
         stale = [
             name
@@ -330,7 +333,15 @@ def _store_component_cache(name: str, payload: Any) -> bool:
         )
         return False
     _PLAYER_COMPONENT_CACHE[name] = deepcopy(payload)
+    _PLAYER_COMPONENT_CACHE_UPDATED_AT[name] = time.monotonic()
     return True
+
+
+def _load_fresh_component_cache(name: str, ttl_seconds: float, fallback=None):
+    updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get(name)
+    if updated_at is None or time.monotonic() - updated_at >= ttl_seconds:
+        return None
+    return _load_component_cache(name, fallback)
 
 
 def _load_component_cache(name: str, fallback=None):
@@ -3646,17 +3657,24 @@ def _build_player_dashboard_summary_payload(
     next_prediction = card_one["next_prediction"]
     detected_latest_issue = card_one["detected_latest_issue"]
 
-    aggregates_future, _ = _submit_component(
+    cached_aggregates = _load_fresh_component_cache(
         "prediction_aggregates",
-        lambda: _timed_component_stage(
-            "prediction_aggregates",
-            "prediction_lifecycle_aggregates",
-            lambda: get_prediction_lifecycle_aggregates(
-                diagnostic_component="prediction_aggregates",
-                use_dashboard_read_pool=True,
-            ),
-        ),
+        PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
     )
+    if cached_aggregates:
+        aggregates_future = None
+    else:
+        aggregates_future, _ = _submit_component(
+            "prediction_aggregates",
+            lambda: _timed_component_stage(
+                "prediction_aggregates",
+                "prediction_lifecycle_aggregates",
+                lambda: get_prediction_lifecycle_aggregates(
+                    diagnostic_component="prediction_aggregates",
+                    use_dashboard_read_pool=True,
+                ),
+            ),
+        )
 
     card_two_history_future, _ = _submit_component(
         "card_two_history",
@@ -3797,17 +3815,31 @@ def _build_player_dashboard_summary_payload(
 
     analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
 
-    aggregates = _component_result(
-        "prediction_aggregates",
-        aggregates_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    if cached_aggregates:
+        aggregates = dict(cached_aggregates)
+        component_metadata["prediction_aggregates"] = _component_metadata(
+            "prediction_aggregates",
+            aggregates,
+            source="live",
+            result="fresh_cache",
+            dashboard_generation_id=dashboard_generation_id,
+        )
+        aggregates["_component_metadata"] = component_metadata["prediction_aggregates"]
+        aggregates["source"] = "live"
+        aggregates["stale"] = False
+        timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", "fresh_cache"))
+    else:
+        aggregates = _component_result(
+            "prediction_aggregates",
+            aggregates_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            fallback={},
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        ) or {}
     previous_verification = _unavailable_previous_result(previous_target_issue)
     previous_verification["previous_result_mode"] = "stale_unavailable"
     previous_verification.setdefault("requested_target_issue", previous_target_issue)
