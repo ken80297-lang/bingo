@@ -3927,7 +3927,6 @@ def _build_player_dashboard_summary_payload(
         "data_counts": data_counts,
         "history": prediction_stats,
         "aggregates": aggregates if isinstance(aggregates, dict) else {},
-        "rule_library": rule_library,
         "warnings": warnings,
         "partial": partial,
         "stale": partial,
