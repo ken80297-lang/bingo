@@ -751,7 +751,6 @@
   <script>
     const API_TIMEOUT_MS = 10000;
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
-    let cardOneFallbackHtml = "";
     let cardOneCommittedHtml = "";
     let cardOneCommittedIssue = null;
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1702,7 +1701,6 @@
         // Card One is atomic: keep the last complete official + prediction
         // snapshot until the next complete aligned snapshot is ready.
         card.innerHTML = cardOneCommittedHtml;
-        cardOneFallbackHtml = cardOneCommittedHtml;
         return;
       }
       if (cardOneComplete) {
@@ -1710,7 +1708,6 @@
         cardOneCommittedIssue = incomingIssue;
       }
       card.innerHTML = cardHtml;
-      cardOneFallbackHtml = cardHtml;
     }
 
     function renderCardTwo(cardTwo) {
