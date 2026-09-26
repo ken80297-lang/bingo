@@ -808,11 +808,17 @@ def startup_event() -> None:
                 meta = payload.get("meta") or {}
                 components = meta.get("components") or {}
                 aggregate = components.get("prediction_aggregates") or {}
+                aggregate_payload = payload.get("aggregates") or {}
+                aggregate_db_timing = aggregate_payload.get("db_timing") or {}
                 print(
                     "PLAYER_DASHBOARD_SUMMARY_PROBE read_only=true delayed=true "
                     f"status={payload.get('status')} elapsed_ms={elapsed_ms} "
                     f"aggregate_source={aggregate.get('source')} aggregate_result={aggregate.get('result')} "
-                    f"aggregate_timed_out={aggregate.get('timed_out')} aggregate_total_ms={aggregate.get('total_ms')}",
+                    f"aggregate_timed_out={aggregate.get('timed_out')} aggregate_total_ms={aggregate.get('total_ms')} "
+                    f"aggregate_pool_acquire_ms={aggregate_db_timing.get('pool_acquire_ms')} "
+                    f"aggregate_execute_ms={aggregate_db_timing.get('execute_ms')} "
+                    f"aggregate_fetch_ms={aggregate_db_timing.get('fetch_ms')} "
+                    f"aggregate_db_total_ms={aggregate_db_timing.get('total_ms')}",
                     flush=True,
                 )
             except Exception as exc:
