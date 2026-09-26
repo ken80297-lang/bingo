@@ -151,7 +151,7 @@ def test_player_summary_skips_legacy_analysis_when_snapshot_summary_exists(monke
 
 def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(monkeypatch):
     _reset_dashboard_state()
-    calls = {"analysis": 0}
+    calls = {"analysis": 0, "snapshot": 0}
 
     monkeypatch.setattr(player_dashboard, "get_latest_official_draw", _official_draw)
     monkeypatch.setattr(player_dashboard, "get_latest_kuaishou_snapshot", lambda: None)
@@ -168,7 +168,12 @@ def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(mon
         lambda issue, *, include_metadata_lookup=True: {"record": None, "draw": None, "mode": "none"},
     )
     monkeypatch.setattr(player_dashboard, "get_current_release", lambda: {})
-    monkeypatch.setattr(player_dashboard, "get_rule_snapshot", lambda **kwargs: None)
+
+    def missing_snapshot(**kwargs):
+        calls["snapshot"] += 1
+        return None
+
+    monkeypatch.setattr(player_dashboard, "get_rule_snapshot", missing_snapshot)
 
     def legacy_analysis():
         calls["analysis"] += 1
@@ -186,6 +191,7 @@ def test_player_summary_uses_legacy_analysis_when_stored_snapshot_is_missing(mon
 
     assert payload["status"] == "ok"
     assert calls["analysis"] == 1
+    assert calls["snapshot"] == 1
     assert payload["rule_library"]["laowanjia_index"] == 63
     assert payload["rule_library"]["hot_zones"] == ["21-30"]
 
