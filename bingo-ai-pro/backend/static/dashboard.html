@@ -752,7 +752,7 @@
     const API_TIMEOUT_MS = 10000;
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
     let cardOneCommittedHtml = "";
-      const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
     const DASHBOARD_LEADER_TTL_MS = 30 * 1000;
     const DASHBOARD_LEADER_HEARTBEAT_MS = 10 * 1000;
@@ -1704,7 +1704,7 @@
       }
       if (cardOneComplete) {
         cardOneCommittedHtml = cardHtml;
-        }
+      }
       card.innerHTML = cardHtml;
     }
 
