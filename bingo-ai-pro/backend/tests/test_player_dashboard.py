@@ -246,6 +246,49 @@ def test_player_summary_old_stored_snapshot_uses_legacy_analysis_once(monkeypatc
     assert payload["rule_library"]["laowanjia_index"] == 64
     assert payload["rule_library"]["primary_rules"] == ["熱門"]
 
+
+def test_rule_library_empty_prechecked_snapshot_preserves_fallback_rule_semantics(monkeypatch):
+    analysis = {
+        "issue": "115040900",
+        "laowanjia_score": 66,
+        "hot_zone": ["21-30"],
+        "cold_zone": ["61-70"],
+        "ai_score": {},
+    }
+    prediction = _prediction()
+    lookup_calls = {"count": 0}
+
+    def unexpected_lookup(*args, **kwargs):
+        lookup_calls["count"] += 1
+        raise AssertionError("prechecked empty snapshot must not trigger another stored snapshot lookup")
+
+    monkeypatch.setattr(player_dashboard, "_rule_snapshot_for_dashboard", unexpected_lookup)
+
+    expected_snapshot = player_dashboard.build_rule_snapshot(
+        analysis,
+        prediction,
+        source_issue="115040900",
+        target_issue=prediction.get("prediction_issue") or prediction.get("target_issue"),
+    )
+    payload = player_dashboard._rule_library(analysis, prediction, snapshot={})
+
+    expected_rules = [
+        player_dashboard._rule_snapshot_item_to_dashboard(item)
+        for item in expected_snapshot.get("rules") or []
+    ]
+    expected_completed = sum(1 for item in expected_rules if item.get("status") == "ready")
+    labels_by_key = {key: label for key, label in player_dashboard.RULE_LIBRARY_NAMES}
+    expected_primary = [
+        labels_by_key.get(key, key)
+        for key in ((expected_snapshot.get("aggregate") or {}).get("primary_rules") or [])
+    ]
+
+    assert lookup_calls["count"] == 0
+    assert payload["rules"] == expected_rules
+    assert payload["completed_count"] == expected_completed
+    assert payload["total_count"] == (len(expected_rules) or len(player_dashboard.RULE_LIBRARY_NAMES))
+    assert payload["primary_rules"] == expected_primary
+
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
