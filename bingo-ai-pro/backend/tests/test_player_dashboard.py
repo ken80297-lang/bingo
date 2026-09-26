@@ -289,6 +289,39 @@ def test_rule_library_empty_prechecked_snapshot_preserves_fallback_rule_semantic
     assert payload["total_count"] == (len(expected_rules) or len(player_dashboard.RULE_LIBRARY_NAMES))
     assert payload["primary_rules"] == expected_primary
 
+
+def test_rule_snapshot_lookup_uses_prediction_source_and_target_when_analysis_is_empty(monkeypatch):
+    prediction = _prediction()
+    prediction["issue"] = "115040900"
+    prediction["prediction_issue"] = "115040901"
+    seen = []
+
+    def stored_snapshot(**kwargs):
+        seen.append(kwargs)
+        return {
+            "snapshot_json": {
+                "source_issue": "115040900",
+                "target_issue": "115040901",
+                "rules": [{"key": "hot", "label": "熱門", "status": "ready", "score": 80}],
+                "aggregate": {"primary_rules": ["hot"]},
+                "dashboard_analysis_summary": {"laowanjia_score": 70},
+            }
+        }
+
+    monkeypatch.setattr(player_dashboard, "get_rule_snapshot", stored_snapshot)
+
+    snapshot = player_dashboard._rule_snapshot_for_dashboard(
+        {},
+        prediction,
+        build_fallback=False,
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["source_issue"] == "115040900"
+    assert seen[0]["target_issue"] == "115040901"
+    assert snapshot["source_issue"] == "115040900"
+    assert snapshot["target_issue"] == "115040901"
+
 def test_player_summary_returns_fast_when_official_future_is_blocked(monkeypatch):
     _reset_dashboard_state()
     monkeypatch.setattr(player_dashboard, "PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS", 0.01)
