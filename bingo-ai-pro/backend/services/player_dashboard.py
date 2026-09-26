@@ -3135,13 +3135,11 @@ def _card_three_payload(
     sections = {
         "latest_processing": {
             "label": "最新處理資訊",
-            "current_issue": (current_draw or {}).get("issue"),
-            "last_successful_collection": sync.get("last_successful_collection"),
+                "last_successful_collection": sync.get("last_successful_collection"),
         },
         "ai_flow": {
             "label": "AI 流程",
-            "next_prediction_status": next_prediction.get("status") or "unknown",
-        },
+            },
         "system_health": {
             "label": "系統健康",
             "status": "partial" if partial else "ok",
@@ -3166,7 +3164,6 @@ def _card_three_payload(
         "status": "partial" if partial else "ok",
         "current_issue": (current_draw or {}).get("issue"),
         "next_prediction_status": next_prediction.get("status") or "unknown",
-        "prediction_status": next_prediction.get("target_status") or next_prediction.get("status") or "unknown",
         "sections": sections,
         "system": {
             "warnings": warnings,
