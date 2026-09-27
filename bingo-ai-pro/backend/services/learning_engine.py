@@ -549,6 +549,7 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
         "best_strategy": recommendation.get("best_strategy"),
         "confidence": recommendation.get("confidence"),
         "model_voting": voting,
+        "production_fast_path": recommendation.get("production_fast_path") or {},
         "results": results,
         "super_recommendation": recommendation.get("super_recommendation"),
         "sync": recommendation.get("sync"),
