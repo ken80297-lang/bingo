@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -36,7 +36,7 @@ def _scheduled_draw_time(issue: Any, open_date: str | date) -> str | None:
         return None
     local_midnight = datetime(draw_date.year, draw_date.month, draw_date.day, tzinfo=TAIPEI_TZ)
     minutes = BINGO_FIRST_DRAW_HOUR * 60 + BINGO_FIRST_DRAW_MINUTE + draw_index * BINGO_DRAW_INTERVAL_MINUTES
-    local_draw_time = local_midnight.replace(hour=0, minute=0) + __import__("datetime").timedelta(minutes=minutes)
+    local_draw_time = local_midnight.replace(hour=0, minute=0) + timedelta(minutes=minutes)
     return local_draw_time.astimezone(timezone.utc).isoformat()
 
 
