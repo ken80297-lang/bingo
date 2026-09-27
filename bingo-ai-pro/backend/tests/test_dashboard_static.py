@@ -98,6 +98,14 @@ if (mode === 'missing_official_time') delete next.playerSummary.latest_official_
 if (mode === 'missing_official_numbers') next.playerSummary.latest_official_draw.numbers = [1, 2, 3];
 if (mode === 'missing_prediction_numbers') next.playerSummary.next_prediction.candidates = [21, 22, 23];
 if (mode === 'latest_issue_not_synced') next.playerSummary.sync.is_synced = false;
+if (mode === 'official_time_from_same_issue_current') {
+  delete next.playerSummary.latest_official_draw.draw_time;
+  next.playerSummary.current_draw = {
+    issue: String(targetIssue - 1),
+    draw_time: '2026-07-30T12:34:00+08:00',
+    collected_at: '2026-07-30T12:35:00+08:00'
+  };
+}
 if (mode === 'fast_path_pending_empty') {{
   next.playerSummary.partial = true;
   next.playerSummary.stale = true;
@@ -124,6 +132,7 @@ console.log(JSON.stringify({{
   has102: second.includes('102'),
   hasVerified: second.includes('🟢 官方已驗證'),
   hasInlineOfficialTime: second.includes('第 101 期</span>') && second.includes('<span>12:00</span>') && !second.includes('開獎時間：'),
+  hasSameIssueFallbackTime: second.includes('第 101 期</span>') && second.includes('<span>12:34</span>'),
   hasGreenLatestIssue: second.includes('class="status-ok">第 101 期</span>'),
   hasPendingStatus: second.includes('尚未確認'),
   hasBasedOnIssue: second.includes('依據期號'),
@@ -530,6 +539,12 @@ def test_card_one_keeps_issue_white_until_latest_sync_is_confirmed():
     assert result["updated"] is True
     assert result["hasGreenLatestIssue"] is False
     assert result["hasInlineOfficialTime"] is True
+
+
+def test_card_one_falls_back_to_same_issue_current_draw_time():
+    result = json.loads(_run_card1_vm_scenario("official_time_from_same_issue_current"))
+    assert result["updated"] is True
+    assert result["hasSameIssueFallbackTime"] is True
 
 
 def test_card_one_omits_recommendation_created_time_when_missing():
