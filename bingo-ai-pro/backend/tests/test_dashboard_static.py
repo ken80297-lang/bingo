@@ -98,6 +98,7 @@ if (mode === 'missing_official_time') delete next.playerSummary.latest_official_
 if (mode === 'missing_official_numbers') next.playerSummary.latest_official_draw.numbers = [1, 2, 3];
 if (mode === 'missing_prediction_numbers') next.playerSummary.next_prediction.candidates = [21, 22, 23];
 if (mode === 'latest_issue_not_synced') next.playerSummary.sync.is_synced = false;
+if (mode === 'latest_issue_unverified') next.playerSummary.latest_official_draw.verification_status = 'pending';
 if (mode === 'official_time_from_same_issue_current') {{
   delete next.playerSummary.latest_official_draw.draw_time;
   next.playerSummary.current_draw = {{
@@ -534,8 +535,15 @@ def test_card_one_shows_latest_issue_green_with_time_inline():
     assert result["hasRuleSnapshotHidden"] is True
 
 
-def test_card_one_keeps_issue_white_until_latest_sync_is_confirmed():
+def test_card_one_latest_verified_issue_stays_green_while_other_data_syncs():
     result = json.loads(_run_card1_vm_scenario("latest_issue_not_synced"))
+    assert result["updated"] is True
+    assert result["hasGreenLatestIssue"] is True
+    assert result["hasInlineOfficialTime"] is True
+
+
+def test_card_one_latest_unverified_issue_stays_white():
+    result = json.loads(_run_card1_vm_scenario("latest_issue_unverified"))
     assert result["updated"] is True
     assert result["hasGreenLatestIssue"] is False
     assert result["hasInlineOfficialTime"] is True
