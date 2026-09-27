@@ -971,6 +971,70 @@ def _failure(source_issue: str | None, stage: str, reason: str, detected_at: str
     )
 
 
+def _run_full_official_lifecycle_background(saved_draw: dict, source_issue: str, target_issue: str) -> None:
+    try:
+        from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
+
+        lifecycle = process_official_draw_lifecycle(
+            saved_draw,
+            source="official_collector",
+            trigger="official_draw_saved",
+            caller="process_latest_official_draw_background",
+            create_next_prediction=True,
+        )
+        analysis_created = _analysis_exists(source_issue)
+        prediction_created = _prediction_exists_for_latest(source_issue)
+        completed = analysis_created and prediction_created
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            analysis_created=analysis_created,
+            prediction_created=prediction_created,
+            dashboard_ready=completed,
+            failure_stage=None if completed else "downstream",
+            failure_reason=None if completed else str(lifecycle.get("message") or "analysis_or_prediction_pending"),
+            next_retry_expected_at=None if completed else (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+            analysis_reconcile={"status": "completed" if analysis_created else "pending", "issue": source_issue},
+            prediction_reconcile={
+                "status": "completed" if prediction_created else "pending",
+                "refresh_status": "ready" if prediction_created else "pending",
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+            },
+        )
+        _invalidate_downstream_caches("official_draw_lifecycle_background_completed")
+    except Exception as exc:
+        logger.exception("latest sync full lifecycle background failed source_issue=%s", source_issue)
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            failure_stage="downstream",
+            failure_reason=str(exc),
+            next_retry_expected_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        )
+    finally:
+        with _RECONCILE_LOCK:
+            _RECONCILE_IN_FLIGHT.discard(source_issue)
+
+
+def _queue_full_official_lifecycle(saved_draw: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
+    with _RECONCILE_LOCK:
+        if source_issue in _RECONCILE_IN_FLIGHT:
+            return {"status": "queued", "reason": "lifecycle_already_running"}
+        _RECONCILE_IN_FLIGHT.add(source_issue)
+    future = _submit_reconcile_background(
+        _run_full_official_lifecycle_background,
+        dict(saved_draw),
+        source_issue,
+        target_issue,
+    )
+    if future is None:
+        with _RECONCILE_LOCK:
+            _RECONCILE_IN_FLIGHT.discard(source_issue)
+        return {"status": "unavailable", "reason": "background_stopped"}
+    return {"status": "queued", "reason": "full_lifecycle_background", "target_issue": target_issue}
+
+
 def process_latest_official_draw() -> dict[str, Any]:
     start = time.perf_counter()
     detected_at = _now()
@@ -1027,37 +1091,17 @@ def process_latest_official_draw() -> dict[str, Any]:
     else:
         return _failure(source_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
 
-    analysis_result: dict[str, Any]
-    try:
-        analysis_result = save_analysis_history(saved_draw)
-    except Exception as exc:
-        logger.exception("latest sync analysis failed")
-        analysis_result = {"status": "error", "error": str(exc)}
-
-    lifecycle: dict[str, Any]
-    if existing_complete and _prediction_exists_for_latest(source_issue):
-        lifecycle = {"status": "existing", "prediction": {"status": "already_exists"}}
+    analysis_created = _analysis_exists(source_issue)
+    prediction_created = _prediction_exists_for_latest(source_issue)
+    if existing_complete and prediction_created and analysis_created:
+        lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
     else:
-        try:
-            from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
+        lifecycle = _queue_full_official_lifecycle(saved_draw, source_issue, prediction_target_issue)
 
-            lifecycle = process_official_draw_lifecycle(
-                saved_draw,
-                source="official_collector",
-                trigger="official_draw_saved",
-                caller="process_latest_official_draw",
-                create_next_prediction=True,
-            )
-        except Exception as exc:
-            logger.exception("latest sync downstream lifecycle failed")
-            lifecycle = {"status": "error", "message": str(exc)}
-
-    analysis_created = analysis_result.get("status") == "ok" or _analysis_exists(source_issue)
-    prediction_payload = lifecycle.get("prediction") if isinstance(lifecycle, dict) else {}
-    prediction_created = (
-        (prediction_payload or {}).get("status") in {"created", "already_exists", "ok"}
-        or _prediction_exists_for_latest(source_issue)
-    )
+    analysis_result = {
+        "status": "existing" if analysis_created else "queued",
+        "reason": "full_lifecycle_background" if not analysis_created else None,
+    }
     completed = analysis_created and prediction_created
     stages = _snapshot_stages(
         database_saved=True,
