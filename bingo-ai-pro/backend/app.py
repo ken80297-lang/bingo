@@ -660,6 +660,15 @@ def startup_event() -> None:
 
     if not scheduler.running and _scheduler_has_jobs():
         scheduler.start()
+    if LATEST_OFFICIAL_SCHEDULER_ENABLED and scheduler.running:
+        for job_id in ("collector_official_latest_startup", "collector_official_latest"):
+            job = scheduler.get_job(job_id)
+            print(
+                "latest_official_scheduler_active "
+                f"job_id={job_id} registered={job is not None} "
+                f"next_run_time={getattr(job, 'next_run_time', None)}",
+                flush=True,
+            )
     duration_ms = round((datetime.utcnow() - startup_started).total_seconds() * 1000, 2)
     print(
         f"startup_application_ready duration_ms={duration_ms} "
