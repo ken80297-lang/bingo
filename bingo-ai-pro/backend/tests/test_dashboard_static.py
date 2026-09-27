@@ -98,14 +98,14 @@ if (mode === 'missing_official_time') delete next.playerSummary.latest_official_
 if (mode === 'missing_official_numbers') next.playerSummary.latest_official_draw.numbers = [1, 2, 3];
 if (mode === 'missing_prediction_numbers') next.playerSummary.next_prediction.candidates = [21, 22, 23];
 if (mode === 'latest_issue_not_synced') next.playerSummary.sync.is_synced = false;
-if (mode === 'official_time_from_same_issue_current') {
+if (mode === 'official_time_from_same_issue_current') {{
   delete next.playerSummary.latest_official_draw.draw_time;
-  next.playerSummary.current_draw = {
+  next.playerSummary.current_draw = {{
     issue: String(targetIssue - 1),
     draw_time: '2026-07-30T12:34:00+08:00',
     collected_at: '2026-07-30T12:35:00+08:00'
-  };
-}
+  }};
+}}
 if (mode === 'fast_path_pending_empty') {{
   next.playerSummary.partial = true;
   next.playerSummary.stale = true;
