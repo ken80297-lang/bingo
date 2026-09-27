@@ -1432,7 +1432,7 @@
         numbers: normalizeNumbers(rawNumbers),
         super_number: raw.super_number,
         verification_status: verificationStatus,
-        is_latest_issue: Boolean(issue) && Boolean(latestIssue) && issue === latestIssue && sync.is_synced === true,
+        is_latest_issue: Boolean(issue) && Boolean(latestIssue) && issue === latestIssue && verificationStatus === "verified",
         source_scope: raw.source_scope || "unknown"
       };
     }
