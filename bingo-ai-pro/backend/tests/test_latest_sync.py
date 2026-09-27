@@ -587,3 +587,69 @@ def test_latest_sync_snapshot_marks_database_behind_kuaishou(monkeypatch):
     assert result["issues_behind"] == 38
     assert result["sync_status"] == "database_behind"
     assert result["failure_stage"] == "database"
+
+
+def test_latest_sync_new_draw_queues_full_lifecycle_without_blocking(monkeypatch):
+    draw = _draw("115054727")
+    saved_by_issue = {}
+    lifecycle_calls = []
+    submitted = []
+
+    monkeypatch.setattr(latest_sync, "_source_draws_today", lambda page_size=100: [draw])
+    monkeypatch.setattr(latest_sync, "get_latest_official_draw", lambda: _draw("115054726"))
+    monkeypatch.setattr(latest_sync, "get_official_draw_by_issue", lambda issue: saved_by_issue.get(str(issue)))
+    monkeypatch.setattr(
+        latest_sync,
+        "save_official_draws",
+        lambda draws: saved_by_issue.update({str(item["issue"]): item for item in draws}) or {"status": "ok", "saved": len(draws)},
+    )
+    monkeypatch.setattr(latest_sync, "_invalidate_downstream_caches", lambda reason: None)
+    monkeypatch.setattr(latest_sync, "_reload_downstream_snapshot", lambda draw, reason: {"status": "ok"})
+    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: False)
+    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: False)
+    latest_sync._RECONCILE_IN_FLIGHT.clear()
+
+    class Future:
+        def add_done_callback(self, callback):
+            return None
+
+    class Executor:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
+            return Future()
+
+    monkeypatch.setattr(latest_sync, "_RECONCILE_EXECUTOR", Executor())
+
+    result = latest_sync.process_latest_official_draw()
+
+    assert result["database_saved"] is True
+    assert result["database_latest_issue"] == "115054727"
+    assert result["lifecycle"]["status"] == "queued"
+    assert result["analysis"]["status"] == "queued"
+    assert len(submitted) == 1
+    assert lifecycle_calls == []
+
+
+def test_latest_sync_full_lifecycle_background_preserves_complete_orchestrator(monkeypatch):
+    draw = _draw("115054727")
+    calls = []
+    latest_sync._RECONCILE_IN_FLIGHT.add("115054727")
+
+    import services.prediction_lifecycle_orchestrator as orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "process_official_draw_lifecycle",
+        lambda saved_draw, **kwargs: calls.append((saved_draw["issue"], kwargs)) or {"status": "ok"},
+    )
+    monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
+    monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: True)
+    monkeypatch.setattr(latest_sync, "_invalidate_downstream_caches", lambda reason: None)
+
+    latest_sync._run_full_official_lifecycle_background(draw, "115054727", "115054728")
+
+    assert len(calls) == 1
+    assert calls[0][0] == "115054727"
+    assert calls[0][1]["create_next_prediction"] is True
+    assert calls[0][1]["source"] == "official_collector"
+    assert "115054727" not in latest_sync._RECONCILE_IN_FLIGHT
