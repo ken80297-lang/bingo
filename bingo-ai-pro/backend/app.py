@@ -879,6 +879,33 @@ def startup_event() -> None:
             print(f"ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
 
 
+    if os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.analysis_store import get_analysis_history
+            from scripts.walk_forward_fastpath_adaptive_ab import run as run_fastpath_adaptive_ab
+
+            history = get_analysis_history(1000)
+            if len(history) < 120:
+                print(
+                    "FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR "
+                    + json.dumps({"reason": "insufficient_history", "records": len(history), "required_minimum": 120}, ensure_ascii=False, sort_keys=True),
+                    flush=True,
+                )
+            else:
+                result = run_fastpath_adaptive_ab(history, warmup=100)
+                print(
+                    "FASTPATH_ADAPTIVE_WALK_FORWARD_AB "
+                    + json.dumps(
+                        {"read_only": True, "source": "analysis_history", "records": len(history), "warmup": 100, "summary": result.get("summary") or {}},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+
 @app.on_event("shutdown")
 def shutdown_event() -> None:
     try:
