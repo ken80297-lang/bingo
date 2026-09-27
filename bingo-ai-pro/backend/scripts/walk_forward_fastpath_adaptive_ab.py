@@ -16,6 +16,7 @@ from collections import defaultdict
 from statistics import mean
 
 from database.collector_store import get_draw_history
+from database.analysis_store import build_analysis_record
 from services.model_engine import run_all_models
 from services.recommendation_center import _build_fast_path_numbers
 
@@ -92,6 +93,7 @@ def run(draws, warmup=100):
     rows = []
     version = 0
     previous_on = []
+    previous_neutral = []
     previous_off = []
 
     for index in range(warmup, len(clean)):
@@ -107,7 +109,8 @@ def run(draws, warmup=100):
             version += 1
         adaptive_scores, multipliers = _adaptive_scores(models, adaptive) if adaptive else ({}, {})
 
-        analysis = dict(source)
+        analysis_recent = list(reversed(clean[max(0, index - 100):index - 1]))
+        analysis = build_analysis_record(source, recent_draws=analysis_recent)
         on, _ = _build_fast_path_numbers(
             analysis,
             source_issue=source["issue"],
@@ -115,6 +118,18 @@ def run(draws, warmup=100):
             previous_numbers=previous_on,
             trace=[],
             adaptive_number_scores=adaptive_scores,
+        )
+        neutral_scores, _ = _adaptive_scores(
+            models,
+            {"strategy": "v7_models", **{key: 1.0 for key in KEYS.values()}},
+        )
+        neutral, _ = _build_fast_path_numbers(
+            analysis,
+            source_issue=source["issue"],
+            target_issue=target["issue"],
+            previous_numbers=previous_neutral,
+            trace=[],
+            adaptive_number_scores=neutral_scores,
         )
         off, _ = _build_fast_path_numbers(
             analysis,
@@ -131,34 +146,55 @@ def run(draws, warmup=100):
                 performance[key].append(_hits((model.get("candidate_numbers") or [])[:20], official))
 
         on_hits = _hits(on, official)
+        neutral_hits = _hits(neutral, official)
         off_hits = _hits(off, official)
         rows.append({
             "issue": target["issue"],
             "adaptive_enabled": adaptive is not None,
-            "on20": on_hits,
+            "learned20": on_hits,
+            "neutral20": neutral_hits,
             "off20": off_hits,
-            "delta": on_hits - off_hits,
+            "learned_minus_neutral": on_hits - neutral_hits,
+            "neutral_minus_off": neutral_hits - off_hits,
+            "learned_minus_off": on_hits - off_hits,
             "multipliers": multipliers,
         })
         previous_on = on
+        previous_neutral = neutral
         previous_off = off
 
     active = [row for row in rows if row["adaptive_enabled"]]
-    deltas = [row["delta"] for row in active]
+    learned_neutral = [row["learned_minus_neutral"] for row in active]
+    neutral_off = [row["neutral_minus_off"] for row in active]
+    learned_off = [row["learned_minus_off"] for row in active]
     return {
         "summary": {
             "issues": len(rows),
             "adaptive_active_issues": len(active),
-            "on20": mean(row["on20"] for row in active) if active else 0,
+            "learned20": mean(row["learned20"] for row in active) if active else 0,
+            "neutral20": mean(row["neutral20"] for row in active) if active else 0,
             "off20": mean(row["off20"] for row in active) if active else 0,
-            "paired_on_minus_off_20": _ci(deltas),
-            "wins": sum(delta > 0 for delta in deltas),
-            "ties": sum(delta == 0 for delta in deltas),
-            "losses": sum(delta < 0 for delta in deltas),
+            "paired_learned_minus_neutral_20": _ci(learned_neutral),
+            "paired_neutral_minus_off_20": _ci(neutral_off),
+            "paired_learned_minus_off_20": _ci(learned_off),
+            "learned_vs_neutral": {
+                "wins": sum(delta > 0 for delta in learned_neutral),
+                "ties": sum(delta == 0 for delta in learned_neutral),
+                "losses": sum(delta < 0 for delta in learned_neutral),
+            },
+            "neutral_vs_off": {
+                "wins": sum(delta > 0 for delta in neutral_off),
+                "ties": sum(delta == 0 for delta in neutral_off),
+                "losses": sum(delta < 0 for delta in neutral_off),
+            },
+            "learned_vs_off": {
+                "wins": sum(delta > 0 for delta in learned_off),
+                "ties": sum(delta == 0 for delta in learned_off),
+                "losses": sum(delta < 0 for delta in learned_off),
+            },
         },
         "rows": rows,
     }
-
 
 def main():
     parser = argparse.ArgumentParser()
