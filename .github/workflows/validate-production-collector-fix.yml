@@ -17,5 +17,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - run: pip install pytest
       - run: python -m pytest tests/test_latest_sync.py tests/test_collector_safety.py -q
       - run: python -m py_compile services/latest_sync.py services/official_verification.py
