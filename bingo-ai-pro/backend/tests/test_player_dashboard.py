@@ -13,20 +13,14 @@ from services import player_dashboard
 
 
 def _reset_dashboard_state() -> None:
-    # Test isolation needs the summary build lock as well as cache generation
-    # reset. A timed-out test can leave its builder running after invalidation;
-    # the next test would then take the stale-summary fallback path.
-    acquired = player_dashboard._PLAYER_SUMMARY_BUILD_LOCK.acquire(timeout=2.0)
-    try:
-        player_dashboard.invalidate_player_dashboard_cache("test_reset")
-        player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {}
-        player_dashboard._PLAYER_COMPONENT_CACHE["analysis"] = {}
-        player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
-        for key in player_dashboard._PLAYER_RUNTIME_METRICS:
-            player_dashboard._PLAYER_RUNTIME_METRICS[key] = 0
-    finally:
-        if acquired:
-            player_dashboard._PLAYER_SUMMARY_BUILD_LOCK.release()
+    # Use the production invalidation path so late futures from a prior test
+    # cannot repopulate the next test's component cache generation.
+    player_dashboard.invalidate_player_dashboard_cache("test_reset")
+    player_dashboard._PLAYER_COMPONENT_CACHE["prediction_aggregates"] = {}
+    player_dashboard._PLAYER_COMPONENT_CACHE["analysis"] = {}
+    player_dashboard._PLAYER_COMPONENT_CACHE["kuaishou"] = {}
+    for key in player_dashboard._PLAYER_RUNTIME_METRICS:
+        player_dashboard._PLAYER_RUNTIME_METRICS[key] = 0
 
 
 @pytest.fixture(autouse=True)
