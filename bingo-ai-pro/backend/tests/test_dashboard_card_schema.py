@@ -171,6 +171,7 @@ def test_player_summary_cache_ttl_and_single_flight_stale_fallback(monkeypatch):
         result = player_dashboard.build_player_dashboard_summary()
     finally:
         player_dashboard._PLAYER_SUMMARY_BUILD_LOCK.release()
+        player_dashboard.invalidate_player_dashboard_cache("test_single_flight_stale_fallback_cleanup")
 
     assert result["cached"] is True
     assert result["stale"] is True
