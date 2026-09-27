@@ -27,6 +27,12 @@ def _reset_dashboard_state() -> None:
 def reset_dashboard_state_fixture():
     _reset_dashboard_state()
     yield
+    # Let component callbacks finish before invalidating their generation.
+    # This keeps late completions from leaking into the next test without
+    # changing production dashboard behavior.
+    deadline = time.monotonic() + 1.0
+    while player_dashboard._PLAYER_COMPONENT_IN_FLIGHT and time.monotonic() < deadline:
+        time.sleep(0.01)
     _reset_dashboard_state()
 
 
