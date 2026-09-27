@@ -1417,14 +1417,17 @@
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
       const raw = cardOne.latest_official_draw || cardOne.current_draw || {};
+      const currentDraw = cardOne.current_draw || (player && player.current_draw) || {};
       const sync = (player && player.sync) || {};
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
       const rawNumbers = raw.numbers || [];
       const issue = issueNumber(raw.issue);
+      const currentIssue = issueNumber(currentDraw.issue);
+      const sameIssueCurrent = Boolean(issue) && Boolean(currentIssue) && issue === currentIssue ? currentDraw : {};
       const latestIssue = issueNumber(sync.detected_latest_issue || sync.official_latest_issue);
       return {
         issue: raw.issue,
-        draw_time: raw.draw_time || raw.collected_at,
+        draw_time: raw.draw_time || sameIssueCurrent.draw_time || raw.collected_at || sameIssueCurrent.collected_at,
         raw_numbers: rawNumbers,
         numbers: normalizeNumbers(rawNumbers),
         super_number: raw.super_number,
