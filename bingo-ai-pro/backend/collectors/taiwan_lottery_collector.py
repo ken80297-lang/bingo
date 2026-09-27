@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -12,6 +12,32 @@ logger = logging.getLogger(__name__)
 OFFICIAL_BINGO_URL = "https://api.taiwanlottery.com/TLCAPIWeB/Lottery/BingoResult"
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 _LAST_FETCH_DIAGNOSTICS: list[dict] = []
+
+BINGO_DRAWS_PER_DAY = 203
+BINGO_FIRST_DRAW_HOUR = 7
+BINGO_FIRST_DRAW_MINUTE = 5
+BINGO_DRAW_INTERVAL_MINUTES = 5
+# Verified production anchor: 2026-09-24 final draw 115054201 at 23:55.
+BINGO_SCHEDULE_ANCHOR_DATE = date(2026, 9, 24)
+BINGO_SCHEDULE_ANCHOR_LAST_ISSUE = 115054201
+
+
+def _scheduled_draw_time(issue: Any, open_date: str | date) -> str | None:
+    try:
+        issue_number = int(issue)
+        draw_date = open_date if isinstance(open_date, date) else date.fromisoformat(str(open_date))
+    except Exception:
+        return None
+    day_offset = (draw_date - BINGO_SCHEDULE_ANCHOR_DATE).days
+    expected_last_issue = BINGO_SCHEDULE_ANCHOR_LAST_ISSUE + day_offset * BINGO_DRAWS_PER_DAY
+    first_issue = expected_last_issue - (BINGO_DRAWS_PER_DAY - 1)
+    draw_index = issue_number - first_issue
+    if not 0 <= draw_index < BINGO_DRAWS_PER_DAY:
+        return None
+    local_midnight = datetime(draw_date.year, draw_date.month, draw_date.day, tzinfo=TAIPEI_TZ)
+    minutes = BINGO_FIRST_DRAW_HOUR * 60 + BINGO_FIRST_DRAW_MINUTE + draw_index * BINGO_DRAW_INTERVAL_MINUTES
+    local_draw_time = local_midnight.replace(hour=0, minute=0) + timedelta(minutes=minutes)
+    return local_draw_time.astimezone(timezone.utc).isoformat()
 
 
 def _as_int(value: Any) -> int | None:
@@ -164,6 +190,8 @@ def fetch_official_bingo_results(
                 continue
             draw_time, parse_reason = _parse_draw_time(row.get("dDate"))
             _record_draw_time_parse_failure(issue, row.get("dDate"), parse_reason)
+            if draw_time is None and parse_reason in {"missing", "placeholder_datetime"}:
+                draw_time = _scheduled_draw_time(issue, query_date)
             draws.append(
                 {
                     "issue": str(issue),

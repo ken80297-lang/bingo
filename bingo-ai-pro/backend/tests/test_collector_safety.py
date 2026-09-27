@@ -43,6 +43,17 @@ def test_taiwan_lottery_draw_time_parser_normalizes_to_utc():
     assert reason == "invalid_datetime_format"
 
 
+def test_taiwan_lottery_schedule_fallback_maps_known_issues_to_times():
+    assert taiwan_lottery_collector._scheduled_draw_time("115054608", "2026-09-27") == "2026-09-26T23:05:00+00:00"
+    assert taiwan_lottery_collector._scheduled_draw_time("115054632", "2026-09-27") == "2026-09-27T01:05:00+00:00"
+    assert taiwan_lottery_collector._scheduled_draw_time("115054810", "2026-09-27") == "2026-09-27T15:55:00+00:00"
+
+
+def test_taiwan_lottery_schedule_fallback_rejects_issue_outside_day():
+    assert taiwan_lottery_collector._scheduled_draw_time("115054607", "2026-09-27") is None
+    assert taiwan_lottery_collector._scheduled_draw_time("115054811", "2026-09-27") is None
+
+
 def test_taiwan_lottery_fetch_accepts_string_rt_code(monkeypatch):
     monkeypatch.setattr(
         taiwan_lottery_collector,
