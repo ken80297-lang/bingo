@@ -1417,8 +1417,11 @@
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
       const raw = cardOne.latest_official_draw || cardOne.current_draw || {};
+      const sync = (player && player.sync) || {};
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
       const rawNumbers = raw.numbers || [];
+      const issue = issueNumber(raw.issue);
+      const latestIssue = issueNumber(sync.detected_latest_issue || sync.official_latest_issue);
       return {
         issue: raw.issue,
         draw_time: raw.draw_time || raw.collected_at,
@@ -1426,6 +1429,7 @@
         numbers: normalizeNumbers(rawNumbers),
         super_number: raw.super_number,
         verification_status: verificationStatus,
+        is_latest_issue: Boolean(issue) && Boolean(latestIssue) && issue === latestIssue && sync.is_synced === true,
         source_scope: raw.source_scope || "unknown"
       };
     }
@@ -1483,10 +1487,9 @@
             <h3>最新一期</h3>
           </div>
           <div class="card1-info-line">
-            <span>第 ${safe((officialDraw || {}).issue)} 期</span>
-            <span class="status-pill ${statusClass(officialStatus)}">${officialStatusText(officialStatus)}</span>
+            <span class="${(officialDraw || {}).is_latest_issue ? "status-ok" : ""}">第 ${safe((officialDraw || {}).issue)} 期</span>
+            <span>${formatTimeOnly((officialDraw || {}).draw_time)}</span>
           </div>
-          <div class="summary-line">開獎時間：${formatTimeOnly((officialDraw || {}).draw_time)}</div>
         </div>
 
         <div class="card1-section">
