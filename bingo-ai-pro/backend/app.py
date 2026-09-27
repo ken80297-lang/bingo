@@ -338,7 +338,17 @@ def _schedule_latest_official_job() -> None:
         print("latest_official_scheduler_disabled interval_job_registered=false")
         update_collector_runtime(official_collector_interval_job_registered=False)
         return
-    scheduler.add_job(
+    startup_job = scheduler.add_job(
+        collect_official_today,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=8),
+        id="collector_official_latest_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+    interval_job = scheduler.add_job(
         collect_official_today,
         "interval",
         minutes=2,
@@ -347,6 +357,12 @@ def _schedule_latest_official_job() -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=90,
+    )
+    print(
+        "latest_official_scheduler_registered "
+        f"startup_job_id={getattr(startup_job, 'id', 'collector_official_latest_startup')} "
+        f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
+        f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
     )
     update_collector_runtime(official_collector_interval_job_registered=True)
 
