@@ -1538,12 +1538,10 @@
       const cardOneComplete = isCompleteOfficialDraw(officialDraw)
         && isCompletePrediction(next)
         && isCardOneIssueAligned(officialDraw, next);
-      if (!cardOneComplete && cardOneCommittedHtml) {
-        // Card One is atomic: keep the last complete official + prediction
-        // snapshot until the next complete aligned snapshot is ready.
-        card.innerHTML = cardOneCommittedHtml;
-        return;
-      }
+      // Keep the official draw live even while the background prediction for
+      // the new issue is still reconciling. Holding the entire Card One here
+      // makes a successfully persisted official issue look stale to the user.
+      // Prediction readiness is already rendered independently above.
       if (cardOneComplete) {
         cardOneCommittedHtml = cardHtml;
       }
