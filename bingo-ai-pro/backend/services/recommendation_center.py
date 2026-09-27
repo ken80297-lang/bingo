@@ -560,7 +560,7 @@ def calculate_fast_recommendation(
             "winning_model": "production_fast_path",
             "model_voting": {
                 "status": learning_models_payload.get("status", "ok"),
-                "reason": "learning_snapshot_only_fast_path_output_unchanged",
+                "reason": "learning_models_feed_adaptive_fast_path_final_selection",
                 "final_candidates": learning_final_candidates,
                 "confidence": learning_confidence,
                 "model_scores": learning_model_scores,
