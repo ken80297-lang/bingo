@@ -440,6 +440,7 @@ def reverify_recent_draws(limit: int = 200) -> dict:
 def collect_official_today() -> dict:
     start = time.perf_counter()
     logger.info("collector_job_started")
+    print("latest_official_collector_started", flush=True)
     with official_collection_lock("official_collector") as (locked, lock_payload):
         if not locked:
             result = {
@@ -455,6 +456,12 @@ def collect_official_today() -> dict:
         result = _collect_official_today_locked(start)
         result["schema_init"] = schema_init
         _log_collector_finished(result)
+        print(
+            "latest_official_collector_finished "
+            f"status={result.get('status')} count={result.get('count')} "
+            f"exit_reason={result.get('exit_reason')}",
+            flush=True,
+        )
         return result
 
 
