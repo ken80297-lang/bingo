@@ -68,13 +68,14 @@ def _weights(performance, version):
     }
 
 
-def _adaptive_scores(models, adaptive):
+def _adaptive_scores(models, adaptive, strength=1.0):
     scores = {}
     multipliers = {}
     for model in models:
         key = str(model.get("model") or "")
         weight_key = KEYS.get(key)
         multiplier = float(adaptive.get(weight_key, 1.0)) if adaptive and weight_key else 1.0
+        multiplier = 1.0 + (multiplier - 1.0) * float(strength)
         multiplier = max(0.5, min(1.5, multiplier))
         multipliers[key] = multiplier
         confidence = float(model.get("confidence") or 0)
@@ -84,7 +85,7 @@ def _adaptive_scores(models, adaptive):
     return scores, multipliers
 
 
-def run(draws, warmup=100):
+def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     clean = [{**draw, "issue": str(draw.get("issue")), "numbers": _numbers(draw)} for draw in draws]
     clean = [draw for draw in clean if len(draw["numbers"]) == 20 and draw["issue"].isdigit()]
     clean.sort(key=lambda draw: int(draw["issue"]))
@@ -92,7 +93,7 @@ def run(draws, warmup=100):
     performance = defaultdict(list)
     rows = []
     version = 0
-    previous_on = []
+    previous_by_strength = {float(strength): [] for strength in strengths}
     previous_neutral = []
     previous_off = []
 
@@ -107,18 +108,23 @@ def run(draws, warmup=100):
         adaptive = _weights(performance, version + 1)
         if adaptive:
             version += 1
-        adaptive_scores, multipliers = _adaptive_scores(models, adaptive) if adaptive else ({}, {})
-
         analysis_recent = list(reversed(clean[max(0, index - 100):index - 1]))
         analysis = build_analysis_record(source, recent_draws=analysis_recent)
-        on, _ = _build_fast_path_numbers(
-            analysis,
-            source_issue=source["issue"],
-            target_issue=target["issue"],
-            previous_numbers=previous_on,
-            trace=[],
-            adaptive_number_scores=adaptive_scores,
-        )
+        learned_by_strength = {}
+        multipliers_by_strength = {}
+        for strength in strengths:
+            strength = float(strength)
+            adaptive_scores, strength_multipliers = _adaptive_scores(models, adaptive, strength=strength) if adaptive else ({}, {})
+            learned_numbers, _ = _build_fast_path_numbers(
+                analysis,
+                source_issue=source["issue"],
+                target_issue=target["issue"],
+                previous_numbers=previous_by_strength[strength],
+                trace=[],
+                adaptive_number_scores=adaptive_scores,
+            )
+            learned_by_strength[strength] = learned_numbers
+            multipliers_by_strength[strength] = strength_multipliers
         neutral_scores, _ = _adaptive_scores(
             models,
             {"strategy": "v7_models", **{key: 1.0 for key in KEYS.values()}},
@@ -145,53 +151,43 @@ def run(draws, warmup=100):
             if key in MODELS:
                 performance[key].append(_hits((model.get("candidate_numbers") or [])[:20], official))
 
-        on_hits = _hits(on, official)
+        learned_hits = {strength: _hits(numbers, official) for strength, numbers in learned_by_strength.items()}
         neutral_hits = _hits(neutral, official)
         off_hits = _hits(off, official)
         rows.append({
             "issue": target["issue"],
             "adaptive_enabled": adaptive is not None,
-            "learned20": on_hits,
+            "learned_by_strength": {str(strength): hits for strength, hits in learned_hits.items()},
             "neutral20": neutral_hits,
             "off20": off_hits,
-            "learned_minus_neutral": on_hits - neutral_hits,
-            "neutral_minus_off": neutral_hits - off_hits,
-            "learned_minus_off": on_hits - off_hits,
-            "multipliers": multipliers,
+            "multipliers_by_strength": {str(strength): values for strength, values in multipliers_by_strength.items()},
         })
-        previous_on = on
+        for strength, numbers in learned_by_strength.items():
+            previous_by_strength[strength] = numbers
         previous_neutral = neutral
         previous_off = off
 
     active = [row for row in rows if row["adaptive_enabled"]]
-    learned_neutral = [row["learned_minus_neutral"] for row in active]
-    neutral_off = [row["neutral_minus_off"] for row in active]
-    learned_off = [row["learned_minus_off"] for row in active]
+    strength_summary = {}
+    for strength in strengths:
+        key = str(float(strength))
+        deltas = [row["learned_by_strength"][key] - row["neutral20"] for row in active]
+        strength_summary[key] = {
+            "mean20": mean(row["learned_by_strength"][key] for row in active) if active else 0,
+            "vs_neutral": _ci(deltas),
+            "wins": sum(delta > 0 for delta in deltas),
+            "ties": sum(delta == 0 for delta in deltas),
+            "losses": sum(delta < 0 for delta in deltas),
+        }
+    neutral_off = [row["neutral20"] - row["off20"] for row in active]
     return {
         "summary": {
             "issues": len(rows),
             "adaptive_active_issues": len(active),
-            "learned20": mean(row["learned20"] for row in active) if active else 0,
             "neutral20": mean(row["neutral20"] for row in active) if active else 0,
             "off20": mean(row["off20"] for row in active) if active else 0,
-            "paired_learned_minus_neutral_20": _ci(learned_neutral),
+            "strengths": strength_summary,
             "paired_neutral_minus_off_20": _ci(neutral_off),
-            "paired_learned_minus_off_20": _ci(learned_off),
-            "learned_vs_neutral": {
-                "wins": sum(delta > 0 for delta in learned_neutral),
-                "ties": sum(delta == 0 for delta in learned_neutral),
-                "losses": sum(delta < 0 for delta in learned_neutral),
-            },
-            "neutral_vs_off": {
-                "wins": sum(delta > 0 for delta in neutral_off),
-                "ties": sum(delta == 0 for delta in neutral_off),
-                "losses": sum(delta < 0 for delta in neutral_off),
-            },
-            "learned_vs_off": {
-                "wins": sum(delta > 0 for delta in learned_off),
-                "ties": sum(delta == 0 for delta in learned_off),
-                "losses": sum(delta < 0 for delta in learned_off),
-            },
         },
         "rows": rows,
     }
