@@ -85,15 +85,41 @@ def _adaptive_scores(models, adaptive, strength=1.0):
     return scores, multipliers
 
 
+def _regime(analysis):
+    cluster = str(analysis.get("cluster_level") or "unknown")
+    consecutive_count = len(analysis.get("consecutive") or [])
+    diagonal_score = float(analysis.get("diagonal_score") or 0)
+    if cluster == "大型群聚":
+        return "large_cluster"
+    if consecutive_count >= 3 or diagonal_score >= 24:
+        return "pattern_active"
+    return "normal"
+
+
+def _conditional_weights(performance_by_regime, regime, version):
+    bucket = performance_by_regime.get(regime) or {}
+    if any(len(bucket.get(model) or []) < 20 for model in MODELS):
+        return None
+    averages = {model: mean(bucket[model][-100:]) for model in MODELS}
+    center = mean(averages.values()) or 1.0
+    return {
+        "strategy": "v7_conditional",
+        "version": version,
+        **{KEYS[model]: max(0.5, min(1.5, averages[model] / center)) for model in MODELS},
+    }
+
+
 def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     clean = [{**draw, "issue": str(draw.get("issue")), "numbers": _numbers(draw)} for draw in draws]
     clean = [draw for draw in clean if len(draw["numbers"]) == 20 and draw["issue"].isdigit()]
     clean.sort(key=lambda draw: int(draw["issue"]))
 
     performance = defaultdict(list)
+    performance_by_regime = defaultdict(lambda: defaultdict(list))
     rows = []
     version = 0
     previous_by_strength = {float(strength): [] for strength in strengths}
+    previous_conditional = []
     previous_neutral = []
     previous_off = []
 
@@ -110,6 +136,17 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             version += 1
         analysis_recent = list(reversed(clean[max(0, index - 100):index - 1]))
         analysis = build_analysis_record(source, recent_draws=analysis_recent)
+        regime = _regime(analysis)
+        conditional = _conditional_weights(performance_by_regime, regime, version + 1)
+        conditional_scores, conditional_multipliers = _adaptive_scores(models, conditional) if conditional else ({}, {})
+        conditional_numbers, _ = _build_fast_path_numbers(
+            analysis,
+            source_issue=source["issue"],
+            target_issue=target["issue"],
+            previous_numbers=previous_conditional,
+            trace=[],
+            adaptive_number_scores=conditional_scores,
+        )
         learned_by_strength = {}
         multipliers_by_strength = {}
         for strength in strengths:
@@ -149,7 +186,9 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         for model in models:
             key = str(model.get("model") or "")
             if key in MODELS:
-                performance[key].append(_hits((model.get("candidate_numbers") or [])[:20], official))
+                model_hits = _hits((model.get("candidate_numbers") or [])[:20], official)
+                performance[key].append(model_hits)
+                performance_by_regime[regime][key].append(model_hits)
 
         learned_hits = {strength: _hits(numbers, official) for strength, numbers in learned_by_strength.items()}
         neutral_hits = _hits(neutral, official)
@@ -157,6 +196,10 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         rows.append({
             "issue": target["issue"],
             "adaptive_enabled": adaptive is not None,
+            "regime": regime,
+            "conditional_enabled": conditional is not None,
+            "conditional20": _hits(conditional_numbers, official),
+            "conditional_multipliers": conditional_multipliers,
             "learned_by_strength": {str(strength): hits for strength, hits in learned_hits.items()},
             "neutral20": neutral_hits,
             "off20": off_hits,
@@ -164,6 +207,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         })
         for strength, numbers in learned_by_strength.items():
             previous_by_strength[strength] = numbers
+        previous_conditional = conditional_numbers
         previous_neutral = neutral
         previous_off = off
 
@@ -180,6 +224,18 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "losses": sum(delta < 0 for delta in deltas),
         }
     neutral_off = [row["neutral20"] - row["off20"] for row in active]
+    conditional_active = [row for row in rows if row.get("conditional_enabled")]
+    conditional_deltas = [row["conditional20"] - row["neutral20"] for row in conditional_active]
+    regime_summary = {}
+    for regime in sorted({row.get("regime") for row in conditional_active}):
+        group = [row for row in conditional_active if row.get("regime") == regime]
+        deltas = [row["conditional20"] - row["neutral20"] for row in group]
+        regime_summary[regime] = {
+            "issues": len(group),
+            "conditional20": mean(row["conditional20"] for row in group),
+            "neutral20": mean(row["neutral20"] for row in group),
+            "vs_neutral": _ci(deltas),
+        }
     return {
         "summary": {
             "issues": len(rows),
@@ -188,6 +244,16 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "off20": mean(row["off20"] for row in active) if active else 0,
             "strengths": strength_summary,
             "paired_neutral_minus_off_20": _ci(neutral_off),
+            "conditional": {
+                "active_issues": len(conditional_active),
+                "mean20": mean(row["conditional20"] for row in conditional_active) if conditional_active else 0,
+                "neutral20": mean(row["neutral20"] for row in conditional_active) if conditional_active else 0,
+                "vs_neutral": _ci(conditional_deltas),
+                "wins": sum(delta > 0 for delta in conditional_deltas),
+                "ties": sum(delta == 0 for delta in conditional_deltas),
+                "losses": sum(delta < 0 for delta in conditional_deltas),
+                "regimes": regime_summary,
+            },
         },
         "rows": rows,
     }
