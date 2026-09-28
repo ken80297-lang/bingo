@@ -13,6 +13,12 @@ import argparse
 import json
 import math
 import os
+import sys
+from pathlib import Path
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 from collections import defaultdict
 from statistics import mean
 
@@ -707,8 +713,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=2000)
     parser.add_argument("--warmup", type=int, default=100)
-    parser.add_argument("--source", choices=("draw_history", "supabase_analysis"), default="draw_history")
-    parser.add_argument("--max-issue", type=int)
+    default_source = "supabase_analysis" if os.getenv("SHADOW_RESEARCH_SUPABASE", "").strip().lower() in {"1", "true", "yes", "on"} else "draw_history"
+    parser.add_argument("--source", choices=("draw_history", "supabase_analysis"), default=default_source)
+    parser.add_argument("--max-issue", type=int, default=int(os.getenv("SHADOW_RESEARCH_MAX_ISSUE", "0")) or None)
     args = parser.parse_args()
     if args.source == "supabase_analysis":
         draws = _supabase_analysis_history(args.limit, args.max_issue)
