@@ -500,7 +500,19 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "vs_neutral": _ci(deltas),
             "models": model_performance,
         }
-    full_score_changed = [row.get("full_score_rank_changed_numbers", 0) for row in conditional_active]
+    constraint_shadows = {}
+    for shadow_name in ("zone", "tail", "previous"):
+        shadow_deltas = [row.get("constraint_shadow_hits", {}).get(shadow_name, row["conditional20"]) - row["conditional20"] for row in conditional_active]
+        shadow_changes = [row.get("constraint_shadow_changed", {}).get(shadow_name, 0) for row in conditional_active]
+        constraint_shadows[shadow_name] = {
+            "changed_issues": sum(value > 0 for value in shadow_changes),
+            "mean_changed_numbers": mean(shadow_changes) if shadow_changes else 0,
+            "vs_production_constraints": _ci(shadow_deltas),
+            "wins": sum(value > 0 for value in shadow_deltas),
+            "ties": sum(value == 0 for value in shadow_deltas),
+            "losses": sum(value < 0 for value in shadow_deltas),
+        }
+        full_score_changed = [row.get("full_score_rank_changed_numbers", 0) for row in conditional_active]
     raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
     final_changed = [row.get("conditional_changed_numbers", 0) for row in conditional_active]
     dilution_summary = {
@@ -531,6 +543,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "strengths": strength_summary,
             "paired_neutral_minus_off_20": _ci(neutral_off),
             "adaptive_rank_dilution": dilution_summary,
+            "constraint_shadow_arms": constraint_shadows,
             "selective_confidence_gate": {
                 "enabled_issues": len(selective_enabled_rows),
                 "fallback_issues": len(conditional_active) - len(selective_enabled_rows),
