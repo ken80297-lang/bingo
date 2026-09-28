@@ -914,6 +914,8 @@ def startup_event() -> None:
                         "vs_neutral": (regime_data or {}).get("vs_neutral"),
                     }
                 print("FASTPATH_REGIME_SUMMARY " + json.dumps(regime_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                constraint_summary = (result.get("summary") or {}).get("constraint_shadow_arms") or {}
+                print("FASTPATH_CONSTRAINT_SHADOW_SUMMARY " + json.dumps(constraint_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 dilution_summary = (result.get("summary") or {}).get("adaptive_rank_dilution") or {}
                 print("FASTPATH_ADAPTIVE_RANK_DILUTION " + json.dumps(dilution_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 selective_summary = (result.get("summary") or {}).get("selective_confidence_gate") or {}
