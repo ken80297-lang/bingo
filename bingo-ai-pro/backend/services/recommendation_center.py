@@ -281,6 +281,7 @@ def _build_fast_path_numbers(
     trace: list[dict],
     adaptive_number_scores: dict[int, float] | None = None,
     constraint_overrides: dict | None = None,
+    source_weight_overrides: dict | None = None,
 ) -> tuple[list[int], dict]:
     source_weights = {
         "patch_numbers": 9.0,
@@ -291,7 +292,9 @@ def _build_fast_path_numbers(
         "repeated_numbers": 3.5,
         "latest_draw_numbers": 1.0,
     }
-    source_values = {
+    if source_weight_overrides:
+        source_weights.update({key: float(value) for key, value in source_weight_overrides.items() if key in source_weights})
+        source_values = {
         "patch_numbers": _recommendation_numbers(analysis.get("patch_numbers")),
         "missing_numbers": _recommendation_numbers(analysis.get("missing_numbers")),
         "cold_numbers": _recommendation_numbers(analysis.get("cold_numbers")),
