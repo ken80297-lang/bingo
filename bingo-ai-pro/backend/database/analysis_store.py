@@ -239,7 +239,6 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "zone_cluster_strength": zone_cluster_strength,
         "consecutive_extension": consecutive_extension,
         "tail_trend_strength": tail_trend_strength,
-        "composite_market_regime": composite_market_regime,
     })
     ai_score = {
         "score": min(
@@ -259,6 +258,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "zone_cluster_strength": zone_cluster_strength,
         "consecutive_extension": consecutive_extension,
         "tail_trend_strength": tail_trend_strength,
+        "composite_market_regime": composite_market_regime,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
