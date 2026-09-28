@@ -28,6 +28,7 @@ RULE_REGISTRY: tuple[RuleDefinition, ...] = (
     RuleDefinition("cold", "冷門", "trend", ("cold_numbers",)),
     RuleDefinition("missing", "缺號", "trend", ("missing_numbers",)),
     RuleDefinition("repeat", "重號", "trend", ("repeated_numbers",)),
+    RuleDefinition("long_dragon", "長龍追號", "trend", ("ai_score",)),
     RuleDefinition("tail", "尾數", "shape", ("tail_distribution",)),
     RuleDefinition("gap", "間距", "gap", ("difference_values", "gap_score")),
     RuleDefinition("cluster", "群聚", "zone", ("cluster_level", "cluster_score")),
@@ -334,6 +335,14 @@ def _build_rule_item(rule: RuleDefinition, analysis: dict, prediction: dict) -> 
         candidates = _numbers(analysis.get("missing_numbers"))[:12]
     elif rule.key == "repeat":
         candidates = _numbers(analysis.get("repeated_numbers"))[:10]
+    elif rule.key == "long_dragon":
+        data = _nested_rule(analysis, "long_dragon")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = list(data.get("streaks") or [])
+        if data:
+            candidate_groups.append({"shadow_only": True, "max_streak": data.get("max_streak"), "active_count": data.get("active_count")})
     elif rule.key == "tail":
         candidate_groups = _tail_groups(analysis.get("tail_distribution"), prediction)
     elif rule.key == "gap":
