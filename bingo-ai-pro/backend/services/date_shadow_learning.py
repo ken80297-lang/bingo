@@ -68,5 +68,5 @@ def _bootstrap_date_evaluation() -> None:
         print(f"shadow_date_bootstrap_failed date={requested} error_type={type(exc).__name__} error={exc}")
 
 
-os.environ["SHADOW_DATE_BOOTSTRAP"] = "2026-09-28"
-threading.Thread(target=_bootstrap_date_evaluation, name="shadow-date-bootstrap", daemon=True).start()
+if os.getenv("SHADOW_DATE_BOOTSTRAP"):
+    threading.Thread(target=_bootstrap_date_evaluation, name="shadow-date-bootstrap", daemon=True).start()
