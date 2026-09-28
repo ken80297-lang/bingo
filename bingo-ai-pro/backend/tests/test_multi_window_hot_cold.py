@@ -25,7 +25,7 @@ def test_multi_window_hot_cold_builds_10_20_50_100_windows():
     assert result["windows"]["10"]["available_draws"] == 10
     assert result["windows"]["100"]["available_draws"] == 100
     assert result["windows"]["10"]["hot_numbers"][:2] == [1, 2]
-    assert 80 in result["windows"]["10"]["cold_numbers"]
+    assert result["windows"]["10"]["counts"]["80"] == 0\n    assert all(result["windows"]["10"]["counts"][str(number)] == 0 for number in result["windows"]["10"]["cold_numbers"])
     assert result["short_window"] == 10
     assert result["long_window"] == 100
     assert result["shadow_only"] is True
