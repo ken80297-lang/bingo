@@ -541,6 +541,34 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "ties": sum(value == 0 for value in shadow_deltas),
             "losses": sum(value < 0 for value in shadow_deltas),
         }
+    large_cluster_tail_stability = {}
+    large_cluster_tail_rows = sorted(
+        [row for row in conditional_active if row.get("regime") == "large_cluster"],
+        key=lambda row: int(row["issue"]),
+    )
+    for segment_index, segment_name in enumerate(("early", "middle", "late")):
+        start = (len(large_cluster_tail_rows) * segment_index) // 3
+        end = (len(large_cluster_tail_rows) * (segment_index + 1)) // 3
+        segment = large_cluster_tail_rows[start:end]
+        deltas = [
+            row.get("constraint_shadow_hits", {}).get("tail", row["conditional20"]) - row["conditional20"]
+            for row in segment
+        ]
+        changes = [row.get("constraint_shadow_changed", {}).get("tail", 0) for row in segment]
+        changed_deltas = [delta for delta, change in zip(deltas, changes) if change > 0]
+        large_cluster_tail_stability[segment_name] = {
+            "issues": len(segment),
+            "changed_issues": sum(change > 0 for change in changes),
+            "mean_changed_numbers": mean(changes) if changes else 0,
+            "vs_production_constraints": _ci(deltas),
+            "changed_only": {
+                "issues": len(changed_deltas),
+                "vs_production_constraints": _ci(changed_deltas),
+                "wins": sum(delta > 0 for delta in changed_deltas),
+                "ties": sum(delta == 0 for delta in changed_deltas),
+                "losses": sum(delta < 0 for delta in changed_deltas),
+            },
+        }
     constraint_shadows_by_regime = {}
     for regime in sorted({row.get("regime") for row in conditional_active}):
         group = [row for row in conditional_active if row.get("regime") == regime]
@@ -591,6 +619,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "adaptive_rank_dilution": dilution_summary,
             "constraint_shadow_arms": constraint_shadows,
             "constraint_shadow_arms_by_regime": constraint_shadows_by_regime,
+            "large_cluster_tail_stability": large_cluster_tail_stability,
             "source_weight_ablations": source_weight_ablations,
             "selective_confidence_gate": {
                 "enabled_issues": len(selective_enabled_rows),
