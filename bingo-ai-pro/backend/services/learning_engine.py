@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from database.analysis_store import get_analysis_history
+from database.cloud_draws import get_cloud_history_draws
 from database.adaptive_weight_store import (
     get_adaptive_weights_by_source_issue,
     get_latest_adaptive_weights,
@@ -32,6 +33,7 @@ from services.analysis_engine import analysis_engine_status
 from services.catch_up_service import get_catch_up_status
 from services.operations_center import record_operation_event
 from services.official_verification import official_statistics
+from analysis.shadow_feature_learning import build_shadow_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +506,27 @@ def capture_prediction_snapshot(issue: str | None = None) -> dict:
     }
 
 
+def _shadow_feature_snapshot(source_issue: str) -> dict:
+    """Capture pre-target features for later verification; never affects production weights."""
+    try:
+        draws = get_cloud_history_draws(300)
+        cutoff = _issue_int(source_issue)
+        if cutoff is not None:
+            draws = [draw for draw in draws if (_issue_int(draw.get("issue")) or 0) <= cutoff]
+        payload = build_shadow_snapshot(draws)
+        payload["history_cutoff_issue"] = source_issue
+        return payload
+    except Exception as exc:
+        logger.exception("shadow feature snapshot failed")
+        return {
+            "mode": "shadow",
+            "production_weight_effect": False,
+            "history_cutoff_issue": source_issue,
+            "status": "error",
+            "error": str(exc),
+        }
+
+
 def save_live_prediction_snapshot(recommendation: dict) -> dict:
     source_issue = str(recommendation.get("issue") or "") or None
     target_issue = str(recommendation.get("target_issue") or "") or None
@@ -541,6 +564,7 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
     fallback_numbers = _as_int_list((results[0] if results else {}).get("numbers"))
     ensemble_numbers = _as_int_list(voting.get("final_candidates")) or fallback_numbers
     analysis = _analysis_by_issue(source_issue)
+    shadow_features = _shadow_feature_snapshot(source_issue)
     snapshot = {
         "source_issue": source_issue,
         "target_issue": target_issue,
@@ -553,6 +577,7 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
         "results": results,
         "super_recommendation": recommendation.get("super_recommendation"),
         "sync": recommendation.get("sync"),
+        "shadow_features": shadow_features,
     }
 
     model_names = list(model_scores.keys())
