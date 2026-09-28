@@ -674,29 +674,32 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     }
 
 def _supabase_analysis_history(limit, max_issue=None):
-    from supabase import create_client
+    import requests
 
-    url = os.environ["SUPABASE_URL"]
+    url = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/analysis_history"
     key = os.environ["SUPABASE_PUBLISHABLE_KEY"]
-    client = create_client(url, key)
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
     rows = []
     page_size = 1000
     offset = 0
     while len(rows) < limit:
-        query = (
-            client.table("analysis_history")
-            .select("issue,draw_time,numbers,super_number,big_small,odd_even")
-            .not_.is_("issue", "null")
-            .order("issue", desc=True)
-            .range(offset, offset + min(page_size, limit - len(rows)) - 1)
-        )
+        take = min(page_size, limit - len(rows))
+        params = {
+            "select": "issue,draw_time,numbers,super_number,big_small,odd_even",
+            "issue": "not.is.null",
+            "order": "issue.desc",
+            "offset": str(offset),
+            "limit": str(take),
+        }
         if max_issue is not None:
-            query = query.lte("issue", str(max_issue))
-        batch = query.execute().data or []
+            params["issue"] = f"lte.{max_issue}"
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        batch = response.json()
         if not batch:
             break
         rows.extend(batch)
-        if len(batch) < page_size:
+        if len(batch) < take:
             break
         offset += len(batch)
     valid = [
