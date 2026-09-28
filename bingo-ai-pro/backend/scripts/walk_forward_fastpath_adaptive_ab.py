@@ -151,6 +151,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     previous_off = []
     previous_isolated = {model: [] for model in MODELS}
     previous_normal_hotcold_gate = []
+    previous_selective = []
+    prior_regime_deltas = defaultdict(list)
     prior_signals = []
 
     for index in range(warmup, len(clean)):
