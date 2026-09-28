@@ -481,7 +481,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "models": model_performance,
         }
     full_score_changed = [row.get("full_score_rank_changed_numbers", 0) for row in conditional_active]
-        raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
+    raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
     final_changed = [row.get("conditional_changed_numbers", 0) for row in conditional_active]
     dilution_summary = {
         "issues": len(conditional_active),
