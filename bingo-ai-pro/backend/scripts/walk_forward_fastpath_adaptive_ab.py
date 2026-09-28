@@ -390,8 +390,27 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 "losses": sum(delta < 0 for delta in bucket_deltas),
                 "mean_replacements": mean(len(event.get("added") or []) for event in bucket_events) if bucket_events else 0,
             }
+        hotcold_deviation_buckets = {}
+        ordered_hotcold_events = sorted(hotcold_events, key=lambda event: int(event["issue"]))
+        for bucket_name, low, high in (("lt_1pct", 0.0, 0.01), ("1_to_2pct", 0.01, 0.02), ("2_to_4pct", 0.02, 0.04), ("ge_4pct", 0.04, 999.0)):
+            bucket_events = [event for event in ordered_hotcold_events if event.get("multiplier") is not None and low <= abs(float(event["multiplier"]) - 1.0) < high]
+            bucket_deltas = [event["delta"] for event in bucket_events]
+            midpoint = len(bucket_events) // 2
+            early_deltas = [event["delta"] for event in bucket_events[:midpoint]]
+            late_deltas = [event["delta"] for event in bucket_events[midpoint:]]
+            hotcold_deviation_buckets[bucket_name] = {
+                "events": len(bucket_events),
+                "mean_delta": mean(bucket_deltas) if bucket_deltas else 0,
+                "vs_neutral": _ci(bucket_deltas),
+                "wins": sum(delta > 0 for delta in bucket_deltas),
+                "ties": sum(delta == 0 for delta in bucket_deltas),
+                "losses": sum(delta < 0 for delta in bucket_deltas),
+                "early": {"events": len(early_deltas), "mean_delta": mean(early_deltas) if early_deltas else 0, "vs_neutral": _ci(early_deltas)},
+                "late": {"events": len(late_deltas), "mean_delta": mean(late_deltas) if late_deltas else 0, "vs_neutral": _ci(late_deltas)},
+            }
         regime_summary[regime] = {
             "hotcold_multiplier_buckets": hotcold_multiplier_buckets,
+            "hotcold_deviation_buckets": hotcold_deviation_buckets,
             "issues": len(group),
             "event_diagnostics": event_diagnostics,
             "isolated_models": isolated_model_summary,
