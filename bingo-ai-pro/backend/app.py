@@ -61,6 +61,7 @@ from api.today import router as today_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from collectors import collect_kuaishou_snapshot, collect_pilio_today
+import services.date_shadow_learning  # one-time date replay bootstrap when explicitly enabled
 from database.adaptive_weight_store import init_adaptive_weight_tables
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
