@@ -225,6 +225,11 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     long_dragon = _long_dragon_tracking(draw, recent)
     multi_window_hot_cold = _multi_window_hot_cold(draw, recent)
     omission_strength = _omission_strength(draw, recent)
+    neighbor_extension = _neighbor_extension(draw, recent)
+    parity_size_trend = _parity_size_trend(draw, recent)
+    zone_cluster_strength = _zone_cluster_strength(draw, recent)
+    consecutive_extension = _consecutive_extension(draw, recent)
+    tail_trend_strength = _tail_trend_strength(draw, recent)
     ai_score = {
         "score": min(
             100,
@@ -238,6 +243,11 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "long_dragon": long_dragon,
         "multi_window_hot_cold": multi_window_hot_cold,
         "omission_strength": omission_strength,
+        "neighbor_extension": neighbor_extension,
+        "parity_size_trend": parity_size_trend,
+        "zone_cluster_strength": zone_cluster_strength,
+        "consecutive_extension": consecutive_extension,
+        "tail_trend_strength": tail_trend_strength,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
@@ -254,6 +264,11 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "omission_candidates": omission_strength.get("candidate_numbers"),
             "omission_overdue_numbers": omission_strength.get("overdue_numbers"),
             "omission_recovery_numbers": omission_strength.get("recovery_numbers"),
+            "neighbor_extension_candidates": neighbor_extension.get("candidate_numbers"),
+            "parity_size_trend_state": parity_size_trend.get("trend_state"),
+            "zone_cluster_candidates": zone_cluster_strength.get("candidate_numbers"),
+            "consecutive_extension_candidates": consecutive_extension.get("candidate_numbers"),
+            "tail_trend_candidates": tail_trend_strength.get("candidate_numbers"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -425,6 +440,112 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
     }
+
+
+def _circular_number(number: int) -> int:
+    return ((number - 1) % 80) + 1
+
+
+def _neighbor_extension(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    scores: Counter = Counter()
+    evidence: dict[int, list[dict]] = {}
+    for age, item in enumerate(prior, start=1):
+        weight = max(1, lookback - age + 1)
+        for source in set(_as_int_list(item.get("numbers"))):
+            for offset in (-2, -1, 1, 2):
+                candidate = _circular_number(source + offset)
+                scores[candidate] += weight * (2 if abs(offset) == 1 else 1)
+                evidence.setdefault(candidate, []).append({"source": source, "offset": offset, "age": age})
+    ranked = sorted(scores, key=lambda number: (-scores[number], number))
+    return {
+        "name": "鄰號延伸",
+        "key": "neighbor_extension",
+        "candidate_numbers": ranked[:20],
+        "scores": {str(number): scores[number] for number in ranked[:20]},
+        "evidence": {str(number): evidence[number][:10] for number in ranked[:20]},
+        "circular": True,
+        "offsets": [-2, -1, 1, 2],
+        "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)),
+        "shadow_only": True,
+    }
+
+
+def _parity_size_trend(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    samples = []
+    for item in prior:
+        nums = _as_int_list(item.get("numbers"))
+        if not nums:
+            continue
+        big = sum(1 for number in nums if number >= 41)
+        odd = sum(1 for number in nums if number % 2)
+        samples.append({"big": big, "small": len(nums) - big, "odd": odd, "even": len(nums) - odd})
+    big_delta = sum(s["big"] - s["small"] for s in samples)
+    odd_delta = sum(s["odd"] - s["even"] for s in samples)
+    trend_state = {
+        "size": "big" if big_delta > 0 else "small" if big_delta < 0 else "balanced",
+        "parity": "odd" if odd_delta > 0 else "even" if odd_delta < 0 else "balanced",
+    }
+    candidates = [
+        number for number in range(1, 81)
+        if (trend_state["size"] == "balanced" or (number >= 41) == (trend_state["size"] == "big"))
+        and (trend_state["parity"] == "balanced" or (number % 2 == 1) == (trend_state["parity"] == "odd"))
+    ]
+    return {"name": "大小單雙走勢", "key": "parity_size_trend", "trend_state": trend_state, "big_delta": big_delta, "odd_delta": odd_delta,
+            "candidate_numbers": candidates[:20], "available_draws": len(samples), "confidence": min(100, len(samples) * 5), "shadow_only": True}
+
+
+def _zone_cluster_strength(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    counts = {start: 0 for start in range(1, 80, 10)}
+    for item in prior:
+        for number in _as_int_list(item.get("numbers")):
+            counts[((number - 1) // 10) * 10 + 1] += 1
+    ranked = sorted(counts, key=lambda start: (-counts[start], start))
+    hot_starts = ranked[:2]
+    candidates = [number for start in hot_starts for number in range(start, min(start + 10, 81))]
+    return {"name": "分區群聚強度", "key": "zone_cluster_strength", "zone_counts": {f"{s:02d}-{s+9:02d}": counts[s] for s in counts},
+            "hot_zones": [f"{s:02d}-{s+9:02d}" for s in hot_starts], "candidate_numbers": candidates[:20],
+            "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)), "shadow_only": True}
+
+
+def _consecutive_extension(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    scores: Counter = Counter()
+    groups: list[dict] = []
+    for age, item in enumerate(prior, start=1):
+        nums = sorted(set(_as_int_list(item.get("numbers"))))
+        for run in _runs(nums):
+            left = _circular_number(run[0] - 1)
+            right = _circular_number(run[-1] + 1)
+            weight = max(1, lookback - age + 1) * len(run)
+            scores[left] += weight
+            scores[right] += weight
+            groups.append({"run": run, "left": left, "right": right, "age": age})
+    ranked = sorted(scores, key=lambda number: (-scores[number], number))
+    return {"name": "連號延續", "key": "consecutive_extension", "candidate_numbers": ranked[:20],
+            "groups": groups[:30], "scores": {str(n): scores[n] for n in ranked[:20]}, "circular": True,
+            "confidence": min(100, len(groups) * 5), "shadow_only": True}
+
+
+def _tail_trend_strength(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    counts = Counter()
+    for item in prior:
+        counts.update(number % 10 for number in _as_int_list(item.get("numbers")))
+    ranked_tails = sorted(range(10), key=lambda tail: (-counts[tail], tail))
+    hot_tails = ranked_tails[:3]
+    cold_tails = sorted(range(10), key=lambda tail: (counts[tail], tail))[:3]
+    candidates = [number for number in range(1, 81) if number % 10 in hot_tails]
+    return {"name": "尾數走勢強化", "key": "tail_trend_strength", "hot_tails": hot_tails, "cold_tails": cold_tails,
+            "tail_counts": {str(tail): counts[tail] for tail in range(10)}, "candidate_numbers": candidates[:20],
+            "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)), "shadow_only": True}
 
 
 def _omission_strength(draw: dict, recent: list[dict], *, lookback: int = 100) -> dict:
