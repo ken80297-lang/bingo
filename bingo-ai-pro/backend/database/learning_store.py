@@ -1079,3 +1079,75 @@ def get_learning_model_performance(
             }
         )
     return sorted(output, key=lambda item: item["rank_score"], reverse=True)
+
+
+def save_shadow_rule_promotions(payload: dict) -> dict:
+    source_issue = str(payload.get("source_issue") or "")
+    rules = payload.get("rules") or {}
+    if not isinstance(rules, dict):
+        return {"status": "error", "reason": "invalid_rules"}
+    if _cloud_enabled():
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                for key, rule in rules.items():
+                    cur.execute(
+                        """
+                        insert into shadow_rule_promotions
+                        (rule_key, source_issue, state, sample_size, average_hits,
+                         average_lift_vs_random, recent_20_lift_vs_random,
+                         eligible_for_recommendation, retained, updated_at)
+                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                        on conflict (rule_key) do update set
+                          source_issue=excluded.source_issue, state=excluded.state,
+                          sample_size=excluded.sample_size, average_hits=excluded.average_hits,
+                          average_lift_vs_random=excluded.average_lift_vs_random,
+                          recent_20_lift_vs_random=excluded.recent_20_lift_vs_random,
+                          eligible_for_recommendation=excluded.eligible_for_recommendation,
+                          retained=excluded.retained, updated_at=now()
+                        """,
+                        (str(key), source_issue, str(rule.get("state") or "learning"),
+                         int(rule.get("sample_size") or 0), float(rule.get("average_hits") or 0),
+                         float(rule.get("average_lift_vs_random") or 0),
+                         float(rule.get("recent_20_lift_vs_random") or 0),
+                         bool(rule.get("eligible_for_recommendation")), bool(rule.get("retained", True))),
+                        prepare=False,
+                    )
+            conn.commit()
+        return {"status": "ok", "backend": "cloud", "rule_count": len(rules)}
+    return {"status": "skipped", "backend": "sqlite"}
+
+
+def get_shadow_rule_promotions() -> dict:
+    if not _cloud_enabled():
+        return {"source_issue": None, "rules": {}}
+    try:
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select rule_key, source_issue, state, sample_size, average_hits,
+                           average_lift_vs_random, recent_20_lift_vs_random,
+                           eligible_for_recommendation, retained
+                    from shadow_rule_promotions
+                    """,
+                    prepare=False,
+                )
+                rows = cur.fetchall()
+    except Exception:
+        logger.exception("failed to load shadow rule promotions")
+        return {"source_issue": None, "rules": {}}
+    rules = {}
+    source_issue = None
+    for row in rows:
+        key, issue, state, sample_size, avg_hits, avg_lift, recent_lift, eligible, retained = row
+        source_issue = str(issue or source_issue or "")
+        rules[str(key)] = {
+            "state": str(state or "learning"),
+            "sample_size": int(sample_size or 0),
+            "average_hits": float(avg_hits or 0),
+            "average_lift_vs_random": float(avg_lift or 0),
+            "recent_20_lift_vs_random": float(recent_lift or 0),
+            "eligible_for_recommendation": bool(eligible),
+            "retained": bool(retained),
+        }
+    return {"source_issue": source_issue, "rules": rules}
