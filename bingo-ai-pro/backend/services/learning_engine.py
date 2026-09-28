@@ -18,7 +18,7 @@ from database.learning_store import (
     get_learning_model_performance,
     get_learning_records,
     get_learning_summary_records,
-    get_learning_status_counts,
+    get_learning_status_counts,\n    get_shadow_rule_promotions,\n    save_shadow_rule_promotions,
     mark_learning_weight_changed,
     upsert_learning_record,
     upsert_learning_records,
