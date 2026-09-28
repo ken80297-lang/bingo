@@ -224,6 +224,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     cluster_aftershock = _cluster_aftershock(numbers, recent)
     long_dragon = _long_dragon_tracking(draw, recent)
     multi_window_hot_cold = _multi_window_hot_cold(draw, recent)
+    omission_strength = _omission_strength(draw, recent)
     ai_score = {
         "score": min(
             100,
@@ -236,6 +237,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "cluster_aftershock_recovery": cluster_aftershock,
         "long_dragon": long_dragon,
         "multi_window_hot_cold": multi_window_hot_cold,
+        "omission_strength": omission_strength,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
@@ -249,6 +251,9 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "multi_window_hot_candidates": multi_window_hot_cold.get("candidate_numbers"),
             "multi_window_rising_numbers": multi_window_hot_cold.get("rising_numbers"),
             "multi_window_cooling_numbers": multi_window_hot_cold.get("cooling_numbers"),
+            "omission_candidates": omission_strength.get("candidate_numbers"),
+            "omission_overdue_numbers": omission_strength.get("overdue_numbers"),
+            "omission_recovery_numbers": omission_strength.get("recovery_numbers"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -419,6 +424,58 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
+
+
+def _omission_strength(draw: dict, recent: list[dict], *, lookback: int = 100) -> dict:
+    """Measure current, average, and maximum omission gaps without leaking the current draw."""
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    appearances: dict[int, list[int]] = {number: [] for number in range(1, 81)}
+    for index, item in enumerate(prior):
+        for number in set(_as_int_list(item.get("numbers"))):
+            appearances[number].append(index)
+
+    metrics: list[dict] = []
+    for number in range(1, 81):
+        positions = appearances[number]
+        current_omission = positions[0] if positions else len(prior)
+        completed_gaps = [positions[i + 1] - positions[i] - 1 for i in range(len(positions) - 1)]
+        if positions:
+            completed_gaps.append(max(0, len(prior) - positions[-1] - 1))
+        else:
+            completed_gaps.append(len(prior))
+        average_omission = round(sum(completed_gaps) / len(completed_gaps), 2) if completed_gaps else 0.0
+        max_omission = max(completed_gaps + [current_omission], default=current_omission)
+        ratio = round(current_omission / max(1.0, average_omission), 3)
+        metrics.append({
+            "number": number,
+            "current_omission": current_omission,
+            "average_omission": average_omission,
+            "max_omission": max_omission,
+            "omission_ratio": ratio,
+            "appearance_count": len(positions),
+        })
+
+    ranked = sorted(metrics, key=lambda item: (-item["omission_ratio"], -item["current_omission"], item["number"]))
+    overdue = [item for item in ranked if item["current_omission"] > item["average_omission"] and item["current_omission"] > 0][:20]
+    current_numbers = set(_as_int_list(draw.get("numbers")))
+    recovery = [item for item in metrics if item["number"] in current_numbers and item["current_omission"] > 0]
+    recovery.sort(key=lambda item: (-item["omission_ratio"], -item["current_omission"], item["number"]))
+    candidate_numbers = [item["number"] for item in overdue]
+    confidence = min(100, round(len(prior) / max(1, lookback) * 100, 2))
+    return {
+        "name": "遺漏強度",
+        "key": "omission_strength",
+        "lookback": lookback,
+        "available_draws": len(prior),
+        "candidate_numbers": candidate_numbers,
+        "overdue_numbers": overdue,
+        "recovery_numbers": recovery[:20],
+        "metrics": metrics,
+        "confidence": confidence,
+        "reference_issues": [str(item.get("issue")) for item in prior if item.get("issue")],
+        "shadow_only": True,
     }
 
 
