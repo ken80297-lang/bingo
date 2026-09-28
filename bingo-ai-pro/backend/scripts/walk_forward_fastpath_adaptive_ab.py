@@ -488,7 +488,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         "mean_final_changes": mean(final_changed) if final_changed else 0,
         "fully_absorbed_issues": sum(raw > 0 and final == 0 for raw, final in zip(raw_changed, final_changed)),
     }
-        selective_vs_neutral = [row["selective20"] - row["neutral20"] for row in conditional_active]
+    selective_vs_neutral = [row["selective20"] - row["neutral20"] for row in conditional_active]
     selective_vs_conditional = [row["selective20"] - row["conditional20"] for row in conditional_active]
     selective_enabled_rows = [row for row in conditional_active if row.get("selective_enabled")]
     gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
