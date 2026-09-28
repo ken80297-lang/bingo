@@ -230,6 +230,17 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     zone_cluster_strength = _zone_cluster_strength(draw, recent)
     consecutive_extension = _consecutive_extension(draw, recent)
     tail_trend_strength = _tail_trend_strength(draw, recent)
+    composite_market_regime = _composite_market_regime({
+        "long_dragon": long_dragon,
+        "multi_window_hot_cold": multi_window_hot_cold,
+        "omission_strength": omission_strength,
+        "neighbor_extension": neighbor_extension,
+        "parity_size_trend": parity_size_trend,
+        "zone_cluster_strength": zone_cluster_strength,
+        "consecutive_extension": consecutive_extension,
+        "tail_trend_strength": tail_trend_strength,
+        "composite_market_regime": composite_market_regime,
+    })
     ai_score = {
         "score": min(
             100,
@@ -269,6 +280,9 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "zone_cluster_candidates": zone_cluster_strength.get("candidate_numbers"),
             "consecutive_extension_candidates": consecutive_extension.get("candidate_numbers"),
             "tail_trend_candidates": tail_trend_strength.get("candidate_numbers"),
+            "composite_candidates": composite_market_regime.get("candidate_numbers"),
+            "composite_consensus": composite_market_regime.get("consensus"),
+            "composite_conflicts": composite_market_regime.get("conflicts"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -439,6 +453,46 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
+
+
+def _composite_market_regime(signals: dict[str, dict]) -> dict:
+    votes: Counter = Counter()
+    sources: dict[int, list[str]] = {}
+    confidence_total = 0.0
+    active = 0
+    for key, data in signals.items():
+        if not isinstance(data, dict):
+            continue
+        candidates = _as_int_list(data.get("candidate_numbers"))
+        if not candidates:
+            continue
+        active += 1
+        confidence = float(data.get("confidence") or 0)
+        confidence_total += confidence
+        weight = max(0.25, confidence / 100.0)
+        for rank, number in enumerate(candidates[:20]):
+            rank_weight = max(0.1, 1.0 - rank * 0.04)
+            votes[number] += round(weight * rank_weight, 4)
+            sources.setdefault(number, []).append(key)
+    ranked = sorted(votes, key=lambda number: (-votes[number], -len(set(sources[number])), number))
+    consensus = [
+        {"number": number, "score": round(votes[number], 4), "sources": sorted(set(sources[number])), "source_count": len(set(sources[number]))}
+        for number in ranked[:20]
+    ]
+    conflicts = [item for item in consensus if item["source_count"] == 1][:10]
+    regime = "strong_consensus" if consensus and consensus[0]["source_count"] >= 4 else "mixed" if active >= 3 else "insufficient"
+    return {
+        "name": "綜合盤勢型態",
+        "key": "composite_market_regime",
+        "regime": regime,
+        "candidate_numbers": [item["number"] for item in consensus],
+        "consensus": consensus,
+        "conflicts": conflicts,
+        "active_signal_count": active,
+        "average_signal_confidence": round(confidence_total / active, 2) if active else 0,
+        "confidence": min(100, round((consensus[0]["source_count"] / max(1, active)) * 100, 2)) if consensus else 0,
+        "shadow_only": True,
     }
 
 
