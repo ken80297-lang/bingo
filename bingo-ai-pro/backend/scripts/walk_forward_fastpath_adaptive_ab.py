@@ -216,7 +216,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 adaptive_number_scores=conditional_scores,
                 source_weight_overrides={source_name: 0.0},
             )
-                gated_conditional_numbers = conditional_numbers
+        gated_conditional_numbers = conditional_numbers
         gated_hotcold_suppressed = False
         if conditional and regime == "normal":
             hotcold_key = KEYS.get("hotcold")
