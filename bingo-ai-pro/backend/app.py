@@ -902,6 +902,17 @@ def startup_event() -> None:
                     ),
                     flush=True,
                 )
+                conditional = (result.get("summary") or {}).get("conditional") or {}
+                regimes = conditional.get("regimes") or {}
+                print(
+                    "FASTPATH_HOTCOLD_DEVIATION_SUMMARY "
+                    + json.dumps(
+                        {name: (data or {}).get("hotcold_deviation_buckets") or {} for name, data in regimes.items()},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         except Exception as exc:
             print(f"FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
 
