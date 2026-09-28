@@ -6,6 +6,7 @@ from analysis.shadow_feature_learning import (
     score_shadow_snapshot,
     aggregate_shadow_performance,
     assess_shadow_stability,
+    rank_shadow_signals,
 )
 
 
@@ -178,3 +179,30 @@ def test_stability_rejects_one_short_lucky_window():
     }
     result = assess_shadow_stability(performance)
     assert result["signals"]["pair:window_30"]["status"] == "insufficient_or_unstable"
+
+
+def test_shadow_signal_ranking_separates_observe_collect_and_retire():
+    stability = {
+        "signals": {
+            "pair:window_30": {
+                "status": "candidate_positive", "eligible_horizons": 2,
+                "positive_horizons": 2, "deltas": [0.03, 0.01],
+            },
+            "triple:window_30": {
+                "status": "insufficient_or_unstable", "eligible_horizons": 2,
+                "positive_horizons": 0, "deltas": [-0.02, -0.01],
+            },
+            "super_tail:window_30": {
+                "status": "insufficient_or_unstable", "eligible_horizons": 1,
+                "positive_horizons": 1, "deltas": [0.20],
+            },
+        }
+    }
+    result = rank_shadow_signals({"horizons": {}}, stability)
+    by_name = {row["signal"]: row for row in result["signals"]}
+    assert by_name["pair:window_30"]["lifecycle"] == "observe_candidate"
+    assert by_name["triple:window_30"]["lifecycle"] == "retire_candidate"
+    assert by_name["super_tail:window_30"]["lifecycle"] == "collect_more"
+    assert by_name["pair:window_30"]["rank"] < by_name["triple:window_30"]["rank"]
+    assert all(row["production_eligible"] is False for row in result["signals"])
+    assert result["production_weight_effect"] is False
