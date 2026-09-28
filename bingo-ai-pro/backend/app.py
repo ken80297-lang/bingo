@@ -884,7 +884,9 @@ def startup_event() -> None:
             from database.analysis_store import get_analysis_history
             from scripts.walk_forward_fastpath_adaptive_ab import run as run_fastpath_adaptive_ab
 
-            history = get_analysis_history(1000)
+            history_limit = int(os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_HISTORY_LIMIT", "1000"))
+            history_limit = max(120, min(history_limit, 5000))
+            history = get_analysis_history(history_limit)
             if len(history) < 120:
                 print(
                     "FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR "
