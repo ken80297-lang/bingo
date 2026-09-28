@@ -166,6 +166,9 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         analysis_recent = list(reversed(clean[max(0, index - 100):index - 1]))
         analysis = build_analysis_record(source, recent_draws=analysis_recent)
         regime = _regime(analysis, prior_signals)
+        signal_cluster, signal_pattern = _signal(analysis)
+        cluster_cut = _quantile([item[0] for item in prior_signals[-100:]], 2 / 3) if len(prior_signals) >= 30 else 0.0
+        pattern_cut = _quantile([item[1] for item in prior_signals[-100:]], 2 / 3) if len(prior_signals) >= 30 else 0.0
         conditional = _conditional_weights(performance_by_regime, regime, version + 1)
         conditional_scores, conditional_multipliers = _adaptive_scores(models, conditional) if conditional else ({}, {})
         conditional_numbers, _ = _build_fast_path_numbers(
@@ -264,8 +267,15 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "conditional_removed_hits": len((set(neutral) - set(conditional_numbers)) & set(official)),
             "model_swap_attribution": model_swap_attribution,
             "isolated_model_hits": {model: _hits(numbers, official) for model, numbers in isolated_numbers.items()},
+            "isolated_model_sets": {model: numbers for model, numbers in isolated_numbers.items()},
+            "signal_cluster": signal_cluster,
+            "signal_pattern": signal_pattern,
+            "cluster_cut": cluster_cut,
+            "pattern_cut": pattern_cut,
             "learned_by_strength": {str(strength): hits for strength, hits in learned_hits.items()},
             "neutral20": neutral_hits,
+            "neutral_numbers": neutral,
+            "official_numbers": official,
             "off20": off_hits,
             "multipliers_by_strength": {str(strength): values for strength, values in multipliers_by_strength.items()},
         })
@@ -342,8 +352,33 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                     "losses": sum(delta < 0 for delta in segment_deltas),
                 }
             time_segments[segment_name] = segment_models
+        event_diagnostics = {}
+        for model in MODELS:
+            events = []
+            for row in ordered_group:
+                model_hits = row.get("isolated_model_hits", {}).get(model, row["neutral20"])
+                if model_hits == row["neutral20"]:
+                    continue
+                isolated_set = set(row.get("isolated_model_sets", {}).get(model, []))
+                neutral_set = set(row.get("neutral_numbers", []))
+                official_set = set(row.get("official_numbers", []))
+                events.append({
+                    "issue": row["issue"],
+                    "delta": model_hits - row["neutral20"],
+                    "added": sorted(isolated_set - neutral_set),
+                    "removed": sorted(neutral_set - isolated_set),
+                    "added_hits": sorted((isolated_set - neutral_set) & official_set),
+                    "removed_hits": sorted((neutral_set - isolated_set) & official_set),
+                    "multiplier": row.get("conditional_multipliers", {}).get(KEYS.get(model)),
+                    "cluster_score": row.get("signal_cluster"),
+                    "pattern_score": row.get("signal_pattern"),
+                    "cluster_excess": row.get("signal_cluster", 0) - row.get("cluster_cut", 0),
+                    "pattern_excess": row.get("signal_pattern", 0) - row.get("pattern_cut", 0),
+                })
+            event_diagnostics[model] = events
         regime_summary[regime] = {
             "issues": len(group),
+            "event_diagnostics": event_diagnostics,
             "isolated_models": isolated_model_summary,
             "time_segments": time_segments,
             "swap_model_attribution": swap_models,
