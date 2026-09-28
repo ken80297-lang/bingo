@@ -178,7 +178,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         conditional_rank20 = set(sorted(conditional_scores, key=conditional_scores.get, reverse=True)[:20]) if conditional_scores else set()
         neutral_rank20 = set(sorted(neutral_probe_scores, key=neutral_probe_scores.get, reverse=True)[:20])
         raw_rank_changed = len(conditional_rank20 ^ neutral_rank20) // 2 if conditional else 0
-                conditional_numbers, _ = _build_fast_path_numbers(
+        conditional_numbers, _ = _build_fast_path_numbers(
             analysis,
             source_issue=source["issue"],
             target_issue=target["issue"],
