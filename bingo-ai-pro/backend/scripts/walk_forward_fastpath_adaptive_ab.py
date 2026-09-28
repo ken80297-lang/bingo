@@ -85,13 +85,38 @@ def _adaptive_scores(models, adaptive, strength=1.0):
     return scores, multipliers
 
 
-def _regime(analysis):
-    cluster = str(analysis.get("cluster_level") or "unknown")
-    consecutive_count = len(analysis.get("consecutive") or [])
-    diagonal_score = float(analysis.get("diagonal_score") or 0)
-    if cluster == "大型群聚":
+def _signal(analysis):
+    cluster_score = float(analysis.get("cluster_score") or 0)
+    pattern_score = (
+        len(analysis.get("consecutive") or []) * 2
+        + len(analysis.get("twins") or [])
+        + float(analysis.get("diagonal_score") or 0) / 12.0
+    )
+    return cluster_score, pattern_score
+
+
+def _quantile(values, q):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * q
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _regime(analysis, prior_signals):
+    cluster_score, pattern_score = _signal(analysis)
+    if len(prior_signals) < 30:
+        return "normal"
+    cluster_cut = _quantile([item[0] for item in prior_signals[-100:]], 2 / 3)
+    pattern_cut = _quantile([item[1] for item in prior_signals[-100:]], 2 / 3)
+    if cluster_score >= cluster_cut:
         return "large_cluster"
-    if consecutive_count >= 3 or diagonal_score >= 24:
+    if pattern_score >= pattern_cut:
         return "pattern_active"
     return "normal"
 
@@ -122,6 +147,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     previous_conditional = []
     previous_neutral = []
     previous_off = []
+    prior_signals = []
 
     for index in range(warmup, len(clean)):
         history = list(reversed(clean[max(0, index - 100):index]))
@@ -136,7 +162,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             version += 1
         analysis_recent = list(reversed(clean[max(0, index - 100):index - 1]))
         analysis = build_analysis_record(source, recent_draws=analysis_recent)
-        regime = _regime(analysis)
+        regime = _regime(analysis, prior_signals)
         conditional = _conditional_weights(performance_by_regime, regime, version + 1)
         conditional_scores, conditional_multipliers = _adaptive_scores(models, conditional) if conditional else ({}, {})
         conditional_numbers, _ = _build_fast_path_numbers(
@@ -210,6 +236,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         previous_conditional = conditional_numbers
         previous_neutral = neutral
         previous_off = off
+        prior_signals.append(_signal(analysis))
 
     active = [row for row in rows if row["adaptive_enabled"]]
     strength_summary = {}
