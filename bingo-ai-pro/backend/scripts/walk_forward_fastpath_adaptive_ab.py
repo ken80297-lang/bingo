@@ -200,6 +200,20 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                     adaptive_number_scores=gated_scores,
                 )
                 gated_hotcold_suppressed = True
+        prior_deltas = prior_regime_deltas[regime]
+        prior_ci = _ci(prior_deltas[-100:]) if len(prior_deltas) >= 30 else {"mean": 0.0, "low": 0.0, "high": 0.0}
+        selective_enabled = bool(conditional and len(prior_deltas) >= 30 and prior_ci["low"] > 0)
+        neutral_weight_map = {"strategy": "neutral"}
+        neutral_weight_map.update({key: 1.0 for key in KEYS.values()})
+        selective_scores = conditional_scores if selective_enabled else _adaptive_scores(models, neutral_weight_map)[0]
+        selective_numbers, _ = _build_fast_path_numbers(
+            analysis,
+            source_issue=source["issue"],
+            target_issue=target["issue"],
+            previous_numbers=previous_selective,
+            trace=[],
+            adaptive_number_scores=selective_scores,
+        )
         isolated_numbers = {}
         if conditional:
             for isolated_model in MODELS:
