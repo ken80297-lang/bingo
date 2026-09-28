@@ -259,11 +259,21 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     for regime in sorted({row.get("regime") for row in conditional_active}):
         group = [row for row in conditional_active if row.get("regime") == regime]
         deltas = [row["conditional20"] - row["neutral20"] for row in group]
+        model_performance = {}
+        bucket = performance_by_regime.get(regime) or {}
+        for model in MODELS:
+            values = list(bucket.get(model) or [])
+            model_performance[model] = {
+                "samples": len(values),
+                "mean20": mean(values) if values else 0,
+                "recent100_mean20": mean(values[-100:]) if values else 0,
+            }
         regime_summary[regime] = {
             "issues": len(group),
             "conditional20": mean(row["conditional20"] for row in group),
             "neutral20": mean(row["neutral20"] for row in group),
             "vs_neutral": _ci(deltas),
+            "models": model_performance,
         }
     return {
         "summary": {
