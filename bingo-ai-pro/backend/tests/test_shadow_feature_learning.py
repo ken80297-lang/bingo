@@ -4,6 +4,7 @@ from analysis.shadow_feature_learning import (
     pair_lift,
     super_omission_ages,
     score_shadow_snapshot,
+    aggregate_shadow_performance,
 )
 
 
@@ -82,4 +83,35 @@ def test_shadow_scoring_measures_pairs_omission_and_super_without_weight_effect(
 def test_shadow_scoring_waits_for_complete_official_draw():
     result = score_shadow_snapshot({"windows": {}}, [1, 2, 3], 1)
     assert result["status"] == "pending_official"
+    assert result["production_weight_effect"] is False
+
+
+def test_aggregate_shadow_performance_rolls_up_multiple_issues():
+    rows = [
+        {
+            "status": "scored",
+            "omission_buckets": {"3-5": {"candidates": 10, "hits": 3}},
+            "windows": {"30": {
+                "pair_candidates": 20, "pair_hits": 2,
+                "triple_candidates": 12, "triple_hits": 1,
+                "super_top_tails": [1, 2, 3], "super_tail_hit": True,
+            }},
+        },
+        {
+            "status": "scored",
+            "omission_buckets": {"3-5": {"candidates": 10, "hits": 2}},
+            "windows": {"30": {
+                "pair_candidates": 20, "pair_hits": 1,
+                "triple_candidates": 12, "triple_hits": 0,
+                "super_top_tails": [4, 5, 6], "super_tail_hit": False,
+            }},
+        },
+    ]
+    result = aggregate_shadow_performance(rows, horizons=(20,))
+    h = result["horizons"]["20"]
+    assert h["sample_size"] == 2
+    assert h["complete"] is False
+    assert h["omission_buckets"]["3-5"]["hit_rate"] == 0.25
+    assert h["windows"]["30"]["pair_hits"] == 3
+    assert h["windows"]["30"]["super_tail_hit_rate"] == 0.5
     assert result["production_weight_effect"] is False
