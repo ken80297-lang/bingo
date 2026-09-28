@@ -136,3 +136,75 @@ def build_shadow_snapshot(draws: list[dict]) -> dict:
         },
         "number_omission": omission_ages(draws),
     }
+
+
+def score_shadow_snapshot(snapshot: dict, official_numbers: list[int], official_super: int | None = None) -> dict:
+    """Score frozen pre-draw shadow features against the next official draw."""
+    official = set(int(n) for n in official_numbers or [] if 1 <= int(n) <= 80)
+    if len(official) != DRAW_SIZE:
+        return {"status": "pending_official", "production_weight_effect": False}
+
+    omission = snapshot.get("number_omission") or {}
+    omission_hits = Counter()
+    omission_totals = Counter()
+    for raw_number, raw_age in omission.items():
+        try:
+            number, age = int(raw_number), int(raw_age)
+        except (TypeError, ValueError):
+            continue
+        bucket = "0" if age == 0 else "1-2" if age <= 2 else "3-5" if age <= 5 else "6-10" if age <= 10 else "11+"
+        omission_totals[bucket] += 1
+        if number in official:
+            omission_hits[bucket] += 1
+
+    window_scores = {}
+    for window, payload in (snapshot.get("windows") or {}).items():
+        pairs = payload.get("top_pairs") or []
+        triples = payload.get("top_triples") or []
+        pair_hits = [row for row in pairs if set(map(int, row.get("numbers") or [])) <= official]
+        triple_hits = [row for row in triples if set(map(int, row.get("numbers") or [])) <= official]
+
+        super_payload = payload.get("super") or {}
+        super_omission = super_payload.get("number_omission") or {}
+        super_age = None
+        if official_super is not None:
+            super_age = super_omission.get(official_super, super_omission.get(str(official_super)))
+
+        tail_counts = super_payload.get("tail_counts") or {}
+        ranked_tails = sorted(
+            ((int(tail), int(count)) for tail, count in tail_counts.items()),
+            key=lambda item: (item[1], item[0]),
+            reverse=True,
+        )
+        top_tails = [tail for tail, _ in ranked_tails[:3]]
+        super_tail_hit = bool(official_super is not None and official_super % 10 in top_tails)
+
+        window_scores[str(window)] = {
+            "pair_candidates": len(pairs),
+            "pair_hits": len(pair_hits),
+            "pair_hit_examples": [row.get("numbers") for row in pair_hits[:5]],
+            "triple_candidates": len(triples),
+            "triple_hits": len(triple_hits),
+            "triple_hit_examples": [row.get("numbers") for row in triple_hits[:5]],
+            "super_top_tails": top_tails,
+            "super_tail_hit": super_tail_hit,
+            "official_super_omission_age": super_age,
+        }
+
+    return {
+        "status": "scored",
+        "mode": "shadow",
+        "production_weight_effect": False,
+        "official_count": len(official),
+        "official_super": official_super,
+        "omission_buckets": {
+            bucket: {
+                "candidates": omission_totals[bucket],
+                "hits": omission_hits[bucket],
+                "hit_rate": round(omission_hits[bucket] / omission_totals[bucket], 6)
+                if omission_totals[bucket] else 0,
+            }
+            for bucket in sorted(omission_totals)
+        },
+        "windows": window_scores,
+    }
