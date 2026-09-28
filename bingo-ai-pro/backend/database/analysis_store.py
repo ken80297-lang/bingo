@@ -223,6 +223,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     super_trajectory = _super_number_trajectory(draw, recent)
     cluster_aftershock = _cluster_aftershock(numbers, recent)
     long_dragon = _long_dragon_tracking(draw, recent)
+    multi_window_hot_cold = _multi_window_hot_cold(draw, recent)
     ai_score = {
         "score": min(
             100,
@@ -234,6 +235,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         "super_number_trajectory_recovery": super_trajectory,
         "cluster_aftershock_recovery": cluster_aftershock,
         "long_dragon": long_dragon,
+        "multi_window_hot_cold": multi_window_hot_cold,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
@@ -244,6 +246,9 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "long_dragon_candidates": long_dragon.get("candidate_numbers"),
             "long_dragon_max_streak": long_dragon.get("max_streak"),
             "long_dragon_active_count": long_dragon.get("active_count"),
+            "multi_window_hot_candidates": multi_window_hot_cold.get("candidate_numbers"),
+            "multi_window_rising_numbers": multi_window_hot_cold.get("rising_numbers"),
+            "multi_window_cooling_numbers": multi_window_hot_cold.get("cooling_numbers"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -414,6 +419,66 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
+
+
+def _multi_window_hot_cold(draw: dict, recent: list[dict], *, windows: tuple[int, ...] = (10, 20, 50, 100)) -> dict:
+    """Build comparable hot/cold rankings across short, medium, and long windows."""
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue]
+    window_data: dict[str, dict] = {}
+    for window in windows:
+        sample = prior[:window]
+        counts = Counter()
+        for item in sample:
+            counts.update(set(_as_int_list(item.get("numbers"))))
+        ranked_hot = sorted(range(1, 81), key=lambda number: (-counts[number], number))
+        ranked_cold = sorted(range(1, 81), key=lambda number: (counts[number], number))
+        window_data[str(window)] = {
+            "requested_draws": window,
+            "available_draws": len(sample),
+            "hot_numbers": ranked_hot[:10],
+            "cold_numbers": ranked_cold[:10],
+            "counts": {str(number): counts[number] for number in range(1, 81)},
+        }
+
+    available_windows = [window for window in windows if window_data[str(window)]["available_draws"]]
+    short_window = available_windows[0] if available_windows else None
+    long_window = available_windows[-1] if available_windows else None
+    rising: list[dict] = []
+    cooling: list[dict] = []
+    if short_window and long_window and short_window != long_window:
+        short = window_data[str(short_window)]
+        long = window_data[str(long_window)]
+        short_draws = max(1, short["available_draws"])
+        long_draws = max(1, long["available_draws"])
+        for number in range(1, 81):
+            short_rate = short["counts"][str(number)] / short_draws
+            long_rate = long["counts"][str(number)] / long_draws
+            delta = round(short_rate - long_rate, 4)
+            item = {"number": number, "short_rate": round(short_rate, 4), "long_rate": round(long_rate, 4), "delta": delta}
+            if delta > 0:
+                rising.append(item)
+            elif delta < 0:
+                cooling.append(item)
+        rising.sort(key=lambda item: (-item["delta"], item["number"]))
+        cooling.sort(key=lambda item: (item["delta"], item["number"]))
+
+    candidate_numbers = [item["number"] for item in rising[:20]]
+    coverage = max((window_data[str(window)]["available_draws"] for window in windows), default=0)
+    confidence = min(100, round(coverage / max(windows) * 100, 2))
+    return {
+        "name": "多週期冷熱門",
+        "key": "multi_window_hot_cold",
+        "windows": window_data,
+        "candidate_numbers": candidate_numbers,
+        "rising_numbers": rising[:20],
+        "cooling_numbers": cooling[:20],
+        "short_window": short_window,
+        "long_window": long_window,
+        "confidence": confidence,
+        "reference_issues": [str(item.get("issue")) for item in prior[: max(windows)] if item.get("issue")],
+        "shadow_only": True,
     }
 
 
