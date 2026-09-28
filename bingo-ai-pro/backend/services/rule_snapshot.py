@@ -29,6 +29,7 @@ RULE_REGISTRY: tuple[RuleDefinition, ...] = (
     RuleDefinition("missing", "缺號", "trend", ("missing_numbers",)),
     RuleDefinition("repeat", "重號", "trend", ("repeated_numbers",)),
     RuleDefinition("long_dragon", "長龍追號", "trend", ("ai_score",)),
+    RuleDefinition("multi_window_hot_cold", "多週期冷熱門", "trend", ("ai_score",)),
     RuleDefinition("tail", "尾數", "shape", ("tail_distribution",)),
     RuleDefinition("gap", "間距", "gap", ("difference_values", "gap_score")),
     RuleDefinition("cluster", "群聚", "zone", ("cluster_level", "cluster_score")),
@@ -343,6 +344,24 @@ def _build_rule_item(rule: RuleDefinition, analysis: dict, prediction: dict) -> 
         candidate_groups = list(data.get("streaks") or [])
         if data:
             candidate_groups.append({"shadow_only": True, "max_streak": data.get("max_streak"), "active_count": data.get("active_count")})
+    elif rule.key == "multi_window_hot_cold":
+        data = _nested_rule(analysis, "multi_window_hot_cold")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        windows = data.get("windows") if isinstance(data.get("windows"), dict) else {}
+        candidate_groups = [
+            {
+                "window": window,
+                "available_draws": details.get("available_draws"),
+                "hot_numbers": details.get("hot_numbers") or [],
+                "cold_numbers": details.get("cold_numbers") or [],
+            }
+            for window, details in windows.items()
+            if isinstance(details, dict)
+        ]
+        if data:
+            candidate_groups.append({"shadow_only": True, "rising_numbers": data.get("rising_numbers") or [], "cooling_numbers": data.get("cooling_numbers") or []})
     elif rule.key == "tail":
         candidate_groups = _tail_groups(analysis.get("tail_distribution"), prediction)
     elif rule.key == "gap":
