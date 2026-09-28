@@ -33,7 +33,7 @@ from services.analysis_engine import analysis_engine_status
 from services.catch_up_service import get_catch_up_status
 from services.operations_center import record_operation_event
 from services.official_verification import official_statistics
-from analysis.shadow_feature_learning import build_shadow_snapshot
+from analysis.shadow_feature_learning import build_shadow_snapshot, score_shadow_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -944,8 +944,15 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "precision_score": 0,
                     "official_coverage": 0,
                 }
+                frozen_snapshot = copy.deepcopy(existing.get("prediction_snapshot") or {})
+                shadow_features = frozen_snapshot.get("shadow_features") or {}
+                if shadow_features:
+                    frozen_snapshot["shadow_verification"] = score_shadow_snapshot(
+                        shadow_features, official_numbers, (official or {}).get("super_number")
+                    )
                 updated = {
                     **existing,
+                    "prediction_snapshot": frozen_snapshot,
                     "official_numbers": official_numbers,
                     "hit_numbers": result["hit_numbers"],
                     "predicted_count": result["predicted_count"],
