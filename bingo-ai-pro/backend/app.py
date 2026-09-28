@@ -886,7 +886,11 @@ def startup_event() -> None:
 
             history_limit = int(os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_HISTORY_LIMIT", "1000"))
             history_limit = max(120, min(history_limit, 7000))
-            history = get_analysis_history(history_limit)
+            history = get_analysis_history(max(history_limit, 7000))
+        max_issue = int(os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_MAX_ISSUE", "0") or 0)
+        if max_issue:
+            history = [row for row in history if str(row.get("issue") or "").isdigit() and int(row["issue"]) <= max_issue]
+        history = history[:history_limit]
         max_issue = int(os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_MAX_ISSUE", "0") or 0)
         if max_issue:
             history = [row for row in history if str(row.get("issue") or "").isdigit() and int(row["issue"]) <= max_issue]
