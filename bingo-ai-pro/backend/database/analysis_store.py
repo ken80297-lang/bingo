@@ -420,7 +420,9 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
 def _long_dragon_tracking(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
     """Measure consecutive appearance streaks without changing recommendation weights."""
     current_numbers = set(_as_int_list(draw.get("numbers")))
-    history = [set(_as_int_list(item.get("numbers"))) for item in recent[:lookback]]
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue]
+    history = [set(_as_int_list(item.get("numbers"))) for item in prior[:lookback]]
     streaks: list[dict] = []
     for number in sorted(current_numbers):
         streak = 1
@@ -444,7 +446,7 @@ def _long_dragon_tracking(draw: dict, recent: list[dict], *, lookback: int = 20)
         "max_streak": max_streak,
         "active_count": len(streaks),
         "confidence": round(strength, 2),
-        "reference_issues": [str(item.get("issue")) for item in recent[:lookback] if item.get("issue")],
+        "reference_issues": [str(item.get("issue")) for item in prior[:lookback] if item.get("issue")],
         "triggered_rules": ["consecutive_appearance"] if streaks else [],
         "warning_level": "high" if max_streak >= 4 else "medium" if max_streak >= 3 else "low",
         "shadow_only": True,
