@@ -294,7 +294,7 @@ def _build_fast_path_numbers(
     }
     if source_weight_overrides:
         source_weights.update({key: float(value) for key, value in source_weight_overrides.items() if key in source_weights})
-        source_values = {
+    source_values = {
         "patch_numbers": _recommendation_numbers(analysis.get("patch_numbers")),
         "missing_numbers": _recommendation_numbers(analysis.get("missing_numbers")),
         "cold_numbers": _recommendation_numbers(analysis.get("cold_numbers")),
