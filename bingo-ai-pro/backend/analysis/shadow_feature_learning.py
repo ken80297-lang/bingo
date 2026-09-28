@@ -251,3 +251,54 @@ def aggregate_shadow_performance(verifications: list[dict], horizons: tuple[int,
             "windows": windows,
         }
     return output
+
+
+def assess_shadow_stability(performance: dict, minimum_samples: int = 20) -> dict:
+    """Flag candidate signals only when rolling horizons are directionally stable."""
+    horizons = performance.get("horizons") or {}
+    result = {
+        "mode": "shadow",
+        "production_weight_effect": False,
+        "minimum_samples": minimum_samples,
+        "signals": {},
+    }
+
+    def assess(name: str, values: list[tuple[int, float]]) -> None:
+        eligible = [(n, delta) for n, delta in values if n >= minimum_samples]
+        positive = [delta for _, delta in eligible if delta > 0]
+        stable = len(eligible) >= 2 and len(positive) == len(eligible)
+        result["signals"][name] = {
+            "status": "candidate_positive" if stable else "insufficient_or_unstable",
+            "eligible_horizons": len(eligible),
+            "positive_horizons": len(positive),
+            "deltas": [round(delta, 6) for _, delta in eligible],
+            "production_eligible": False,
+        }
+
+    omission_names = set()
+    window_names = set()
+    for payload in horizons.values():
+        omission_names.update((payload.get("omission_buckets") or {}).keys())
+        window_names.update((payload.get("windows") or {}).keys())
+
+    for bucket in sorted(omission_names):
+        values = []
+        for payload in horizons.values():
+            sample_size = int(payload.get("sample_size") or 0)
+            row = (payload.get("omission_buckets") or {}).get(bucket) or {}
+            if "baseline_delta" in row:
+                values.append((sample_size, float(row["baseline_delta"])))
+        assess(f"omission:{bucket}", values)
+
+    for window in sorted(window_names, key=lambda value: int(value)):
+        for metric in ("pair", "triple", "super_tail"):
+            values = []
+            for payload in horizons.values():
+                sample_size = int(payload.get("sample_size") or 0)
+                row = (payload.get("windows") or {}).get(window) or {}
+                key = f"{metric}_baseline_delta"
+                if key in row:
+                    values.append((sample_size, float(row[key])))
+            assess(f"{metric}:window_{window}", values)
+
+    return result
