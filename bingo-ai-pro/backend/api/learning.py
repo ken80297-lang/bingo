@@ -12,6 +12,7 @@ from services.learning_engine import (
     get_learning_observation,
     get_learning_status,
     get_model_performance,
+    get_shadow_learning_summary,
     recalculate_issue,
 )
 
@@ -35,6 +36,11 @@ def api_learning_models():
 @router.get("/observation")
 def api_learning_observation():
     return get_learning_observation()
+
+
+@router.get("/shadow-summary")
+def api_shadow_learning_summary(limit: int = 100):
+    return get_shadow_learning_summary(limit)
 
 
 @router.get("/history")
