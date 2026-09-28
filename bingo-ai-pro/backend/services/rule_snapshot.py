@@ -30,6 +30,7 @@ RULE_REGISTRY: tuple[RuleDefinition, ...] = (
     RuleDefinition("repeat", "重號", "trend", ("repeated_numbers",)),
     RuleDefinition("long_dragon", "長龍追號", "trend", ("ai_score",)),
     RuleDefinition("multi_window_hot_cold", "多週期冷熱門", "trend", ("ai_score",)),
+    RuleDefinition("omission_strength", "遺漏強度", "trend", ("ai_score",)),
     RuleDefinition("tail", "尾數", "shape", ("tail_distribution",)),
     RuleDefinition("gap", "間距", "gap", ("difference_values", "gap_score")),
     RuleDefinition("cluster", "群聚", "zone", ("cluster_level", "cluster_score")),
@@ -362,6 +363,18 @@ def _build_rule_item(rule: RuleDefinition, analysis: dict, prediction: dict) -> 
         ]
         if data:
             candidate_groups.append({"shadow_only": True, "rising_numbers": data.get("rising_numbers") or [], "cooling_numbers": data.get("cooling_numbers") or []})
+    elif rule.key == "omission_strength":
+        data = _nested_rule(analysis, "omission_strength")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = list(data.get("overdue_numbers") or [])
+        if data:
+            candidate_groups.append({
+                "shadow_only": True,
+                "available_draws": data.get("available_draws"),
+                "recovery_numbers": data.get("recovery_numbers") or [],
+            })
     elif rule.key == "tail":
         candidate_groups = _tail_groups(analysis.get("tail_distribution"), prediction)
     elif rule.key == "gap":
