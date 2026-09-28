@@ -7,7 +7,7 @@ from datetime import date
 
 from database import get_connection
 from database.analysis_store import build_analysis_record
-from services.learning_engine import evaluate_shadow_rule_promotions
+from services.learning_engine import evaluate_shadow_rule_promotions\nfrom database.learning_store import save_shadow_rule_promotions
 
 
 def _date_draws(draw_date: str, history_limit: int = 120) -> tuple[list[dict], list[dict]]:
