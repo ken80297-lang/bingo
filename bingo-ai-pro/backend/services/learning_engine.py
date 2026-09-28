@@ -33,8 +33,7 @@ from services.analysis_engine import analysis_engine_status
 from services.catch_up_service import get_catch_up_status
 from services.operations_center import record_operation_event
 from services.official_verification import official_statistics
-from analysis.shadow_feature_learning import build_shadow_snapshot, score_shadow_snapshot
-
+from analysis.shadow_feature_learning import (\n    aggregate_shadow_performance,\n    assess_shadow_stability,\n    build_shadow_snapshot,\n    rank_shadow_signals,\n    score_shadow_snapshot,\n)\n
 logger = logging.getLogger(__name__)
 
 ENGINE_VERSION = "22.1"  # learning closed-loop CI
@@ -1537,6 +1536,48 @@ def _build_learning_observation() -> dict:
             },
             "models": [],
         }
+
+
+def get_shadow_learning_summary(limit: int = 100) -> dict:
+    """Readable shadow-learning status built from frozen verified snapshots."""
+    records = get_learning_records(
+        limit=max(20, min(int(limit or 100), 500)),
+        prediction_type="live_prediction",
+        learned_status="learned",
+    )
+    seen = set()
+    verifications = []
+    issues = []
+    for record in records:
+        issue = str(record.get("issue") or "")
+        if not issue or issue in seen:
+            continue
+        verification = ((record.get("prediction_snapshot") or {}).get("shadow_verification") or {})
+        if verification.get("status") != "scored":
+            continue
+        seen.add(issue)
+        issues.append(issue)
+        verifications.append(verification)
+
+    performance = aggregate_shadow_performance(verifications)
+    stability = assess_shadow_stability(performance)
+    ranking = rank_shadow_signals(performance, stability)
+    leaders = [row for row in ranking.get("signals", []) if row.get("lifecycle") == "observe_candidate"][:5]
+    retired = [row for row in ranking.get("signals", []) if row.get("lifecycle") == "retire_candidate"][:5]
+    collecting = [row for row in ranking.get("signals", []) if row.get("lifecycle") == "collect_more"][:5]
+    return {
+        "status": "ok",
+        "mode": "shadow",
+        "production_weight_effect": False,
+        "scored_issue_count": len(verifications),
+        "latest_scored_issue": issues[0] if issues else None,
+        "leaders": leaders,
+        "collecting": collecting,
+        "retired": retired,
+        "performance": performance,
+        "stability": stability,
+        "ranking": ranking,
+    }
 
 
 def get_learning_observation(force_refresh: bool = False) -> dict:
