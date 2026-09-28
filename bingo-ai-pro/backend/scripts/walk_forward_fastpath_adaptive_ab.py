@@ -376,7 +376,22 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                     "pattern_excess": row.get("signal_pattern", 0) - row.get("pattern_cut", 0),
                 })
             event_diagnostics[model] = events
+        hotcold_multiplier_buckets = {}
+        hotcold_events = event_diagnostics.get("hotcold", [])
+        for bucket_name, low, high in (("lt_0_98", -999.0, 0.98), ("0_98_to_1_00", 0.98, 1.0), ("1_00_to_1_02", 1.0, 1.02), ("ge_1_02", 1.02, 999.0)):
+            bucket_events = [event for event in hotcold_events if event.get("multiplier") is not None and low <= float(event["multiplier"]) < high]
+            bucket_deltas = [event["delta"] for event in bucket_events]
+            hotcold_multiplier_buckets[bucket_name] = {
+                "events": len(bucket_events),
+                "mean_delta": mean(bucket_deltas) if bucket_deltas else 0,
+                "vs_neutral": _ci(bucket_deltas),
+                "wins": sum(delta > 0 for delta in bucket_deltas),
+                "ties": sum(delta == 0 for delta in bucket_deltas),
+                "losses": sum(delta < 0 for delta in bucket_deltas),
+                "mean_replacements": mean(len(event.get("added") or []) for event in bucket_events) if bucket_events else 0,
+            }
         regime_summary[regime] = {
+            "hotcold_multiplier_buckets": hotcold_multiplier_buckets,
             "issues": len(group),
             "event_diagnostics": event_diagnostics,
             "isolated_models": isolated_model_summary,
