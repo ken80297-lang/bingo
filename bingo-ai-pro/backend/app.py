@@ -904,6 +904,16 @@ def startup_event() -> None:
                     ),
                     flush=True,
                 )
+                conditional_summary = (result.get("summary") or {}).get("conditional") or {}
+                regime_summary = {}
+                for regime_name, regime_data in (conditional_summary.get("regimes") or {}).items():
+                    regime_summary[regime_name] = {
+                        "issues": (regime_data or {}).get("issues"),
+                        "conditional20": (regime_data or {}).get("conditional20"),
+                        "neutral20": (regime_data or {}).get("neutral20"),
+                        "vs_neutral": (regime_data or {}).get("vs_neutral"),
+                    }
+                print("FASTPATH_REGIME_SUMMARY " + json.dumps(regime_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 dilution_summary = (result.get("summary") or {}).get("adaptive_rank_dilution") or {}
                 print("FASTPATH_ADAPTIVE_RANK_DILUTION " + json.dumps(dilution_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 selective_summary = (result.get("summary") or {}).get("selective_confidence_gate") or {}
