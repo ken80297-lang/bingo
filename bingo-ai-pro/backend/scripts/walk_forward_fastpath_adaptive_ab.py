@@ -149,6 +149,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     previous_conditional = []
     previous_neutral = []
     previous_off = []
+    previous_isolated = {model: [] for model in MODELS}
     prior_signals = []
 
     for index in range(warmup, len(clean)):
@@ -175,6 +176,22 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             trace=[],
             adaptive_number_scores=conditional_scores,
         )
+        isolated_numbers = {}
+        if conditional:
+            for isolated_model in MODELS:
+                isolated_weights = {"strategy": "v7_models", **{key: 1.0 for key in KEYS.values()}}
+                isolated_key = KEYS.get(isolated_model)
+                if isolated_key:
+                    isolated_weights[isolated_key] = float(conditional.get(isolated_key, 1.0))
+                isolated_scores, _ = _adaptive_scores(models, isolated_weights)
+                isolated_numbers[isolated_model], _ = _build_fast_path_numbers(
+                    analysis,
+                    source_issue=source["issue"],
+                    target_issue=target["issue"],
+                    previous_numbers=previous_isolated[isolated_model],
+                    trace=[],
+                    adaptive_number_scores=isolated_scores,
+                )
         learned_by_strength = {}
         multipliers_by_strength = {}
         for strength in strengths:
@@ -246,6 +263,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "conditional_added_hits": len((set(conditional_numbers) - set(neutral)) & set(official)),
             "conditional_removed_hits": len((set(neutral) - set(conditional_numbers)) & set(official)),
             "model_swap_attribution": model_swap_attribution,
+            "isolated_model_hits": {model: _hits(numbers, official) for model, numbers in isolated_numbers.items()},
             "learned_by_strength": {str(strength): hits for strength, hits in learned_hits.items()},
             "neutral20": neutral_hits,
             "off20": off_hits,
@@ -254,6 +272,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         for strength, numbers in learned_by_strength.items():
             previous_by_strength[strength] = numbers
         previous_conditional = conditional_numbers
+        for model, numbers in isolated_numbers.items():
+            previous_isolated[model] = numbers
         previous_neutral = neutral
         previous_off = off
         prior_signals.append(_signal(analysis))
@@ -294,8 +314,19 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 "removed_supported": sum(row.get("model_swap_attribution", {}).get(model, {}).get("removed_supported", 0) for row in group),
                 "removed_supported_hits": sum(row.get("model_swap_attribution", {}).get(model, {}).get("removed_supported_hits", 0) for row in group),
             }
+        isolated_model_summary = {}
+        for model in MODELS:
+            isolated_deltas = [row.get("isolated_model_hits", {}).get(model, row["neutral20"]) - row["neutral20"] for row in group]
+            isolated_model_summary[model] = {
+                "mean20": mean(row.get("isolated_model_hits", {}).get(model, row["neutral20"]) for row in group),
+                "vs_neutral": _ci(isolated_deltas),
+                "wins": sum(delta > 0 for delta in isolated_deltas),
+                "ties": sum(delta == 0 for delta in isolated_deltas),
+                "losses": sum(delta < 0 for delta in isolated_deltas),
+            }
         regime_summary[regime] = {
             "issues": len(group),
+            "isolated_models": isolated_model_summary,
             "swap_model_attribution": swap_models,
             "same_set_issues": sum(bool(row.get("conditional_same_set")) for row in group),
             "mean_changed_numbers": mean(row.get("conditional_changed_numbers", 0) for row in group),
