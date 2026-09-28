@@ -140,21 +140,28 @@ def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
 
 
 def get_shadow_rule_promotion_snapshot() -> dict:
+    persisted = get_shadow_rule_promotions()
+    persisted_rules = persisted.get("rules") or {}
     with _SHADOW_PROMOTION_LOCK:
         cached = copy.deepcopy(_SHADOW_PROMOTION_CACHE)
-    if cached.get("rules"):
+
+    if not persisted_rules:
         return cached
 
-    persisted = get_shadow_rule_promotions()
-    rules = persisted.get("rules") or {}
-    if not rules:
-        return cached
+    # Persisted promotion is the production gate. Fresh shadow evaluation may
+    # keep learning in memory, but it must not erase a previously qualified
+    # Mature rule before a promotion decision is durably saved.
+    merged_rules = copy.deepcopy(cached.get("rules") or {})
+    for key, rule in persisted_rules.items():
+        if rule.get("eligible_for_recommendation"):
+            merged_rules[key] = copy.deepcopy(rule)
+        elif key not in merged_rules:
+            merged_rules[key] = copy.deepcopy(rule)
 
-    with _SHADOW_PROMOTION_LOCK:
-        if not _SHADOW_PROMOTION_CACHE.get("rules"):
-            _SHADOW_PROMOTION_CACHE["source_issue"] = persisted.get("source_issue")
-            _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(rules)
-        return copy.deepcopy(_SHADOW_PROMOTION_CACHE)
+    return {
+        "source_issue": persisted.get("source_issue") or cached.get("source_issue"),
+        "rules": merged_rules,
+    }
 
 
 
