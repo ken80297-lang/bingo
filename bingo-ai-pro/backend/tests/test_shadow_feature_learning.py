@@ -3,6 +3,7 @@ from analysis.shadow_feature_learning import (
     omission_ages,
     pair_lift,
     super_omission_ages,
+    score_shadow_snapshot,
 )
 
 
@@ -47,3 +48,38 @@ def test_snapshot_is_explicitly_shadow_only():
     snapshot = build_shadow_snapshot([_draw(list(range(1, 21)), 5)])
     assert snapshot["mode"] == "shadow"
     assert snapshot["production_weight_effect"] is False
+
+
+def test_shadow_scoring_measures_pairs_omission_and_super_without_weight_effect():
+    snapshot = {
+        "mode": "shadow",
+        "production_weight_effect": False,
+        "number_omission": {1: 0, 2: 2, 30: 7, 40: 12},
+        "windows": {
+            "30": {
+                "top_pairs": [{"numbers": [1, 2]}, {"numbers": [30, 40]}],
+                "top_triples": [{"numbers": [1, 2, 3]}],
+                "super": {
+                    "tail_counts": {5: 4, 2: 3, 9: 1},
+                    "number_omission": {25: 8},
+                },
+            }
+        },
+    }
+
+    result = score_shadow_snapshot(snapshot, list(range(1, 21)), 25)
+
+    assert result["status"] == "scored"
+    assert result["production_weight_effect"] is False
+    assert result["windows"]["30"]["pair_hits"] == 1
+    assert result["windows"]["30"]["triple_hits"] == 1
+    assert result["windows"]["30"]["super_tail_hit"] is True
+    assert result["windows"]["30"]["official_super_omission_age"] == 8
+    assert result["omission_buckets"]["0"]["hits"] == 1
+    assert result["omission_buckets"]["1-2"]["hits"] == 1
+
+
+def test_shadow_scoring_waits_for_complete_official_draw():
+    result = score_shadow_snapshot({"windows": {}}, [1, 2, 3], 1)
+    assert result["status"] == "pending_official"
+    assert result["production_weight_effect"] is False
