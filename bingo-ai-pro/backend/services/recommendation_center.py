@@ -280,6 +280,7 @@ def _build_fast_path_numbers(
     previous_numbers: list[int],
     trace: list[dict],
     adaptive_number_scores: dict[int, float] | None = None,
+    constraint_overrides: dict | None = None,
 ) -> tuple[list[int], dict]:
     source_weights = {
         "patch_numbers": 9.0,
@@ -334,9 +335,11 @@ def _build_fast_path_numbers(
     zone_counts = {zone: 0 for zone in range(4)}
     tail_counts = {tail: 0 for tail in range(10)}
     previous_count = 0
-    zone_quota = {zone: 5 for zone in range(4)}
-    tail_limit = 3
-    previous_limit = 10
+    overrides = constraint_overrides or {}
+    zone_limit = int(overrides.get("zone_limit", 5))
+    zone_quota = {zone: zone_limit for zone in range(4)}
+    tail_limit = int(overrides.get("tail_limit", 3))
+    previous_limit = int(overrides.get("previous_limit", 10))
 
     def can_select(number: int, *, relaxed: bool = False) -> bool:
         if number in selected:
