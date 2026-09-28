@@ -1084,7 +1084,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "saved": saved,
                     "learning_queue": {"status": "skipped"},
                     "adaptive_weights": adaptive_weights,
-            "shadow_promotions": shadow_promotions,
+                    "shadow_promotions": shadow_promotions,
                 }
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
@@ -1115,6 +1115,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "saved": saved,
             "learning_queue": learning_queue,
             "adaptive_weights": adaptive_weights,
+            "shadow_promotions": shadow_promotions,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")
