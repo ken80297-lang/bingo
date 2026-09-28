@@ -486,6 +486,27 @@ def calculate_fast_recommendation(
             for rank, number in enumerate(_recommendation_numbers(model.get("candidate_numbers"))):
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + base_weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
 
+        from services.learning_engine import get_shadow_rule_promotion_snapshot
+
+        promotion_snapshot = get_shadow_rule_promotion_snapshot()
+        promotion_rules = promotion_snapshot.get("rules") or {}
+        mature_rule_scores: dict[int, float] = {}
+        applied_mature_rules: list[str] = []
+        ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
+        for rule_key, promotion in promotion_rules.items():
+            if not isinstance(promotion, dict) or not promotion.get("eligible_for_recommendation"):
+                continue
+            rule_data = ai_score.get(rule_key) if isinstance(ai_score, dict) else {}
+            candidates = _recommendation_numbers((rule_data or {}).get("candidate_numbers"))[:20]
+            if not candidates:
+                continue
+            applied_mature_rules.append(rule_key)
+            quality = max(0.5, min(1.5, 1.0 + float(promotion.get("average_lift_vs_random") or 0) / 5.0))
+            for rank, number in enumerate(candidates):
+                bonus = 2.0 * quality * max(0.25, 1.0 - rank * 0.035)
+                mature_rule_scores[number] = mature_rule_scores.get(number, 0.0) + bonus
+                adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + bonus
+
         previous_numbers = _previous_fast_path_numbers(context)
         numbers, diversity = _build_fast_path_numbers(
             analysis,
@@ -561,6 +582,12 @@ def calculate_fast_recommendation(
                     "version": adaptive.get("version") if adaptive else None,
                     "source_evaluation_id": adaptive.get("source_evaluation_id") if adaptive else None,
                     "multipliers": applied_multipliers,
+                    "shadow_promotion": {
+                        "source_issue": promotion_snapshot.get("source_issue"),
+                        "mature_rules": applied_mature_rules,
+                        "number_scores": {str(number): round(score, 4) for number, score in mature_rule_scores.items()},
+                        "enabled": bool(applied_mature_rules),
+                    },
                 },
             },
             "winning_model": "production_fast_path",

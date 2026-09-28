@@ -57,6 +57,91 @@ _OBSERVATION_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _OBSERVATION_CACHE_LOCK = threading.Lock()
 _LEARNING_STATUS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _LEARNING_STATUS_CACHE_LOCK = threading.Lock()
+_SHADOW_PROMOTION_LOCK = threading.Lock()
+_SHADOW_PROMOTION_CACHE: dict[str, Any] = {"source_issue": None, "rules": {}}
+SHADOW_RULE_KEYS = (
+    "long_dragon",
+    "multi_window_hot_cold",
+    "omission_strength",
+    "neighbor_extension",
+    "parity_size_trend",
+    "zone_cluster_strength",
+    "consecutive_extension",
+    "tail_trend_strength",
+    "composite_market_regime",
+)
+
+
+def _shadow_rule_candidates(analysis: dict, rule_key: str) -> list[int]:
+    ai_score = analysis.get("ai_score") if isinstance(analysis, dict) else {}
+    data = (ai_score or {}).get(rule_key) if isinstance(ai_score, dict) else {}
+    return _as_int_list((data or {}).get("candidate_numbers"))[:20]
+
+
+def evaluate_shadow_rule_promotions(records: list[dict], source_issue: str | None = None) -> dict:
+    """Re-evaluate every shadow rule; weak rules are retained and downgraded, never deleted."""
+    targets: dict[str, dict] = {}
+    for row in records or []:
+        issue = str(row.get("issue") or row.get("target_issue") or "")
+        if not issue or issue in targets:
+            continue
+        official = _as_int_list(row.get("official_numbers"))
+        analysis = row.get("analysis_snapshot") or {}
+        if len(official) == 20 and isinstance(analysis, dict):
+            targets[issue] = {"official": set(official), "analysis": analysis}
+
+    ordered = list(targets.values())[:100]
+    rules: dict[str, dict] = {}
+    for key in SHADOW_RULE_KEYS:
+        samples = []
+        for target in ordered:
+            candidates = _shadow_rule_candidates(target["analysis"], key)
+            if not candidates:
+                continue
+            hits = len(set(candidates) & target["official"])
+            expected_hits = len(candidates) * 0.25
+            samples.append({"hits": hits, "count": len(candidates), "lift": hits - expected_hits})
+        sample_size = len(samples)
+        avg_hits = round(sum(item["hits"] for item in samples) / sample_size, 4) if sample_size else 0.0
+        avg_lift = round(sum(item["lift"] for item in samples) / sample_size, 4) if sample_size else 0.0
+        recent = samples[:20]
+        recent_lift = round(sum(item["lift"] for item in recent) / len(recent), 4) if recent else 0.0
+        if sample_size < 20:
+            state = "learning"
+        elif sample_size < 50:
+            state = "observing"
+        elif sample_size < 100:
+            state = "candidate"
+        elif avg_lift >= 0.25 and recent_lift >= -0.05:
+            state = "mature"
+        else:
+            state = "observing"
+        rules[key] = {
+            "state": state,
+            "sample_size": sample_size,
+            "average_hits": avg_hits,
+            "average_lift_vs_random": avg_lift,
+            "recent_20_lift_vs_random": recent_lift,
+            "eligible_for_recommendation": state == "mature",
+            "retained": True,
+        }
+    return {"source_issue": str(source_issue or ""), "target_count": len(ordered), "rules": rules}
+
+
+def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
+    records = get_complete_live_learning_records(100)
+    payload = evaluate_shadow_rule_promotions(records, source_issue)
+    with _SHADOW_PROMOTION_LOCK:
+        _SHADOW_PROMOTION_CACHE["source_issue"] = payload.get("source_issue")
+        _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(payload.get("rules") or {})
+    return payload
+
+
+def get_shadow_rule_promotion_snapshot() -> dict:
+    with _SHADOW_PROMOTION_LOCK:
+        return copy.deepcopy(_SHADOW_PROMOTION_CACHE)
+
+
 
 
 def _duration_ms(start: float) -> float:
@@ -986,7 +1071,9 @@ def evaluate_verified_issue(issue: str) -> dict:
             )
         learning_queue = {"status": "skipped"}
         adaptive_weights = {"status": "skipped"}
+        shadow_promotions = {"status": "skipped"}
         if status == "ok":
+            shadow_promotions = refresh_shadow_rule_promotions(str(issue))
             adaptive_weights = update_v7_adaptive_weights(str(issue))
             if adaptive_weights.get("status") == "error":
                 return {
@@ -997,6 +1084,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "saved": saved,
                     "learning_queue": {"status": "skipped"},
                     "adaptive_weights": adaptive_weights,
+                    "shadow_promotions": shadow_promotions,
                 }
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
@@ -1027,6 +1115,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "saved": saved,
             "learning_queue": learning_queue,
             "adaptive_weights": adaptive_weights,
+            "shadow_promotions": shadow_promotions,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")
