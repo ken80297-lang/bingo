@@ -56,6 +56,19 @@ def _analysis() -> dict:
                 "active_count": 2,
                 "shadow_only": True,
             },
+            "multi_window_hot_cold": {
+                "confidence": 100,
+                "candidate_numbers": [5, 7],
+                "windows": {
+                    "10": {"available_draws": 10, "hot_numbers": [5, 7], "cold_numbers": [70, 71]},
+                    "20": {"available_draws": 20, "hot_numbers": [5, 8], "cold_numbers": [72, 73]},
+                    "50": {"available_draws": 50, "hot_numbers": [6, 8], "cold_numbers": [74, 75]},
+                    "100": {"available_draws": 100, "hot_numbers": [6, 9], "cold_numbers": [76, 77]},
+                },
+                "rising_numbers": [{"number": 5, "delta": 0.2}],
+                "cooling_numbers": [{"number": 6, "delta": -0.1}],
+                "shadow_only": True,
+            },
         },
     }
 
@@ -120,6 +133,10 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
     assert rules["long_dragon"]["candidate_numbers"] == [5, 6]
     assert rules["long_dragon"]["confidence"] == 74
     assert rules["long_dragon"]["candidate_groups"][-1]["shadow_only"] is True
+    assert rules["multi_window_hot_cold"]["status"] == "ready"
+    assert rules["multi_window_hot_cold"]["candidate_numbers"] == [5, 7]
+    assert rules["multi_window_hot_cold"]["candidate_groups"][0]["window"] == "10"
+    assert rules["multi_window_hot_cold"]["candidate_groups"][-1]["shadow_only"] is True
     assert rules["super"]["warnings"]
 
 
