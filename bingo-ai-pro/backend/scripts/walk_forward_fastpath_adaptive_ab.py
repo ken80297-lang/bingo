@@ -150,6 +150,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     previous_neutral = []
     previous_off = []
     previous_isolated = {model: [] for model in MODELS}
+    previous_normal_hotcold_gate = []
     prior_signals = []
 
     for index in range(warmup, len(clean)):
@@ -179,6 +180,24 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             trace=[],
             adaptive_number_scores=conditional_scores,
         )
+        gated_conditional_numbers = conditional_numbers
+        gated_hotcold_suppressed = False
+        if conditional and regime == "normal":
+            hotcold_key = KEYS.get("hotcold")
+            hotcold_multiplier = float(conditional.get(hotcold_key, 1.0)) if hotcold_key else 1.0
+            if abs(hotcold_multiplier - 1.0) >= 0.04:
+                gated_weights = dict(conditional)
+                gated_weights[hotcold_key] = 1.0
+                gated_scores, _ = _adaptive_scores(models, gated_weights)
+                gated_conditional_numbers, _ = _build_fast_path_numbers(
+                    analysis,
+                    source_issue=source["issue"],
+                    target_issue=target["issue"],
+                    previous_numbers=previous_normal_hotcold_gate,
+                    trace=[],
+                    adaptive_number_scores=gated_scores,
+                )
+                gated_hotcold_suppressed = True
         isolated_numbers = {}
         if conditional:
             for isolated_model in MODELS:
@@ -259,6 +278,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "regime": regime,
             "conditional_enabled": conditional is not None,
             "conditional20": _hits(conditional_numbers, official),
+            "normal_hotcold_gate20": _hits(gated_conditional_numbers, official),
+            "normal_hotcold_gate_suppressed": gated_hotcold_suppressed,
             "conditional_multipliers": conditional_multipliers,
             "conditional_changed_numbers": len(set(conditional_numbers) ^ set(neutral)) // 2,
             "conditional_same_set": set(conditional_numbers) == set(neutral),
@@ -282,6 +303,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         for strength, numbers in learned_by_strength.items():
             previous_by_strength[strength] = numbers
         previous_conditional = conditional_numbers
+        previous_normal_hotcold_gate = gated_conditional_numbers
         for model, numbers in isolated_numbers.items():
             previous_isolated[model] = numbers
         previous_neutral = neutral
@@ -430,6 +452,11 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "vs_neutral": _ci(deltas),
             "models": model_performance,
         }
+    gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
+    gated_deltas_vs_neutral = [row["normal_hotcold_gate20"] - row["neutral20"] for row in conditional_active]
+    gated_triggered = [row for row in conditional_active if row.get("normal_hotcold_gate_suppressed")]
+    gated_triggered_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in gated_triggered]
+    gated_triggered_vs_neutral = [row["normal_hotcold_gate20"] - row["neutral20"] for row in gated_triggered]
     return {
         "summary": {
             "issues": len(rows),
@@ -438,6 +465,17 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "off20": mean(row["off20"] for row in active) if active else 0,
             "strengths": strength_summary,
             "paired_neutral_minus_off_20": _ci(neutral_off),
+            "normal_hotcold_ge4_gate": {
+                "triggered_issues": len(gated_triggered),
+                "mean20": mean(row["normal_hotcold_gate20"] for row in conditional_active) if conditional_active else 0,
+                "vs_conditional": _ci(gated_deltas_vs_conditional),
+                "vs_neutral": _ci(gated_deltas_vs_neutral),
+                "triggered_vs_conditional": _ci(gated_triggered_vs_conditional),
+                "triggered_vs_neutral": _ci(gated_triggered_vs_neutral),
+                "triggered_wins_vs_conditional": sum(delta > 0 for delta in gated_triggered_vs_conditional),
+                "triggered_ties_vs_conditional": sum(delta == 0 for delta in gated_triggered_vs_conditional),
+                "triggered_losses_vs_conditional": sum(delta < 0 for delta in gated_triggered_vs_conditional),
+            },
             "conditional": {
                 "active_issues": len(conditional_active),
                 "mean20": mean(row["conditional20"] for row in conditional_active) if conditional_active else 0,
