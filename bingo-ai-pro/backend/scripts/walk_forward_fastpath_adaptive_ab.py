@@ -369,7 +369,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                     "removed": sorted(neutral_set - isolated_set),
                     "added_hits": sorted((isolated_set - neutral_set) & official_set),
                     "removed_hits": sorted((neutral_set - isolated_set) & official_set),
-                    "multiplier": row.get("conditional_multipliers", {}).get(KEYS.get(model)),
+                    "multiplier": row.get("conditional_multipliers", {}).get(model),
                     "cluster_score": row.get("signal_cluster"),
                     "pattern_score": row.get("signal_pattern"),
                     "cluster_excess": row.get("signal_cluster", 0) - row.get("cluster_cut", 0),
