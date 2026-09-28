@@ -891,6 +891,7 @@ def startup_event() -> None:
             if max_issue:
                 history = [row for row in history if str(row.get("issue") or "").isdigit() and int(row["issue"]) <= max_issue]
             history = history[:history_limit]
+            if len(history) < 120:
                 print(
                     "FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR "
                     + json.dumps({"reason": "insufficient_history", "records": len(history), "required_minimum": 120}, ensure_ascii=False, sort_keys=True),
