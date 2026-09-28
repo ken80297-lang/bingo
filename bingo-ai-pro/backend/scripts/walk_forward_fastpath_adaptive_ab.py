@@ -476,7 +476,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     selective_vs_neutral = [row["selective20"] - row["neutral20"] for row in conditional_active]
     selective_vs_conditional = [row["selective20"] - row["conditional20"] for row in conditional_active]
     selective_enabled_rows = [row for row in conditional_active if row.get("selective_enabled")]
-        gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
+    gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
     gated_deltas_vs_neutral = [row["normal_hotcold_gate20"] - row["neutral20"] for row in conditional_active]
     gated_triggered = [row for row in conditional_active if row.get("normal_hotcold_gate_suppressed")]
     gated_triggered_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in gated_triggered]
