@@ -302,3 +302,49 @@ def assess_shadow_stability(performance: dict, minimum_samples: int = 20) -> dic
             assess(f"{metric}:window_{window}", values)
 
     return result
+
+
+def rank_shadow_signals(performance: dict, stability: dict, minimum_samples: int = 20) -> dict:
+    """Rank observation candidates and retire persistently non-positive signals."""
+    horizons = performance.get("horizons") or {}
+    signals = stability.get("signals") or {}
+    ranked = []
+
+    for name, gate in signals.items():
+        deltas = [float(value) for value in gate.get("deltas") or []]
+        avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
+        positive_ratio = (
+            int(gate.get("positive_horizons") or 0) / int(gate.get("eligible_horizons") or 1)
+            if int(gate.get("eligible_horizons") or 0) else 0.0
+        )
+        score = round((avg_delta * 100) + (positive_ratio * 10), 4)
+
+        if gate.get("status") == "candidate_positive":
+            lifecycle = "observe_candidate"
+        elif int(gate.get("eligible_horizons") or 0) >= 2 and deltas and max(deltas) <= 0:
+            lifecycle = "retire_candidate"
+        else:
+            lifecycle = "collect_more"
+
+        ranked.append({
+            "signal": name,
+            "score": score,
+            "average_baseline_delta": round(avg_delta, 6),
+            "eligible_horizons": int(gate.get("eligible_horizons") or 0),
+            "positive_horizons": int(gate.get("positive_horizons") or 0),
+            "lifecycle": lifecycle,
+            "production_eligible": False,
+        })
+
+    ranked.sort(key=lambda row: (row["score"], row["signal"]), reverse=True)
+    for index, row in enumerate(ranked, 1):
+        row["rank"] = index
+
+    return {
+        "mode": "shadow",
+        "production_weight_effect": False,
+        "minimum_samples": minimum_samples,
+        "candidate_count": sum(row["lifecycle"] == "observe_candidate" for row in ranked),
+        "retire_count": sum(row["lifecycle"] == "retire_candidate" for row in ranked),
+        "signals": ranked,
+    }
