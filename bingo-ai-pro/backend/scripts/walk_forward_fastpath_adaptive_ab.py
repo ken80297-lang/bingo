@@ -541,6 +541,23 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "ties": sum(value == 0 for value in shadow_deltas),
             "losses": sum(value < 0 for value in shadow_deltas),
         }
+    constraint_shadows_by_regime = {}
+    for regime in sorted({row.get("regime") for row in conditional_active}):
+        group = [row for row in conditional_active if row.get("regime") == regime]
+        regime_arms = {}
+        for shadow_name in ("zone", "tail", "previous"):
+            shadow_deltas = [row.get("constraint_shadow_hits", {}).get(shadow_name, row["conditional20"]) - row["conditional20"] for row in group]
+            shadow_changes = [row.get("constraint_shadow_changed", {}).get(shadow_name, 0) for row in group]
+            regime_arms[shadow_name] = {
+                "issues": len(group),
+                "changed_issues": sum(value > 0 for value in shadow_changes),
+                "mean_changed_numbers": mean(shadow_changes) if shadow_changes else 0,
+                "vs_production_constraints": _ci(shadow_deltas),
+                "wins": sum(value > 0 for value in shadow_deltas),
+                "ties": sum(value == 0 for value in shadow_deltas),
+                "losses": sum(value < 0 for value in shadow_deltas),
+            }
+        constraint_shadows_by_regime[regime] = regime_arms
         full_score_changed = [row.get("full_score_rank_changed_numbers", 0) for row in conditional_active]
     raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
     final_changed = [row.get("conditional_changed_numbers", 0) for row in conditional_active]
@@ -573,6 +590,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "paired_neutral_minus_off_20": _ci(neutral_off),
             "adaptive_rank_dilution": dilution_summary,
             "constraint_shadow_arms": constraint_shadows,
+            "constraint_shadow_arms_by_regime": constraint_shadows_by_regime,
             "source_weight_ablations": source_weight_ablations,
             "selective_confidence_gate": {
                 "enabled_issues": len(selective_enabled_rows),
