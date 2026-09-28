@@ -208,3 +208,46 @@ def score_shadow_snapshot(snapshot: dict, official_numbers: list[int], official_
         },
         "windows": window_scores,
     }
+
+
+def aggregate_shadow_performance(verifications: list[dict], horizons: tuple[int, ...] = (20, 50, 100)) -> dict:
+    """Aggregate already-scored shadow results; descriptive only, never weights."""
+    scored = [v for v in verifications if (v or {}).get("status") == "scored"]
+    output = {"mode": "shadow", "production_weight_effect": False, "available_samples": len(scored), "horizons": {}}
+    for horizon in horizons:
+        sample = scored[:horizon]
+        windows = {}
+        omission = {}
+        for result in sample:
+            for bucket, row in (result.get("omission_buckets") or {}).items():
+                agg = omission.setdefault(bucket, {"candidates": 0, "hits": 0})
+                agg["candidates"] += int(row.get("candidates") or 0)
+                agg["hits"] += int(row.get("hits") or 0)
+            for window, row in (result.get("windows") or {}).items():
+                agg = windows.setdefault(str(window), {
+                    "pair_candidates": 0, "pair_hits": 0,
+                    "triple_candidates": 0, "triple_hits": 0,
+                    "super_tail_trials": 0, "super_tail_hits": 0,
+                })
+                agg["pair_candidates"] += int(row.get("pair_candidates") or 0)
+                agg["pair_hits"] += int(row.get("pair_hits") or 0)
+                agg["triple_candidates"] += int(row.get("triple_candidates") or 0)
+                agg["triple_hits"] += int(row.get("triple_hits") or 0)
+                if row.get("super_top_tails"):
+                    agg["super_tail_trials"] += 1
+                    agg["super_tail_hits"] += int(bool(row.get("super_tail_hit")))
+
+        for row in omission.values():
+            row["hit_rate"] = round(row["hits"] / row["candidates"], 6) if row["candidates"] else 0
+        for row in windows.values():
+            row["pair_hit_rate"] = round(row["pair_hits"] / row["pair_candidates"], 6) if row["pair_candidates"] else 0
+            row["triple_hit_rate"] = round(row["triple_hits"] / row["triple_candidates"], 6) if row["triple_candidates"] else 0
+            row["super_tail_hit_rate"] = round(row["super_tail_hits"] / row["super_tail_trials"], 6) if row["super_tail_trials"] else 0
+
+        output["horizons"][str(horizon)] = {
+            "sample_size": len(sample),
+            "complete": len(sample) >= horizon,
+            "omission_buckets": omission,
+            "windows": windows,
+        }
+    return output
