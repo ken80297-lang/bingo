@@ -48,6 +48,14 @@ def _analysis() -> dict:
                 "confidence": 66,
                 "candidate_numbers": [15, 16],
             },
+            "long_dragon": {
+                "confidence": 74,
+                "candidate_numbers": [5, 6],
+                "streaks": [{"number": 5, "streak": 4}, {"number": 6, "streak": 3}],
+                "max_streak": 4,
+                "active_count": 2,
+                "shadow_only": True,
+            },
         },
     }
 
@@ -108,6 +116,10 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
     assert rules["hot_zone"]["candidate_numbers"] == [1, 4, 8]
     assert rules["cold_zone"]["candidate_numbers"] == [72, 79]
     assert rules["three_star"]["candidate_numbers"] == [1, 2, 3]
+    assert rules["long_dragon"]["status"] == "ready"
+    assert rules["long_dragon"]["candidate_numbers"] == [5, 6]
+    assert rules["long_dragon"]["confidence"] == 74
+    assert rules["long_dragon"]["candidate_groups"][-1]["shadow_only"] is True
     assert rules["super"]["warnings"]
 
 

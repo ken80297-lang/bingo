@@ -222,6 +222,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     }
     super_trajectory = _super_number_trajectory(draw, recent)
     cluster_aftershock = _cluster_aftershock(numbers, recent)
+    long_dragon = _long_dragon_tracking(draw, recent)
     ai_score = {
         "score": min(
             100,
@@ -232,6 +233,7 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         ),
         "super_number_trajectory_recovery": super_trajectory,
         "cluster_aftershock_recovery": cluster_aftershock,
+        "long_dragon": long_dragon,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
@@ -239,6 +241,9 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "trajectory_zone_jump": super_trajectory.get("trend") == "zone_jump",
             "cluster_recovery_age": cluster_aftershock.get("cluster_recovery_age"),
             "cluster_recovery_candidates": cluster_aftershock.get("candidate_numbers"),
+            "long_dragon_candidates": long_dragon.get("candidate_numbers"),
+            "long_dragon_max_streak": long_dragon.get("max_streak"),
+            "long_dragon_active_count": long_dragon.get("active_count"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -409,6 +414,42 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
+
+
+def _long_dragon_tracking(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    """Measure consecutive appearance streaks without changing recommendation weights."""
+    current_numbers = set(_as_int_list(draw.get("numbers")))
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue]
+    history = [set(_as_int_list(item.get("numbers"))) for item in prior[:lookback]]
+    streaks: list[dict] = []
+    for number in sorted(current_numbers):
+        streak = 1
+        for previous_numbers in history:
+            if number not in previous_numbers:
+                break
+            streak += 1
+        if streak >= 2:
+            streaks.append({"number": number, "streak": streak})
+
+    streaks.sort(key=lambda item: (-item["streak"], item["number"]))
+    candidates = [item["number"] for item in streaks]
+    max_streak = max((item["streak"] for item in streaks), default=0)
+    strength = min(100, sum(item["streak"] - 1 for item in streaks) * 8 + max(0, max_streak - 2) * 6)
+    return {
+        "name": "長龍追號",
+        "key": "long_dragon",
+        "lookback": min(lookback, len(history)),
+        "streaks": streaks,
+        "candidate_numbers": candidates[:20],
+        "max_streak": max_streak,
+        "active_count": len(streaks),
+        "confidence": round(strength, 2),
+        "reference_issues": [str(item.get("issue")) for item in prior[:lookback] if item.get("issue")],
+        "triggered_rules": ["consecutive_appearance"] if streaks else [],
+        "warning_level": "high" if max_streak >= 4 else "medium" if max_streak >= 3 else "low",
+        "shadow_only": True,
     }
 
 
