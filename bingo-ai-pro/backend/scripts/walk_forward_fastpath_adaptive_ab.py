@@ -676,7 +676,9 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
 def _supabase_analysis_history(limit, max_issue=None):
     import requests
 
-    url = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/analysis_history"
+    base = os.environ.get("SHADOW_RESEARCH_DATA_URL") or (
+        os.environ["SUPABASE_URL"].rstrip("/") + "/functions/v1/shadow-research-draws"
+    )
     key = os.environ["SUPABASE_PUBLISHABLE_KEY"]
     headers = {"apikey": key, "Authorization": f"Bearer {key}"}
     rows = []
@@ -684,16 +686,10 @@ def _supabase_analysis_history(limit, max_issue=None):
     offset = 0
     while len(rows) < limit:
         take = min(page_size, limit - len(rows))
-        params = {
-            "select": "issue,draw_time,numbers,super_number,big_small,odd_even",
-            "issue": "not.is.null",
-            "order": "issue.desc",
-            "offset": str(offset),
-            "limit": str(take),
-        }
+        params = {"offset": offset, "limit": take}
         if max_issue is not None:
-            params["issue"] = f"lte.{max_issue}"
-        response = requests.get(url, headers=headers, params=params, timeout=30)
+            params["max_issue"] = str(max_issue)
+        response = requests.get(base, headers=headers, params=params, timeout=60)
         response.raise_for_status()
         batch = response.json()
         if not batch:
