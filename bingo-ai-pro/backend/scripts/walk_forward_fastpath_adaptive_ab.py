@@ -720,7 +720,9 @@ def main():
         draws = _supabase_analysis_history(args.limit, args.max_issue)
     else:
         draws = get_draw_history(args.limit)
-    print(json.dumps(run(draws, args.warmup)["summary"], ensure_ascii=False, indent=2))
+    summary = run(draws, args.warmup)["summary"]
+    print("LARGE_CLUSTER_TAIL_STABILITY " + json.dumps(summary.get("large_cluster_tail_stability") or {}, ensure_ascii=False, sort_keys=True), flush=True)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
