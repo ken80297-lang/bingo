@@ -114,11 +114,13 @@ def _regime(analysis, prior_signals):
         return "normal"
     cluster_cut = _quantile([item[0] for item in prior_signals[-100:]], 2 / 3)
     pattern_cut = _quantile([item[1] for item in prior_signals[-100:]], 2 / 3)
-    if cluster_score >= cluster_cut:
-        return "large_cluster"
-    if pattern_score >= pattern_cut:
+    cluster_excess = cluster_score - cluster_cut
+    pattern_excess = pattern_score - pattern_cut
+    if cluster_excess < 0 and pattern_excess < 0:
+        return "normal"
+    if pattern_excess > cluster_excess:
         return "pattern_active"
-    return "normal"
+    return "large_cluster"
 
 
 def _conditional_weights(performance_by_regime, regime, version):
