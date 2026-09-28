@@ -196,7 +196,7 @@ def score_shadow_snapshot(snapshot: dict, official_numbers: list[int], official_
         "mode": "shadow",
         "production_weight_effect": False,
         "official_count": len(official),
-        "official_super": official_super,
+        "official_super": official_super,\n        "random_baselines": {"number_hit_rate": DRAW_SIZE / UNIVERSE_SIZE, "super_tail_top3": 0.3},
         "omission_buckets": {
             bucket: {
                 "candidates": omission_totals[bucket],
@@ -238,11 +238,11 @@ def aggregate_shadow_performance(verifications: list[dict], horizons: tuple[int,
                     agg["super_tail_hits"] += int(bool(row.get("super_tail_hit")))
 
         for row in omission.values():
-            row["hit_rate"] = round(row["hits"] / row["candidates"], 6) if row["candidates"] else 0
-        for row in windows.values():
+            row["hit_rate"] = round(row["hits"] / row["candidates"], 6) if row["candidates"] else 0\n            row["random_baseline"] = DRAW_SIZE / UNIVERSE_SIZE\n            row["baseline_delta"] = round(row["hit_rate"] - row["random_baseline"], 6)\n            row["lift_vs_random"] = round(row["hit_rate"] / row["random_baseline"], 6) if row["random_baseline"] else 0
+        pair_baseline = comb(DRAW_SIZE, 2) / comb(UNIVERSE_SIZE, 2)\n        triple_baseline = comb(DRAW_SIZE, 3) / comb(UNIVERSE_SIZE, 3)\n        for row in windows.values():
             row["pair_hit_rate"] = round(row["pair_hits"] / row["pair_candidates"], 6) if row["pair_candidates"] else 0
             row["triple_hit_rate"] = round(row["triple_hits"] / row["triple_candidates"], 6) if row["triple_candidates"] else 0
-            row["super_tail_hit_rate"] = round(row["super_tail_hits"] / row["super_tail_trials"], 6) if row["super_tail_trials"] else 0
+            row["super_tail_hit_rate"] = round(row["super_tail_hits"] / row["super_tail_trials"], 6) if row["super_tail_trials"] else 0\n            row["pair_random_baseline"] = round(pair_baseline, 6)\n            row["pair_baseline_delta"] = round(row["pair_hit_rate"] - pair_baseline, 6)\n            row["pair_lift_vs_random"] = round(row["pair_hit_rate"] / pair_baseline, 6) if pair_baseline else 0\n            row["triple_random_baseline"] = round(triple_baseline, 6)\n            row["triple_baseline_delta"] = round(row["triple_hit_rate"] - triple_baseline, 6)\n            row["triple_lift_vs_random"] = round(row["triple_hit_rate"] / triple_baseline, 6) if triple_baseline else 0\n            row["super_tail_random_baseline"] = 0.3\n            row["super_tail_baseline_delta"] = round(row["super_tail_hit_rate"] - 0.3, 6)\n            row["super_tail_lift_vs_random"] = round(row["super_tail_hit_rate"] / 0.3, 6)
 
         output["horizons"][str(horizon)] = {
             "sample_size": len(sample),
