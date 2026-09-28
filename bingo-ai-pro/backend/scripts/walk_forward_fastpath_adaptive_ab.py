@@ -179,7 +179,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         neutral_rank20 = set(sorted(neutral_probe_scores, key=neutral_probe_scores.get, reverse=True)[:20])
         raw_rank_changed = len(conditional_rank20 ^ neutral_rank20) // 2 if conditional else 0
         conditional_trace = []
-        conditional_numbers, _ = _build_fast_path_numbers(
+        conditional_numbers, conditional_diversity = _build_fast_path_numbers(
             analysis,
             source_issue=source["issue"],
             target_issue=target["issue"],
@@ -254,7 +254,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             models,
             {"strategy": "v7_models", **{key: 1.0 for key in KEYS.values()}},
         )
-        neutral, _ = _build_fast_path_numbers(
+        neutral, neutral_diversity = _build_fast_path_numbers(
             analysis,
             source_issue=source["issue"],
             target_issue=target["issue"],
@@ -306,6 +306,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "conditional_multipliers": conditional_multipliers,
             "conditional_changed_numbers": len(set(conditional_numbers) ^ set(neutral)) // 2,
             "raw_rank_changed_numbers": raw_rank_changed,
+            "full_score_rank_changed_numbers": len(set(conditional_diversity.get("top_ranked", [])[:20]) ^ set(neutral_diversity.get("top_ranked", [])[:20])) // 2,
             "conditional_same_set": set(conditional_numbers) == set(neutral),
             "conditional_multiplier_spread": (max(conditional_multipliers.values()) - min(conditional_multipliers.values())) if conditional_multipliers else 0.0,
             "conditional_added_hits": len((set(conditional_numbers) - set(neutral)) & set(official)),
@@ -479,11 +480,15 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "vs_neutral": _ci(deltas),
             "models": model_performance,
         }
-    raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
+    full_score_changed = [row.get("full_score_rank_changed_numbers", 0) for row in conditional_active]
+        raw_changed = [row.get("raw_rank_changed_numbers", 0) for row in conditional_active]
     final_changed = [row.get("conditional_changed_numbers", 0) for row in conditional_active]
     dilution_summary = {
         "issues": len(conditional_active),
         "raw_rank_changed_issues": sum(value > 0 for value in raw_changed),
+        "full_score_rank_changed_issues": sum(value > 0 for value in full_score_changed),
+        "mean_full_score_rank_changes": mean(full_score_changed) if full_score_changed else 0,
+        "full_score_absorbed_issues": sum(raw > 0 and final == 0 for raw, final in zip(full_score_changed, final_changed)),
         "final_changed_issues": sum(value > 0 for value in final_changed),
         "mean_raw_rank_changes": mean(raw_changed) if raw_changed else 0,
         "mean_final_changes": mean(final_changed) if final_changed else 0,
