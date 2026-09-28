@@ -115,3 +115,26 @@ def test_aggregate_shadow_performance_rolls_up_multiple_issues():
     assert h["windows"]["30"]["pair_hits"] == 3
     assert h["windows"]["30"]["super_tail_hit_rate"] == 0.5
     assert result["production_weight_effect"] is False
+
+
+def test_rolling_performance_includes_random_baseline_deltas():
+    rows = [{
+        "status": "scored",
+        "omission_buckets": {"6-10": {"candidates": 20, "hits": 6}},
+        "windows": {"30": {
+            "pair_candidates": 20, "pair_hits": 2,
+            "triple_candidates": 10, "triple_hits": 1,
+            "super_top_tails": [1, 2, 3], "super_tail_hit": True,
+        }},
+    }]
+    result = aggregate_shadow_performance(rows, horizons=(20,))
+    h = result["horizons"]["20"]
+    omission = h["omission_buckets"]["6-10"]
+    assert omission["random_baseline"] == 0.25
+    assert omission["baseline_delta"] == 0.05
+    assert omission["lift_vs_random"] == 1.2
+    w = h["windows"]["30"]
+    assert w["pair_random_baseline"] > 0
+    assert w["triple_random_baseline"] > 0
+    assert w["super_tail_random_baseline"] == 0.3
+    assert w["super_tail_baseline_delta"] == 0.7
