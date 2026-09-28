@@ -5,6 +5,7 @@ from analysis.shadow_feature_learning import (
     super_omission_ages,
     score_shadow_snapshot,
     aggregate_shadow_performance,
+    assess_shadow_stability,
 )
 
 
@@ -138,3 +139,42 @@ def test_rolling_performance_includes_random_baseline_deltas():
     assert w["triple_random_baseline"] > 0
     assert w["super_tail_random_baseline"] == 0.3
     assert w["super_tail_baseline_delta"] == 0.7
+
+
+def test_stability_requires_two_eligible_positive_horizons():
+    performance = {
+        "horizons": {
+            "20": {
+                "sample_size": 20,
+                "omission_buckets": {"6-10": {"baseline_delta": 0.04}},
+                "windows": {"30": {"pair_baseline_delta": 0.02, "triple_baseline_delta": 0.01, "super_tail_baseline_delta": 0.10}},
+            },
+            "50": {
+                "sample_size": 50,
+                "omission_buckets": {"6-10": {"baseline_delta": 0.02}},
+                "windows": {"30": {"pair_baseline_delta": 0.01, "triple_baseline_delta": -0.01, "super_tail_baseline_delta": 0.05}},
+            },
+            "100": {"sample_size": 12, "omission_buckets": {}, "windows": {}},
+        }
+    }
+    result = assess_shadow_stability(performance)
+    assert result["signals"]["omission:6-10"]["status"] == "candidate_positive"
+    assert result["signals"]["pair:window_30"]["status"] == "candidate_positive"
+    assert result["signals"]["triple:window_30"]["status"] == "insufficient_or_unstable"
+    assert result["signals"]["super_tail:window_30"]["status"] == "candidate_positive"
+    assert all(not row["production_eligible"] for row in result["signals"].values())
+    assert result["production_weight_effect"] is False
+
+
+def test_stability_rejects_one_short_lucky_window():
+    performance = {
+        "horizons": {
+            "20": {
+                "sample_size": 20,
+                "omission_buckets": {},
+                "windows": {"30": {"pair_baseline_delta": 0.20}},
+            }
+        }
+    }
+    result = assess_shadow_stability(performance)
+    assert result["signals"]["pair:window_30"]["status"] == "insufficient_or_unstable"
