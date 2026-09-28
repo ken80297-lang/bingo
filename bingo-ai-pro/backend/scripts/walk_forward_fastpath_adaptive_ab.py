@@ -517,7 +517,19 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "vs_neutral": _ci(deltas),
             "models": model_performance,
         }
-    constraint_shadows = {}
+    source_weight_ablations = {}
+    for source_name in ("patch_numbers", "missing_numbers", "cold_numbers", "hot_numbers", "diagonal_pattern", "repeated_numbers", "latest_draw_numbers"):
+        deltas = [row.get("source_shadow_hits", {}).get(source_name, row["conditional20"]) - row["conditional20"] for row in conditional_active]
+        changes = [row.get("source_shadow_changed", {}).get(source_name, 0) for row in conditional_active]
+        source_weight_ablations[source_name] = {
+            "changed_issues": sum(value > 0 for value in changes),
+            "mean_changed_numbers": mean(changes) if changes else 0,
+            "vs_production_weights": _ci(deltas),
+            "wins": sum(value > 0 for value in deltas),
+            "ties": sum(value == 0 for value in deltas),
+            "losses": sum(value < 0 for value in deltas),
+        }
+        constraint_shadows = {}
     for shadow_name in ("zone", "tail", "previous"):
         shadow_deltas = [row.get("constraint_shadow_hits", {}).get(shadow_name, row["conditional20"]) - row["conditional20"] for row in conditional_active]
         shadow_changes = [row.get("constraint_shadow_changed", {}).get(shadow_name, 0) for row in conditional_active]
@@ -561,6 +573,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "paired_neutral_minus_off_20": _ci(neutral_off),
             "adaptive_rank_dilution": dilution_summary,
             "constraint_shadow_arms": constraint_shadows,
+            "source_weight_ablations": source_weight_ablations,
             "selective_confidence_gate": {
                 "enabled_issues": len(selective_enabled_rows),
                 "fallback_issues": len(conditional_active) - len(selective_enabled_rows),
