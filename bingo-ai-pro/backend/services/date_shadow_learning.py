@@ -120,6 +120,8 @@ def _bootstrap_date_evaluation() -> None:
     if not requested: return
     try:
         payload = replay_shadow_rules_for_date(requested)
+        persistence = save_shadow_rule_promotions(payload)
+        payload["promotion_persistence"] = persistence
         print("shadow_date_bootstrap_result=" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
     except Exception as exc:
         print(f"shadow_date_bootstrap_failed date={requested} error_type={type(exc).__name__} error={exc}")
