@@ -473,7 +473,10 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "vs_neutral": _ci(deltas),
             "models": model_performance,
         }
-    gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
+    selective_vs_neutral = [row["selective20"] - row["neutral20"] for row in conditional_active]
+    selective_vs_conditional = [row["selective20"] - row["conditional20"] for row in conditional_active]
+    selective_enabled_rows = [row for row in conditional_active if row.get("selective_enabled")]
+        gated_deltas_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in conditional_active]
     gated_deltas_vs_neutral = [row["normal_hotcold_gate20"] - row["neutral20"] for row in conditional_active]
     gated_triggered = [row for row in conditional_active if row.get("normal_hotcold_gate_suppressed")]
     gated_triggered_vs_conditional = [row["normal_hotcold_gate20"] - row["conditional20"] for row in gated_triggered]
@@ -486,6 +489,16 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "off20": mean(row["off20"] for row in active) if active else 0,
             "strengths": strength_summary,
             "paired_neutral_minus_off_20": _ci(neutral_off),
+            "selective_confidence_gate": {
+                "enabled_issues": len(selective_enabled_rows),
+                "fallback_issues": len(conditional_active) - len(selective_enabled_rows),
+                "mean20": mean(row["selective20"] for row in conditional_active) if conditional_active else 0,
+                "vs_neutral": _ci(selective_vs_neutral),
+                "vs_conditional": _ci(selective_vs_conditional),
+                "wins_vs_neutral": sum(delta > 0 for delta in selective_vs_neutral),
+                "ties_vs_neutral": sum(delta == 0 for delta in selective_vs_neutral),
+                "losses_vs_neutral": sum(delta < 0 for delta in selective_vs_neutral),
+            },
             "normal_hotcold_ge4_gate": {
                 "triggered_issues": len(gated_triggered),
                 "mean20": mean(row["normal_hotcold_gate20"] for row in conditional_active) if conditional_active else 0,
