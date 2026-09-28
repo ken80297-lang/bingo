@@ -69,6 +69,17 @@ def _analysis() -> dict:
                 "cooling_numbers": [{"number": 6, "delta": -0.1}],
                 "shadow_only": True,
             },
+            "omission_strength": {
+                "confidence": 100,
+                "candidate_numbers": [12, 34],
+                "overdue_numbers": [
+                    {"number": 12, "current_omission": 9, "average_omission": 3.0, "max_omission": 10, "omission_ratio": 3.0},
+                    {"number": 34, "current_omission": 7, "average_omission": 3.5, "max_omission": 9, "omission_ratio": 2.0},
+                ],
+                "recovery_numbers": [{"number": 12, "current_omission": 9}],
+                "available_draws": 100,
+                "shadow_only": True,
+            },
         },
     }
 
@@ -137,6 +148,9 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
     assert rules["multi_window_hot_cold"]["candidate_numbers"] == [5, 7]
     assert rules["multi_window_hot_cold"]["candidate_groups"][0]["window"] == "10"
     assert rules["multi_window_hot_cold"]["candidate_groups"][-1]["shadow_only"] is True
+    assert rules["omission_strength"]["status"] == "ready"
+    assert rules["omission_strength"]["candidate_numbers"] == [12, 34]
+    assert rules["omission_strength"]["candidate_groups"][-1]["shadow_only"] is True
     assert rules["super"]["warnings"]
 
 
