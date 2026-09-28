@@ -294,6 +294,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "regime": regime,
             "conditional_enabled": conditional is not None,
             "conditional20": _hits(conditional_numbers, official),
+            "selective20": _hits(selective_numbers, official),
+            "selective_enabled": selective_enabled,
             "normal_hotcold_gate20": _hits(gated_conditional_numbers, official),
             "normal_hotcold_gate_suppressed": gated_hotcold_suppressed,
             "conditional_multipliers": conditional_multipliers,
@@ -320,6 +322,9 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             previous_by_strength[strength] = numbers
         previous_conditional = conditional_numbers
         previous_normal_hotcold_gate = gated_conditional_numbers
+        previous_selective = selective_numbers
+        if conditional:
+            prior_regime_deltas[regime].append(_hits(conditional_numbers, official) - neutral_hits)
         for model, numbers in isolated_numbers.items():
             previous_isolated[model] = numbers
         previous_neutral = neutral
