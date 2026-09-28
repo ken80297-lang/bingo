@@ -221,6 +221,18 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         learned_hits = {strength: _hits(numbers, official) for strength, numbers in learned_by_strength.items()}
         neutral_hits = _hits(neutral, official)
         off_hits = _hits(off, official)
+        model_candidates = {str(model.get("model") or ""): set(_numbers({"numbers": model.get("candidate_numbers") or []})) for model in models}
+        added_numbers = set(conditional_numbers) - set(neutral)
+        removed_numbers = set(neutral) - set(conditional_numbers)
+        model_swap_attribution = {}
+        for model in MODELS:
+            candidates = model_candidates.get(model) or set()
+            model_swap_attribution[model] = {
+                "added_supported": len(added_numbers & candidates),
+                "added_supported_hits": len(added_numbers & candidates & set(official)),
+                "removed_supported": len(removed_numbers & candidates),
+                "removed_supported_hits": len(removed_numbers & candidates & set(official)),
+            }
         rows.append({
             "issue": target["issue"],
             "adaptive_enabled": adaptive is not None,
@@ -233,6 +245,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "conditional_multiplier_spread": (max(conditional_multipliers.values()) - min(conditional_multipliers.values())) if conditional_multipliers else 0.0,
             "conditional_added_hits": len((set(conditional_numbers) - set(neutral)) & set(official)),
             "conditional_removed_hits": len((set(neutral) - set(conditional_numbers)) & set(official)),
+            "model_swap_attribution": model_swap_attribution,
             "learned_by_strength": {str(strength): hits for strength, hits in learned_hits.items()},
             "neutral20": neutral_hits,
             "off20": off_hits,
@@ -273,8 +286,17 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 "mean20": mean(values) if values else 0,
                 "recent100_mean20": mean(values[-100:]) if values else 0,
             }
+        swap_models = {}
+        for model in MODELS:
+            swap_models[model] = {
+                "added_supported": sum(row.get("model_swap_attribution", {}).get(model, {}).get("added_supported", 0) for row in group),
+                "added_supported_hits": sum(row.get("model_swap_attribution", {}).get(model, {}).get("added_supported_hits", 0) for row in group),
+                "removed_supported": sum(row.get("model_swap_attribution", {}).get(model, {}).get("removed_supported", 0) for row in group),
+                "removed_supported_hits": sum(row.get("model_swap_attribution", {}).get(model, {}).get("removed_supported_hits", 0) for row in group),
+            }
         regime_summary[regime] = {
             "issues": len(group),
+            "swap_model_attribution": swap_models,
             "same_set_issues": sum(bool(row.get("conditional_same_set")) for row in group),
             "mean_changed_numbers": mean(row.get("conditional_changed_numbers", 0) for row in group),
             "mean_multiplier_spread": mean(row.get("conditional_multiplier_spread", 0.0) for row in group),
