@@ -12,6 +12,7 @@ zone/tail/previous-overlap constraints are identical in both arms.
 import argparse
 import json
 import math
+import os
 from collections import defaultdict
 from statistics import mean
 
@@ -666,12 +667,54 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         "rows": rows,
     }
 
+def _supabase_analysis_history(limit, max_issue=None):
+    from supabase import create_client
+
+    url = os.environ["SUPABASE_URL"]
+    key = os.environ["SUPABASE_PUBLISHABLE_KEY"]
+    client = create_client(url, key)
+    rows = []
+    page_size = 1000
+    offset = 0
+    while len(rows) < limit:
+        query = (
+            client.table("analysis_history")
+            .select("issue,draw_time,numbers,super_number,big_small,odd_even")
+            .not_.is_("issue", "null")
+            .order("issue", desc=True)
+            .range(offset, offset + min(page_size, limit - len(rows)) - 1)
+        )
+        if max_issue is not None:
+            query = query.lte("issue", str(max_issue))
+        batch = query.execute().data or []
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += len(batch)
+    valid = [
+        row for row in rows
+        if str(row.get("issue") or "").isdigit()
+        and not str(row.get("issue")).startswith("99")
+        and len(_numbers(row)) == 20
+    ]
+    valid.sort(key=lambda row: int(row["issue"]), reverse=True)
+    return valid[:limit]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=2000)
     parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument("--source", choices=("draw_history", "supabase_analysis"), default="draw_history")
+    parser.add_argument("--max-issue", type=int)
     args = parser.parse_args()
-    print(json.dumps(run(get_draw_history(args.limit), args.warmup)["summary"], ensure_ascii=False, indent=2))
+    if args.source == "supabase_analysis":
+        draws = _supabase_analysis_history(args.limit, args.max_issue)
+    else:
+        draws = get_draw_history(args.limit)
+    print(json.dumps(run(draws, args.warmup)["summary"], ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
