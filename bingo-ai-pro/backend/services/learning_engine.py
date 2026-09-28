@@ -33,7 +33,13 @@ from services.analysis_engine import analysis_engine_status
 from services.catch_up_service import get_catch_up_status
 from services.operations_center import record_operation_event
 from services.official_verification import official_statistics
-from analysis.shadow_feature_learning import (\n    aggregate_shadow_performance,\n    assess_shadow_stability,\n    build_shadow_snapshot,\n    rank_shadow_signals,\n    score_shadow_snapshot,\n)\n
+from analysis.shadow_feature_learning import (
+    aggregate_shadow_performance,
+    assess_shadow_stability,
+    build_shadow_snapshot,
+    rank_shadow_signals,
+    score_shadow_snapshot,
+)
 logger = logging.getLogger(__name__)
 
 ENGINE_VERSION = "22.1"  # learning closed-loop CI
