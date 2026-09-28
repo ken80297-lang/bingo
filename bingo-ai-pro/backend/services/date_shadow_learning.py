@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
 from datetime import date
 
 from database import get_connection
@@ -52,3 +55,18 @@ def evaluate_shadow_rules_for_date(draw_date: str) -> dict:
         }
     )
     return result
+
+
+def _bootstrap_date_evaluation() -> None:
+    requested = str(os.getenv("SHADOW_DATE_BOOTSTRAP") or "").strip()
+    if not requested:
+        return
+    try:
+        payload = evaluate_shadow_rules_for_date(requested)
+        print("shadow_date_bootstrap_result=" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception as exc:
+        print(f"shadow_date_bootstrap_failed date={requested} error_type={type(exc).__name__} error={exc}")
+
+
+if os.getenv("SHADOW_DATE_BOOTSTRAP"):
+    threading.Thread(target=_bootstrap_date_evaluation, name="shadow-date-bootstrap", daemon=True).start()
