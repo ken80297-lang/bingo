@@ -1,0 +1,22 @@
+name: Validate production collector lifecycle fix
+
+on:
+  push:
+    branches:
+      - fix-production-collector-lifecycle-background
+
+jobs:
+  targeted-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bingo-ai-pro/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: pip install pytest
+      - run: python -m pytest tests/test_latest_sync.py tests/test_collector_safety.py -q
+      - run: python -m py_compile services/latest_sync.py services/official_verification.py
