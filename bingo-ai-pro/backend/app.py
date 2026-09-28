@@ -904,6 +904,8 @@ def startup_event() -> None:
                     ),
                     flush=True,
                 )
+                dilution_summary = (result.get("summary") or {}).get("adaptive_rank_dilution") or {}
+                print("FASTPATH_ADAPTIVE_RANK_DILUTION " + json.dumps(dilution_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 selective_summary = (result.get("summary") or {}).get("selective_confidence_gate") or {}
                 print("FASTPATH_SELECTIVE_GATE_SUMMARY " + json.dumps(selective_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 gate_summary = (result.get("summary") or {}).get("normal_hotcold_ge4_gate") or {}
