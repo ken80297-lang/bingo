@@ -174,7 +174,11 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         pattern_cut = _quantile([item[1] for item in prior_signals[-100:]], 2 / 3) if len(prior_signals) >= 30 else 0.0
         conditional = _conditional_weights(performance_by_regime, regime, version + 1)
         conditional_scores, conditional_multipliers = _adaptive_scores(models, conditional) if conditional else ({}, {})
-        conditional_numbers, _ = _build_fast_path_numbers(
+        neutral_probe_scores, _ = _adaptive_scores(models, {"strategy": "neutral", **{key: 1.0 for key in KEYS.values()}})
+        conditional_rank20 = set(sorted(conditional_scores, key=conditional_scores.get, reverse=True)[:20]) if conditional_scores else set()
+        neutral_rank20 = set(sorted(neutral_probe_scores, key=neutral_probe_scores.get, reverse=True)[:20])
+        raw_rank_changed = len(conditional_rank20 ^ neutral_rank20) // 2 if conditional else 0
+                conditional_numbers, _ = _build_fast_path_numbers(
             analysis,
             source_issue=source["issue"],
             target_issue=target["issue"],
@@ -300,6 +304,7 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "normal_hotcold_gate_suppressed": gated_hotcold_suppressed,
             "conditional_multipliers": conditional_multipliers,
             "conditional_changed_numbers": len(set(conditional_numbers) ^ set(neutral)) // 2,
+            "raw_rank_changed_numbers": raw_rank_changed,
             "conditional_same_set": set(conditional_numbers) == set(neutral),
             "conditional_multiplier_spread": (max(conditional_multipliers.values()) - min(conditional_multipliers.values())) if conditional_multipliers else 0.0,
             "conditional_added_hits": len((set(conditional_numbers) - set(neutral)) & set(official)),
