@@ -152,6 +152,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
     previous_isolated = {model: [] for model in MODELS}
     previous_normal_hotcold_gate = []
     previous_shadow = {"zone": [], "tail": [], "previous": []}
+    source_names = ("patch_numbers", "missing_numbers", "cold_numbers", "hot_numbers", "diagonal_pattern", "repeated_numbers", "latest_draw_numbers")
+    previous_source_shadow = {name: [] for name in source_names}
     previous_selective = []
     prior_regime_deltas = defaultdict(list)
     prior_signals = []
@@ -203,7 +205,18 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 adaptive_number_scores=conditional_scores,
                 constraint_overrides=overrides,
             )
-        gated_conditional_numbers = conditional_numbers
+        source_shadow_numbers = {}
+        for source_name in source_names:
+            source_shadow_numbers[source_name], _ = _build_fast_path_numbers(
+                analysis,
+                source_issue=source["issue"],
+                target_issue=target["issue"],
+                previous_numbers=previous_source_shadow[source_name],
+                trace=[],
+                adaptive_number_scores=conditional_scores,
+                source_weight_overrides={source_name: 0.0},
+            )
+                gated_conditional_numbers = conditional_numbers
         gated_hotcold_suppressed = False
         if conditional and regime == "normal":
             hotcold_key = KEYS.get("hotcold")
@@ -316,6 +329,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
             "conditional_enabled": conditional is not None,
             "conditional20": _hits(conditional_numbers, official),
             "constraint_shadow_hits": {name: _hits(numbers, official) for name, numbers in shadow_numbers.items()},
+            "source_shadow_hits": {name: _hits(numbers, official) for name, numbers in source_shadow_numbers.items()},
+            "source_shadow_changed": {name: len(set(numbers) ^ set(conditional_numbers)) // 2 for name, numbers in source_shadow_numbers.items()},
             "constraint_shadow_changed": {name: len(set(numbers) ^ set(conditional_numbers)) // 2 for name, numbers in shadow_numbers.items()},
             "selective20": _hits(selective_numbers, official),
             "selective_enabled": selective_enabled,
@@ -349,6 +364,8 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
         previous_normal_hotcold_gate = gated_conditional_numbers
         for shadow_name, numbers in shadow_numbers.items():
             previous_shadow[shadow_name] = numbers
+        for source_name, numbers in source_shadow_numbers.items():
+            previous_source_shadow[source_name] = numbers
         previous_selective = selective_numbers
         if conditional:
             prior_regime_deltas[regime].append(_hits(conditional_numbers, official) - neutral_hits)
