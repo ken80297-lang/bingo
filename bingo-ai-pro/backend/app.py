@@ -904,6 +904,8 @@ def startup_event() -> None:
                     ),
                     flush=True,
                 )
+                selective_summary = (result.get("summary") or {}).get("selective_confidence_gate") or {}
+                print("FASTPATH_SELECTIVE_GATE_SUMMARY " + json.dumps(selective_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 gate_summary = (result.get("summary") or {}).get("normal_hotcold_ge4_gate") or {}
                 print("FASTPATH_NORMAL_HOTCOLD_GATE_SUMMARY " + json.dumps(gate_summary, ensure_ascii=False, sort_keys=True), flush=True)
                 conditional = (result.get("summary") or {}).get("conditional") or {}
