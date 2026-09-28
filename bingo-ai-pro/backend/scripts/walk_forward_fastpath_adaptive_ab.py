@@ -324,9 +324,28 @@ def run(draws, warmup=100, strengths=(1.0, 2.0, 3.0, 5.0)):
                 "ties": sum(delta == 0 for delta in isolated_deltas),
                 "losses": sum(delta < 0 for delta in isolated_deltas),
             }
+        time_segments = {}
+        ordered_group = sorted(group, key=lambda row: int(row["issue"]))
+        for segment_index, segment_name in enumerate(("early", "middle", "late")):
+            start = (len(ordered_group) * segment_index) // 3
+            end = (len(ordered_group) * (segment_index + 1)) // 3
+            segment = ordered_group[start:end]
+            segment_models = {}
+            for model in MODELS:
+                segment_deltas = [row.get("isolated_model_hits", {}).get(model, row["neutral20"]) - row["neutral20"] for row in segment]
+                segment_models[model] = {
+                    "issues": len(segment),
+                    "mean_delta": mean(segment_deltas) if segment_deltas else 0,
+                    "vs_neutral": _ci(segment_deltas),
+                    "wins": sum(delta > 0 for delta in segment_deltas),
+                    "ties": sum(delta == 0 for delta in segment_deltas),
+                    "losses": sum(delta < 0 for delta in segment_deltas),
+                }
+            time_segments[segment_name] = segment_models
         regime_summary[regime] = {
             "issues": len(group),
             "isolated_models": isolated_model_summary,
+            "time_segments": time_segments,
             "swap_model_attribution": swap_models,
             "same_set_issues": sum(bool(row.get("conditional_same_set")) for row in group),
             "mean_changed_numbers": mean(row.get("conditional_changed_numbers", 0) for row in group),
