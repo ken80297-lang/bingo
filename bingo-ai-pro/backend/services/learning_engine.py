@@ -141,6 +141,19 @@ def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
 
 def get_shadow_rule_promotion_snapshot() -> dict:
     with _SHADOW_PROMOTION_LOCK:
+        cached = copy.deepcopy(_SHADOW_PROMOTION_CACHE)
+    if cached.get("rules"):
+        return cached
+
+    persisted = get_shadow_rule_promotions()
+    rules = persisted.get("rules") or {}
+    if not rules:
+        return cached
+
+    with _SHADOW_PROMOTION_LOCK:
+        if not _SHADOW_PROMOTION_CACHE.get("rules"):
+            _SHADOW_PROMOTION_CACHE["source_issue"] = persisted.get("source_issue")
+            _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(rules)
         return copy.deepcopy(_SHADOW_PROMOTION_CACHE)
 
 
