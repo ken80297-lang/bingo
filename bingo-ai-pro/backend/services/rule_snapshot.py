@@ -31,6 +31,11 @@ RULE_REGISTRY: tuple[RuleDefinition, ...] = (
     RuleDefinition("long_dragon", "長龍追號", "trend", ("ai_score",)),
     RuleDefinition("multi_window_hot_cold", "多週期冷熱門", "trend", ("ai_score",)),
     RuleDefinition("omission_strength", "遺漏強度", "trend", ("ai_score",)),
+    RuleDefinition("neighbor_extension", "鄰號延伸", "gap", ("ai_score",)),
+    RuleDefinition("parity_size_trend", "大小單雙走勢", "trend", ("ai_score",)),
+    RuleDefinition("zone_cluster_strength", "分區群聚強度", "zone", ("ai_score",)),
+    RuleDefinition("consecutive_extension", "連號延續", "shape", ("ai_score",)),
+    RuleDefinition("tail_trend_strength", "尾數走勢強化", "shape", ("ai_score",)),
     RuleDefinition("tail", "尾數", "shape", ("tail_distribution",)),
     RuleDefinition("gap", "間距", "gap", ("difference_values", "gap_score")),
     RuleDefinition("cluster", "群聚", "zone", ("cluster_level", "cluster_score")),
@@ -375,6 +380,12 @@ def _build_rule_item(rule: RuleDefinition, analysis: dict, prediction: dict) -> 
                 "available_draws": data.get("available_draws"),
                 "recovery_numbers": data.get("recovery_numbers") or [],
             })
+    elif rule.key in {"neighbor_extension", "parity_size_trend", "zone_cluster_strength", "consecutive_extension", "tail_trend_strength"}:
+        data = _nested_rule(analysis, rule.key)
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = [data] if data else []
     elif rule.key == "tail":
         candidate_groups = _tail_groups(analysis.get("tail_distribution"), prediction)
     elif rule.key == "gap":
