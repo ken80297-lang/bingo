@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from statistics import pstdev
 from typing import Any
@@ -31,6 +34,29 @@ STRATEGIES = {
     "long_term_conf_vol": "SHADOW_BC",
 }
 MAX_SHADOW_BONUS = 70.0
+
+_SHADOW_VERIFY_EXECUTOR: ThreadPoolExecutor | None = None
+_SHADOW_VERIFY_EXECUTOR_LOCK = threading.Lock()
+
+
+def _shadow_verify_executor() -> ThreadPoolExecutor:
+    global _SHADOW_VERIFY_EXECUTOR
+    with _SHADOW_VERIFY_EXECUTOR_LOCK:
+        if _SHADOW_VERIFY_EXECUTOR is None:
+            _SHADOW_VERIFY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shadow-verify")
+        return _SHADOW_VERIFY_EXECUTOR
+
+
+def shutdown_shadow_verify_executor() -> None:
+    global _SHADOW_VERIFY_EXECUTOR
+    with _SHADOW_VERIFY_EXECUTOR_LOCK:
+        executor = _SHADOW_VERIFY_EXECUTOR
+        _SHADOW_VERIFY_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(shutdown_shadow_verify_executor)
 
 
 def _now() -> str:
@@ -256,6 +282,19 @@ def generate_for_prediction(recommendation: dict, record: dict) -> dict:
     except Exception as exc:
         logger.exception("shadow dynamic observer generation failed")
         return {"status": "error", "message": str(exc)}
+
+
+def verify_for_official_draw_async(official_draw: dict) -> dict:
+    draw = dict(official_draw or {})
+    issue = _valid_issue(draw.get("issue"))
+    if not issue or len(_numbers(draw.get("numbers"))) != 20:
+        return {"status": "skipped", "reason": "invalid_official_draw", "issue": issue}
+    try:
+        _shadow_verify_executor().submit(verify_for_official_draw, draw)
+        return {"status": "queued", "issue": issue}
+    except Exception as exc:
+        logger.exception("shadow dynamic async verification submit failed issue=%s", issue)
+        return {"status": "error", "issue": issue, "message": str(exc)}
 
 
 def verify_for_official_draw(official_draw: dict, production_numbers: list[int] | None = None) -> dict:
