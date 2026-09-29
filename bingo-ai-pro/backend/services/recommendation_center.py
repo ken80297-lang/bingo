@@ -55,7 +55,7 @@ FEATURE_LABELS = {
 }
 
 RECOMMENDATION_NUMBER_COUNT = 20
-FAST_PATH_STRATEGY_VERSION = "29.0-adaptive-v1"
+FAST_PATH_STRATEGY_VERSION = "29.1-shadow-adaptive-v1"
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -492,18 +492,35 @@ def calculate_fast_recommendation(
         promotion_rules = promotion_snapshot.get("rules") or {}
         mature_rule_scores: dict[int, float] = {}
         applied_mature_rules: list[str] = []
+        applied_shadow_rules: list[str] = []
+        shadow_rule_weights: dict[str, float] = {}
         ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
+        state_factors = {"learning": 0.10, "observing": 0.25, "candidate": 0.50, "mature": 1.00}
         for rule_key, promotion in promotion_rules.items():
-            if not isinstance(promotion, dict) or not promotion.get("eligible_for_recommendation"):
+            if not isinstance(promotion, dict) or not promotion.get("retained", True):
                 continue
             rule_data = ai_score.get(rule_key) if isinstance(ai_score, dict) else {}
             candidates = _recommendation_numbers((rule_data or {}).get("candidate_numbers"))[:20]
             if not candidates:
                 continue
-            applied_mature_rules.append(rule_key)
-            quality = max(0.5, min(1.5, 1.0 + float(promotion.get("average_lift_vs_random") or 0) / 5.0))
+
+            state = str(promotion.get("state") or "learning")
+            long_lift = float(promotion.get("average_lift_vs_random") or 0)
+            recent_lift = float(promotion.get("recent_20_lift_vs_random") or 0)
+            sample_size = int(promotion.get("sample_size") or 0)
+            sample_factor = min(1.0, max(0.10, sample_size / 100.0))
+            evidence = max(0.0, long_lift + recent_lift * 0.25)
+            rule_weight = min(1.0, state_factors.get(state, 0.10) * sample_factor * evidence / 0.25)
+            if promotion.get("eligible_for_recommendation"):
+                rule_weight = max(rule_weight, 0.75)
+                applied_mature_rules.append(rule_key)
+            shadow_rule_weights[rule_key] = round(rule_weight, 6)
+            if rule_weight <= 0:
+                continue
+
+            applied_shadow_rules.append(rule_key)
             for rank, number in enumerate(candidates):
-                bonus = 2.0 * quality * max(0.25, 1.0 - rank * 0.035)
+                bonus = 2.0 * rule_weight * max(0.25, 1.0 - rank * 0.035)
                 mature_rule_scores[number] = mature_rule_scores.get(number, 0.0) + bonus
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + bonus
 
@@ -585,8 +602,10 @@ def calculate_fast_recommendation(
                     "shadow_promotion": {
                         "source_issue": promotion_snapshot.get("source_issue"),
                         "mature_rules": applied_mature_rules,
+                        "applied_rules": applied_shadow_rules,
+                        "rule_weights": shadow_rule_weights,
                         "number_scores": {str(number): round(score, 4) for number, score in mature_rule_scores.items()},
-                        "enabled": bool(applied_mature_rules),
+                        "enabled": bool(applied_shadow_rules),
                     },
                 },
             },
