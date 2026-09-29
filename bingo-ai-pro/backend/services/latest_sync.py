@@ -1095,12 +1095,29 @@ def process_latest_official_draw() -> dict[str, Any]:
         target_select_reason == "database_already_at_source_latest"
         and existing_complete
     ):
-        stage_started = time.perf_counter()
-        analysis_created = _analysis_exists(source_issue)
-        analysis_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
-        stage_started = time.perf_counter()
-        prediction_created = _prediction_exists_for_latest(source_issue)
-        prediction_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+        # Once this process has already proven the same issue complete, avoid
+        # repeating two remote downstream existence queries every 30 seconds.
+        # A restart, issue change, or incomplete state still falls back to the
+        # database checks below, preserving reconciliation/self-heal behavior.
+        with _STATE_LOCK:
+            state_proves_downstream_complete = (
+                str(_LATEST_SYNC_STATE.get("source_issue") or "") == source_issue
+                and bool(_LATEST_SYNC_STATE.get("database_saved"))
+                and bool(_LATEST_SYNC_STATE.get("analysis_created"))
+                and bool(_LATEST_SYNC_STATE.get("prediction_created"))
+            )
+        if state_proves_downstream_complete:
+            analysis_created = True
+            prediction_created = True
+            analysis_lookup_ms = 0.0
+            prediction_lookup_ms = 0.0
+        else:
+            stage_started = time.perf_counter()
+            analysis_created = _analysis_exists(source_issue)
+            analysis_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+            stage_started = time.perf_counter()
+            prediction_created = _prediction_exists_for_latest(source_issue)
+            prediction_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
         if analysis_created and prediction_created:
             logger.info(
                 "latest sync noop timing issue=%s latest_db_ms=%.2f source_fetch_ms=%.2f existing_lookup_ms=%.2f analysis_lookup_ms=%.2f prediction_lookup_ms=%.2f total_ms=%.2f",
