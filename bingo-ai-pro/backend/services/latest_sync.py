@@ -1233,7 +1233,13 @@ def process_latest_official_draw() -> dict[str, Any]:
     # Persist the current analysis and create the next prediction immediately
     # after the official draw is confirmed. Verification/learning still run in
     # the complete background lifecycle below.
-    analysis_created = _analysis_exists(source_issue)
+    # A newly persisted official issue cannot already have downstream work from
+    # this collector pass. Avoid two redundant remote existence lookups here:
+    # analysis save is an upsert, and ensure_next_prediction() owns prediction
+    # idempotency/canonical checks. Existing/recovery paths keep the lookups so
+    # restart and self-heal semantics remain unchanged.
+    newly_persisted_official = not existing_complete
+    analysis_created = False if newly_persisted_official else _analysis_exists(source_issue)
     analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
     if not analysis_created:
         try:
@@ -1243,7 +1249,7 @@ def process_latest_official_draw() -> dict[str, Any]:
             logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
             analysis_result = {"status": "error", "message": str(exc)}
 
-    prediction_created = _prediction_exists_for_latest(source_issue)
+    prediction_created = False if newly_persisted_official else _prediction_exists_for_latest(source_issue)
     priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "skipped"}
     if analysis_created and not prediction_created:
         try:
