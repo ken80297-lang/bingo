@@ -1091,16 +1091,42 @@ def process_latest_official_draw() -> dict[str, Any]:
     else:
         return _failure(source_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
 
+    # Prediction is latency-sensitive: a five-minute Bingo target must not wait
+    # behind the single-worker background lifecycle (especially prior learning).
+    # Persist the current analysis and create the next prediction immediately
+    # after the official draw is confirmed. Verification/learning still run in
+    # the complete background lifecycle below.
     analysis_created = _analysis_exists(source_issue)
+    analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
+    if not analysis_created:
+        try:
+            analysis_result = save_analysis_history(saved_draw)
+            analysis_created = _analysis_created_from_result(analysis_result, source_issue)
+        except Exception as exc:
+            logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
+            analysis_result = {"status": "error", "message": str(exc)}
+
     prediction_created = _prediction_exists_for_latest(source_issue)
+    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "skipped"}
+    if analysis_created and not prediction_created:
+        try:
+            from services.prediction_refresh import ensure_next_prediction
+
+            priority_prediction = ensure_next_prediction(saved_draw)
+            prediction_created = _prediction_created_from_result(priority_prediction, source_issue)
+        except Exception as exc:
+            logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
+            priority_prediction = {"status": "error", "message": str(exc)}
+
     if existing_complete and prediction_created and analysis_created:
         lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
     else:
         lifecycle = _queue_full_official_lifecycle(saved_draw, source_issue, prediction_target_issue)
 
     analysis_result = {
-        "status": "existing" if analysis_created else "queued",
-        "reason": "full_lifecycle_background" if not analysis_created else None,
+        **analysis_result,
+        "reason": None if analysis_created else "priority_analysis_failed",
+        "priority_prediction": priority_prediction,
     }
     completed = analysis_created and prediction_created
     stages = _snapshot_stages(
