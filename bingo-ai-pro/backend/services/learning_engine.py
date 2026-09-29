@@ -131,8 +131,7 @@ def evaluate_shadow_rule_promotions(records: list[dict], source_issue: str | Non
 
 
 def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
-    records = get_complete_live_learning_records(100)
-    payload = evaluate_shadow_rule_promotions(records, source_issue)
+    # Promotion needs at most the newest 100 complete targets. Bound the scan so\n    # sparse/incomplete history cannot turn every live learning cycle into a\n    # 10,000-row JSON snapshot scan. 3,000 rows covers 166 full 18-row targets.\n    records = get_complete_live_learning_records(100, max_rows=3000)\n    payload = evaluate_shadow_rule_promotions(records, source_issue)
     with _SHADOW_PROMOTION_LOCK:
         _SHADOW_PROMOTION_CACHE["source_issue"] = payload.get("source_issue")
         _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(payload.get("rules") or {})
