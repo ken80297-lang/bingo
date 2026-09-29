@@ -1075,6 +1075,62 @@ def process_latest_official_draw() -> dict[str, Any]:
     prediction_target_issue = _next_issue(source_issue)
     existing = get_official_draw_by_issue(source_issue)
     existing_complete = is_complete_official_draw(existing)
+
+    # Polling the already-complete latest issue must stay cheap.  Do not rerun
+    # verification/analysis/prediction/snapshot reload every time the official
+    # source has not advanced.  If either downstream artifact is missing, fall
+    # through to the existing reconciliation path so an incomplete issue still
+    # self-heals.
+    if (
+        target_select_reason == "database_already_at_source_latest"
+        and existing_complete
+    ):
+        analysis_created = _analysis_exists(source_issue)
+        prediction_created = _prediction_exists_for_latest(source_issue)
+        if analysis_created and prediction_created:
+            stages = _snapshot_stages(
+                database_saved=True,
+                analysis_created=True,
+                prediction_created=True,
+                dashboard_ready=True,
+            )
+            snapshot = _update_state(
+                official_detected_issue=source_issue,
+                source_issue=source_issue,
+                database_latest_issue=source_issue,
+                dashboard_latest_issue=source_issue,
+                latest_saved_at=(existing or {}).get("updated_at") or (existing or {}).get("created_at") or _now(),
+                draw_time=(existing or {}).get("draw_time"),
+                numbers_count=len(_valid_numbers((existing or {}).get("numbers"))),
+                database_saved=True,
+                analysis_created=True,
+                prediction_created=True,
+                dashboard_ready=True,
+                target_issue=prediction_target_issue,
+                detected_at=detected_at,
+                last_attempt_at=_now(),
+                attempt_count=attempt_count,
+                failure_stage=None,
+                failure_reason=None,
+                next_retry_expected_at=None,
+                stages=stages,
+            )
+            snapshot.update(
+                {
+                    "status": "ok",
+                    "saved": {"status": "ok", "saved": 0, "storage": "existing"},
+                    "analysis": {"status": "existing", "issue": source_issue},
+                    "priority_verification": {"status": "skipped", "reason": "latest_already_complete"},
+                    "priority_shadow_verification": {"status": "skipped", "reason": "latest_already_complete"},
+                    "lifecycle": {"status": "existing", "reason": "downstream_already_complete"},
+                    "target_select_reason": target_select_reason,
+                    "snapshot_reload": {"status": "skipped", "reason": "latest_already_complete"},
+                    "elapsed_seconds": round(time.perf_counter() - start, 3),
+                    "exit_reason": "latest_already_complete",
+                }
+            )
+            return snapshot
+
     if existing_complete:
         saved_draw = existing
         save_result = {"status": "ok", "saved": 0, "storage": "existing"}
