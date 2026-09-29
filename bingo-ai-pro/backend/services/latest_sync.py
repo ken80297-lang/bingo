@@ -1150,6 +1150,14 @@ def process_latest_official_draw() -> dict[str, Any]:
                     "target_select_reason": target_select_reason,
                     "snapshot_reload": {"status": "skipped", "reason": "latest_already_complete"},
                     "elapsed_seconds": round(time.perf_counter() - start, 3),
+                    "timing": {
+                        "latest_db_ms": latest_db_ms,
+                        "source_fetch_ms": source_fetch_ms,
+                        "existing_lookup_ms": existing_lookup_ms,
+                        "analysis_lookup_ms": analysis_lookup_ms,
+                        "prediction_lookup_ms": prediction_lookup_ms,
+                        "total_ms": round((time.perf_counter() - start) * 1000, 2),
+                    },
                     "exit_reason": "latest_already_complete",
                 }
             )
