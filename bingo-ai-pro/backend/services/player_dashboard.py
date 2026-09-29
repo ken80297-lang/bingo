@@ -3114,21 +3114,10 @@ def get_player_card_one_snapshot(
     )
     current = _current_draw(official)
 
-    kuaishou_future, _ = _submit_component(
-        "kuaishou",
-        get_latest_kuaishou_snapshot,
-    )
-    kuaishou = _component_result(
-        "kuaishou",
-        kuaishou_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    # Kuaishou is advisory only. Never block Card One on a secondary source:
+    # use its last-good cache immediately and refresh it in the background.
+    kuaishou = _load_component_cache("kuaishou", {}) or {}
+    _submit_component("kuaishou", get_latest_kuaishou_snapshot)
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
 
     next_prediction = None
@@ -3205,9 +3194,26 @@ def get_player_card_one_snapshot(
             warnings.append("next_prediction_snapshot stale cache")
             timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
 
+    cached_prediction = _load_component_cache("next_prediction_snapshot")
+    if not next_prediction and cached_prediction:
+        # During the draw -> prediction handoff, keep the last complete 20-number
+        # recommendation visible instead of flashing an empty "prediction pending"
+        # card. The cache guard prevents an older/empty result from replacing a
+        # newer valid snapshot; the next completed prediction swaps in normally.
+        cached_numbers = _as_int_list(
+            cached_prediction.get("recommend_numbers")
+            or cached_prediction.get("main_numbers")
+        )
+        if len(cached_numbers) == 20:
+            next_prediction = dict(cached_prediction)
+            next_prediction["handoff_pending"] = True
+            next_prediction["stale"] = True
+            next_prediction["is_stale"] = True
+            next_prediction["latest_official_issue"] = detected_latest_issue or (current or {}).get("issue")
+            next_prediction["recommendation_warning"] = "新一期 AI 推薦產生中，暫時保留上一筆完整推薦。"
     next_prediction = (
         next_prediction
-        or _load_component_cache("next_prediction_snapshot")
+        or cached_prediction
         or _pending_next_prediction(current, detected_latest_issue)
     )
     next_prediction["history"] = _load_component_cache("prediction_history_stats", {}) or {}
