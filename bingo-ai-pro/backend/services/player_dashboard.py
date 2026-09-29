@@ -3120,15 +3120,12 @@ def get_player_card_one_snapshot(
     _submit_component("kuaishou", get_latest_kuaishou_snapshot)
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
 
-    next_prediction = None
+    # Prefer the completed prediction snapshot already held in memory. A DB
+    # context lookup is refresh work, not a first-paint dependency.
+    next_prediction = _load_component_cache("next_prediction_snapshot")
     if current:
         def build_next_snapshot():
-            diagnostic_started = time.perf_counter()
-            diagnostics: dict[str, Any] = {
-                "stages": [],
-                "query_count": 0,
-            }
-            context_started = time.perf_counter()
+            diagnostics: dict[str, Any] = {"stages": [], "query_count": 0}
             context = _timed_component_stage(
                 "next_prediction_snapshot",
                 "latest_prediction_context_lookup",
@@ -3138,61 +3135,22 @@ def get_player_card_one_snapshot(
                     use_dashboard_read_pool=True,
                 ),
             )
-            context_db_timing = (context or {}).get("db_timing") if isinstance(context, dict) else None
-            if context_db_timing:
-                diagnostics["query_count"] += int((context or {}).get("query_count") or 1)
-            diagnostics["stages"].append(
-                {
-                    "stage": "latest_prediction_context_lookup",
-                    "duration_ms": round((time.perf_counter() - context_started) * 1000, 2),
-                    "db_timing": deepcopy(context_db_timing),
-                    "query_count": (context or {}).get("query_count") if isinstance(context, dict) else None,
-                }
-            )
             context_draw = (context or {}).get("draw") or current
-            if str((context_draw or {}).get("issue") or "") != str((current or {}).get("issue") or ""):
-                record = None
-                context_draw = current
-            else:
-                record = (context or {}).get("prediction")
-            transform_started = time.perf_counter()
-            return _timed_component_stage(
-                "next_prediction_snapshot",
-                "prediction_from_history",
-                lambda: _attach_next_prediction_diagnostics(
-                    _prediction_from_history(
-                        record,
-                        context_draw,
-                        detected_latest_issue,
-                        allow_slow_lookups=False,
-                        transform_diagnostics=diagnostics,
-                    ),
-                    diagnostics,
-                    transform_started,
-                    diagnostic_started,
-                ),
+            record = (context or {}).get("prediction") if str((context_draw or {}).get("issue") or "") == str((current or {}).get("issue") or "") else None
+            return _prediction_from_history(
+                record,
+                context_draw if record else current,
+                detected_latest_issue,
+                allow_slow_lookups=False,
+                transform_diagnostics=diagnostics,
             )
-
-        prediction_future, _ = _submit_component(
-            "next_prediction_snapshot",
-            build_next_snapshot,
-        )
-        next_prediction = _component_result(
-            "next_prediction_snapshot",
-            prediction_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        )
-    else:
-        next_prediction = _load_component_cache("next_prediction_snapshot")
+        _submit_component("next_prediction_snapshot", build_next_snapshot)
         if next_prediction:
-            _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
-            warnings.append("next_prediction_snapshot stale cache")
-            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
+            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "ok", "last_good_cache"))
+    elif next_prediction:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        warnings.append("next_prediction_snapshot stale cache")
+        timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
 
     cached_prediction = _load_component_cache("next_prediction_snapshot")
     if not next_prediction and cached_prediction:
