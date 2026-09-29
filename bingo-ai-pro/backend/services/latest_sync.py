@@ -1043,7 +1043,11 @@ def process_latest_official_draw() -> dict[str, Any]:
 
     existing_latest = get_latest_official_draw()
     database_issue = (existing_latest or {}).get("issue")
-    source_draws = _source_draws_today(page_size=100)
+    # Latest-only polling only needs the newest handful of official rows.
+    # Keep the wider page for catch-up semantics, where older missing issues
+    # may legitimately need to be selected from the same response.
+    source_page_size = 10 if LATEST_ISSUE_PRIORITY and not HISTORICAL_CATCHUP_ENABLED else 100
+    source_draws = _source_draws_today(page_size=source_page_size)
     source_draw, detected_source_issue, target_select_reason = _select_collector_target_draw(database_issue, source_draws)
     if not source_draw:
         snapshot = _failure(database_issue, "detect", target_select_reason or "official_latest_issue_unavailable", detected_at, attempt_count)
