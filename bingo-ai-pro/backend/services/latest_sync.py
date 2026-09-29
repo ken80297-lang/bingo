@@ -1091,6 +1091,32 @@ def process_latest_official_draw() -> dict[str, Any]:
     else:
         return _failure(source_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
 
+    # Verification is also latency-sensitive and must not wait behind prior
+    # learning on the single background worker. This path only verifies already
+    # persisted predictions/shadow rows; it never regenerates recommendations.
+    priority_verification: dict[str, Any] = {"status": "skipped"}
+    priority_shadow_verification: dict[str, Any] = {"status": "skipped"}
+    try:
+        from services.prediction_lifecycle import verify_prediction
+
+        priority_verification = verify_prediction(
+            {
+                "issue": source_issue,
+                "numbers": _valid_numbers((saved_draw or {}).get("numbers")),
+                "super_number": (saved_draw or {}).get("super_number"),
+            }
+        )
+    except Exception as exc:
+        logger.exception("latest sync priority verification failed source_issue=%s", source_issue)
+        priority_verification = {"status": "error", "message": str(exc)}
+    try:
+        from services.shadow_dynamic_observer import verify_for_official_draw
+
+        priority_shadow_verification = verify_for_official_draw(saved_draw)
+    except Exception as exc:
+        logger.exception("latest sync priority shadow verification failed source_issue=%s", source_issue)
+        priority_shadow_verification = {"status": "error", "message": str(exc)}
+
     # Prediction is latency-sensitive: a five-minute Bingo target must not wait
     # behind the single-worker background lifecycle (especially prior learning).
     # Persist the current analysis and create the next prediction immediately
@@ -1163,6 +1189,8 @@ def process_latest_official_draw() -> dict[str, Any]:
             "status": "ok" if completed else "partial",
             "saved": save_result,
             "analysis": analysis_result,
+            "priority_verification": priority_verification,
+            "priority_shadow_verification": priority_shadow_verification,
             "lifecycle": lifecycle,
             "target_select_reason": target_select_reason,
             "snapshot_reload": _reload_downstream_snapshot(saved_draw, "official_latest_sync_completed"),
