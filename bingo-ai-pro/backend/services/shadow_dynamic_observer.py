@@ -107,10 +107,30 @@ def _hit_count(candidates: list[int], actual: list[int]) -> int:
 
 
 def _query_rule_samples(based_on_issue: str, limit: int = 220) -> list[dict]:
-    from database.learning_store import get_learning_records
+    from database.learning_store import get_complete_live_learning_targets, get_learning_records
 
     by_issue: dict[str, dict] = {}
     cutoff = int(based_on_issue)
+
+    # Production cloud path: one compact set-based query returns exactly the
+    # per-issue fields used by shadow metrics. Keep the paged scan below as a
+    # fallback for SQLite / transient cloud failures.
+    try:
+        compact_rows = get_complete_live_learning_targets(limit)
+    except Exception:
+        logger.exception("shadow compact learning sample query failed; using paged fallback")
+        compact_rows = []
+    for row in compact_rows:
+        issue = _valid_issue(row.get("issue"))
+        if not issue or int(issue) > cutoff or issue in by_issue:
+            continue
+        analysis = row.get("analysis_snapshot") if isinstance(row.get("analysis_snapshot"), dict) else {}
+        official = _numbers(row.get("official_numbers"))
+        if analysis and len(official) == 20:
+            by_issue[issue] = {"issue": issue, "analysis": analysis, "official_numbers": official}
+    if len(by_issue) >= limit:
+        return [by_issue[key] for key in sorted(by_issue, key=lambda item: int(item))][-limit:]
+
     offset = 0
     while len(by_issue) < limit and offset < 10000:
         rows = get_learning_records(
