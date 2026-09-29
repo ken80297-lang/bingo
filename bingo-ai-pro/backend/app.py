@@ -352,7 +352,7 @@ def _schedule_latest_official_job() -> None:
     interval_job = scheduler.add_job(
         collect_official_today,
         "interval",
-        minutes=2,
+        seconds=30,
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
