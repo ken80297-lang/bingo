@@ -1310,7 +1310,11 @@ def process_latest_official_draw() -> dict[str, Any]:
             "priority_shadow_verification": priority_shadow_verification,
             "lifecycle": lifecycle,
             "target_select_reason": target_select_reason,
-            "snapshot_reload": _reload_downstream_snapshot(saved_draw, "official_latest_sync_completed"),
+            # Production is already persisted at this point. Avoid another
+            # synchronous prediction DB lookup on the collector critical path;
+            # the queued full lifecycle/dashboard requests will reconcile the
+            # presentation cache without delaying lock release.
+            "snapshot_reload": {"status": "deferred", "reason": "production_persisted"},
             "elapsed_seconds": round(time.perf_counter() - start, 3),
             "exit_reason": "completed" if completed else "partial",
         }
