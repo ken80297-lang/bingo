@@ -3522,15 +3522,6 @@ def _build_player_dashboard_summary_payload(
     next_prediction = card_one["next_prediction"]
     detected_latest_issue = card_one["detected_latest_issue"]
 
-    card_two_history_future, _ = _submit_component(
-        "card_two_history",
-        lambda: _timed_component_stage(
-            "card_two_history",
-            "prediction_history_summary_records",
-            lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT, diagnostic_component="card_two_history", include_event_metadata=False),
-        ),
-    )
-
     cached_aggregates = _load_fresh_component_cache(
         "prediction_aggregates",
         PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
@@ -3538,20 +3529,6 @@ def _build_player_dashboard_summary_payload(
     # Aggregates are operational enrichment and can take multiple seconds on a
     # cold query. Never hold first paint for them: refresh asynchronously and
     # serve the last-good snapshot (fresh or stale) immediately.
-    aggregates_future = None
-    if not cached_aggregates:
-        _submit_component(
-            "prediction_aggregates",
-            lambda: _timed_component_stage(
-                "prediction_aggregates",
-                "prediction_lifecycle_aggregates",
-                lambda: get_prediction_lifecycle_aggregates(
-                    diagnostic_component="prediction_aggregates",
-                    use_dashboard_read_pool=True,
-                ),
-            ),
-        )
-
     if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
         next_prediction["sync_status"] = "database_behind"
         next_prediction["recommendation_warning"] = (
@@ -3682,8 +3659,6 @@ def _build_player_dashboard_summary_payload(
     # Analysis is enrichment, not a Card One dependency. Serve the last-good
     # snapshot immediately and refresh asynchronously so it never extends TTFB.
     analysis = _load_component_cache("analysis", {}) or {}
-    _submit_component("analysis", get_latest_analysis_history)
-
     aggregates = dict(cached_aggregates or _load_component_cache("prediction_aggregates", {}) or {})
     aggregate_source = "fresh_cache" if cached_aggregates else "last_good_cache"
     if aggregates:
