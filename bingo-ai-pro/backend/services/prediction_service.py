@@ -706,6 +706,22 @@ def create_for_official_draw(
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
         snapshot_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         if saved.get("status") == "ok":
+            shadow_mark = time.perf_counter()
+            try:
+                from services.shadow_dynamic_observer import generate_for_prediction_async
+
+                shadow_result = generate_for_prediction_async(recommendation, record)
+            except Exception as exc:
+                logger.exception("shadow dynamic observer generation queue failed")
+                shadow_result = {"status": "error", "message": str(exc)}
+            _stage_done(
+                stages,
+                "shadow_dynamic_observer_queue",
+                shadow_mark,
+                status=shadow_result.get("status"),
+                count=shadow_result.get("count"),
+                message=shadow_result.get("message"),
+            )
             snapshot_mark = time.perf_counter()
             try:
                 from services.learning_engine import save_live_prediction_snapshot
@@ -721,22 +737,6 @@ def create_for_official_draw(
                 status=snapshot_result.get("status"),
                 records=snapshot_result.get("records"),
                 message=snapshot_result.get("message"),
-            )
-            shadow_mark = time.perf_counter()
-            try:
-                from services.shadow_dynamic_observer import generate_for_prediction
-
-                shadow_result = generate_for_prediction(recommendation, record)
-            except Exception as exc:
-                logger.exception("shadow dynamic observer generation failed")
-                shadow_result = {"status": "error", "message": str(exc)}
-            _stage_done(
-                stages,
-                "shadow_dynamic_observer_save",
-                shadow_mark,
-                status=shadow_result.get("status"),
-                count=shadow_result.get("count"),
-                message=shadow_result.get("message"),
             )
         else:
             shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
