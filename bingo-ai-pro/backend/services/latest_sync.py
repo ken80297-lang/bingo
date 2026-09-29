@@ -1109,14 +1109,6 @@ def process_latest_official_draw() -> dict[str, Any]:
     except Exception as exc:
         logger.exception("latest sync priority verification failed source_issue=%s", source_issue)
         priority_verification = {"status": "error", "message": str(exc)}
-    try:
-        from services.shadow_dynamic_observer import verify_for_official_draw
-
-        priority_shadow_verification = verify_for_official_draw(saved_draw)
-    except Exception as exc:
-        logger.exception("latest sync priority shadow verification failed source_issue=%s", source_issue)
-        priority_shadow_verification = {"status": "error", "message": str(exc)}
-
     # Prediction is latency-sensitive: a five-minute Bingo target must not wait
     # behind the single-worker background lifecycle (especially prior learning).
     # Persist the current analysis and create the next prediction immediately
@@ -1126,7 +1118,7 @@ def process_latest_official_draw() -> dict[str, Any]:
     analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
     if not analysis_created:
         try:
-            analysis_result = save_analysis_history(saved_draw)
+            analysis_result = save_analysis_history(saved_draw, recent_draws=source_draws)
             analysis_created = _analysis_created_from_result(analysis_result, source_issue)
         except Exception as exc:
             logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
@@ -1143,6 +1135,14 @@ def process_latest_official_draw() -> dict[str, Any]:
         except Exception as exc:
             logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
             priority_prediction = {"status": "error", "message": str(exc)}
+
+    try:
+        from services.shadow_dynamic_observer import verify_for_official_draw
+
+        priority_shadow_verification = verify_for_official_draw(saved_draw)
+    except Exception as exc:
+        logger.exception("latest sync priority shadow verification failed source_issue=%s", source_issue)
+        priority_shadow_verification = {"status": "error", "message": str(exc)}
 
     if existing_complete and prediction_created and analysis_created:
         lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
