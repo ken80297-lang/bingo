@@ -135,6 +135,16 @@ def process_official_draw_lifecycle(
         logger.exception("lifecycle analysis save failed")
         analysis = {"status": "error", "message": str(exc)}
 
+    # Create the next prediction before learning. The official collector can run
+    # close to the next five-minute draw boundary, and learning is not required
+    # to build the prediction for this already-saved official issue. Keeping
+    # learning ahead of prediction can therefore turn an otherwise valid
+    # pre-draw prediction into a post-draw one.
+    if create_next_prediction:
+        prediction = refresh_next_prediction_for_draw({**official_draw, "issue": issue, "numbers": numbers})
+    else:
+        prediction = {"status": "skipped", "reason": "create_next_prediction_disabled"}
+
     try:
         from services.learning_engine import evaluate_verified_issue
 
@@ -142,11 +152,6 @@ def process_official_draw_lifecycle(
     except Exception as exc:
         logger.exception("lifecycle learning evaluation failed")
         learning = {"status": "error", "message": str(exc)}
-
-    if create_next_prediction:
-        prediction = refresh_next_prediction_for_draw({**official_draw, "issue": issue, "numbers": numbers})
-    else:
-        prediction = {"status": "skipped", "reason": "create_next_prediction_disabled"}
 
     status = "ok"
     if (
