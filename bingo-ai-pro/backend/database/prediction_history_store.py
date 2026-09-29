@@ -561,44 +561,17 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                         values (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb,
                                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb,
                                 %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
-                        on conflict (prediction_issue, strategy) do update set
-                            issue = excluded.issue,
-                            predict_time = excluded.predict_time,
-                            confidence = excluded.confidence,
-                            recommend_numbers = excluded.recommend_numbers,
-                            super_number = excluded.super_number,
-                            three_star = excluded.three_star,
-                            four_star = excluded.four_star,
-                            twins = excluded.twins,
-                            consecutive = excluded.consecutive,
-                            patch_numbers = excluded.patch_numbers,
-                            tails = excluded.tails,
-                            big_small = excluded.big_small,
-                            odd_even = excluded.odd_even,
-                            reasons = excluded.reasons,
-                            model_scores = excluded.model_scores,
-                            winning_model = excluded.winning_model,
-                            prediction_status = case
-                                when prediction_history.prediction_status in ('verified', 'failed')
-                                then prediction_history.prediction_status
-                                else excluded.prediction_status
-                            end,
-                            prediction_count = excluded.prediction_count,
-                            production_generation = excluded.production_generation,
-                            production_valid = excluded.production_valid,
-                            release_version = excluded.release_version,
-                            git_commit_hash = excluded.git_commit_hash,
-                            model_version = excluded.model_version,
-                            feature_version = excluded.feature_version,
-                            fast_path_strategy_version = excluded.fast_path_strategy_version,
-                            fast_path_metadata = excluded.fast_path_metadata,
-                            updated_at = now()
+                        on conflict (prediction_issue, strategy) do nothing
                         returning id
                         """,
                         _prediction_params(item),
                         prepare=False,
                     )
-                    row_id = int(cur.fetchone()[0])
+                    row = cur.fetchone()
+                    if row is None:
+                        conn.commit()
+                        return {"status": "already_exists", "storage": "cloud", "skip_reason": "canonical_prediction_exists"}
+                    row_id = int(row[0])
                 conn.commit()
             _invalidate_prediction_stats_cache()
             _record_prediction_event(
@@ -628,41 +601,12 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     fast_path_strategy_version, fast_path_metadata, updated_at
                 )
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(prediction_issue, strategy) do update set
-                    issue = excluded.issue,
-                    predict_time = excluded.predict_time,
-                    confidence = excluded.confidence,
-                    recommend_numbers = excluded.recommend_numbers,
-                    super_number = excluded.super_number,
-                    three_star = excluded.three_star,
-                    four_star = excluded.four_star,
-                    twins = excluded.twins,
-                    consecutive = excluded.consecutive,
-                    patch_numbers = excluded.patch_numbers,
-                    tails = excluded.tails,
-                    big_small = excluded.big_small,
-                    odd_even = excluded.odd_even,
-                    reasons = excluded.reasons,
-                    model_scores = excluded.model_scores,
-                    winning_model = excluded.winning_model,
-                    prediction_status = case
-                        when prediction_history.prediction_status in ('verified', 'failed')
-                        then prediction_history.prediction_status
-                        else excluded.prediction_status
-                    end,
-                    prediction_count = excluded.prediction_count,
-                    production_generation = excluded.production_generation,
-                    production_valid = excluded.production_valid,
-                    release_version = excluded.release_version,
-                    git_commit_hash = excluded.git_commit_hash,
-                    model_version = excluded.model_version,
-                    feature_version = excluded.feature_version,
-                    fast_path_strategy_version = excluded.fast_path_strategy_version,
-                    fast_path_metadata = excluded.fast_path_metadata,
-                    updated_at = excluded.updated_at
+                on conflict(prediction_issue, strategy) do nothing
                 """,
                 (*_prediction_params(item), _now()),
             )
+            if cursor.rowcount == 0:
+                return {"status": "already_exists", "storage": "sqlite", "skip_reason": "canonical_prediction_exists", "cloud_error": cloud_error}
             row_id = int(cursor.lastrowid or 0)
         _invalidate_prediction_stats_cache()
         _record_prediction_event(
