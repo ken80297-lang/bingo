@@ -119,6 +119,13 @@ def process_official_draw_lifecycle(
             "super_number": official_draw.get("super_number"),
         }
     )
+    try:
+        from services.shadow_dynamic_observer import verify_for_official_draw
+
+        shadow_dynamic = verify_for_official_draw({**official_draw, "issue": issue, "numbers": numbers})
+    except Exception as exc:
+        logger.exception("shadow dynamic observer verification failed")
+        shadow_dynamic = {"status": "error", "message": str(exc)}
 
     try:
         from database.analysis_store import save_analysis_history
@@ -162,6 +169,7 @@ def process_official_draw_lifecycle(
         "status": status,
         "issue": issue,
         "verification": verification,
+        "shadow_dynamic": shadow_dynamic,
         "analysis": analysis,
         "learning": learning,
         "prediction": prediction,

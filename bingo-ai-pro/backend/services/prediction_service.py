@@ -722,6 +722,24 @@ def create_for_official_draw(
                 records=snapshot_result.get("records"),
                 message=snapshot_result.get("message"),
             )
+            shadow_mark = time.perf_counter()
+            try:
+                from services.shadow_dynamic_observer import generate_for_prediction
+
+                shadow_result = generate_for_prediction(recommendation, record)
+            except Exception as exc:
+                logger.exception("shadow dynamic observer generation failed")
+                shadow_result = {"status": "error", "message": str(exc)}
+            _stage_done(
+                stages,
+                "shadow_dynamic_observer_save",
+                shadow_mark,
+                status=shadow_result.get("status"),
+                count=shadow_result.get("count"),
+                message=shadow_result.get("message"),
+            )
+        else:
+            shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         completed_at = _now()
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
@@ -758,6 +776,7 @@ def create_for_official_draw(
                 "learning_snapshot": snapshot_result,
                 "learning_snapshot_complete": snapshot_ok,
                 "learning_snapshot_warning": None if snapshot_ok else "learning_snapshot_incomplete",
+                "shadow_dynamic_observer": shadow_result,
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"
