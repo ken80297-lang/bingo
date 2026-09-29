@@ -513,7 +513,7 @@ def _collect_official_today_locked(start: float) -> dict:
         if exit_reason == "deadline_exceeded":
             mark_deadline_exceeded("official_collector")
         result = {
-            "status": "ok" if latest_result.get("database_saved") else "warning",
+            "status": "ok" if latest_result.get("status") in {"ok", "partial"} and exit_reason != "deadline_exceeded" else "warning",
             "count": 1 if latest_issue else 0,
             "saved": latest_result.get("saved"),
             "lifecycle": latest_result.get("lifecycle"),
