@@ -37,6 +37,8 @@ MAX_SHADOW_BONUS = 70.0
 
 _SHADOW_VERIFY_EXECUTOR: ThreadPoolExecutor | None = None
 _SHADOW_VERIFY_EXECUTOR_LOCK = threading.Lock()
+_SHADOW_GENERATE_EXECUTOR: ThreadPoolExecutor | None = None
+_SHADOW_GENERATE_EXECUTOR_LOCK = threading.Lock()
 
 
 def _shadow_verify_executor() -> ThreadPoolExecutor:
@@ -45,6 +47,14 @@ def _shadow_verify_executor() -> ThreadPoolExecutor:
         if _SHADOW_VERIFY_EXECUTOR is None:
             _SHADOW_VERIFY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shadow-verify")
         return _SHADOW_VERIFY_EXECUTOR
+
+
+def _shadow_generate_executor() -> ThreadPoolExecutor:
+    global _SHADOW_GENERATE_EXECUTOR
+    with _SHADOW_GENERATE_EXECUTOR_LOCK:
+        if _SHADOW_GENERATE_EXECUTOR is None:
+            _SHADOW_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shadow-generate")
+        return _SHADOW_GENERATE_EXECUTOR
 
 
 def shutdown_shadow_verify_executor() -> None:
@@ -56,7 +66,17 @@ def shutdown_shadow_verify_executor() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+def shutdown_shadow_generate_executor() -> None:
+    global _SHADOW_GENERATE_EXECUTOR
+    with _SHADOW_GENERATE_EXECUTOR_LOCK:
+        executor = _SHADOW_GENERATE_EXECUTOR
+        _SHADOW_GENERATE_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 atexit.register(shutdown_shadow_verify_executor)
+atexit.register(shutdown_shadow_generate_executor)
 
 
 def _now() -> str:
@@ -282,6 +302,19 @@ def generate_for_prediction(recommendation: dict, record: dict) -> dict:
     except Exception as exc:
         logger.exception("shadow dynamic observer generation failed")
         return {"status": "error", "message": str(exc)}
+
+
+def generate_for_prediction_async(recommendation: dict, record: dict) -> dict:
+    recommendation_snapshot = dict(recommendation or {})
+    record_snapshot = dict(record or {})
+    based_on = _valid_issue(record_snapshot.get("issue") or recommendation_snapshot.get("issue"))
+    target = _valid_issue(record_snapshot.get("prediction_issue") or recommendation_snapshot.get("target_issue"))
+    try:
+        _shadow_generate_executor().submit(generate_for_prediction, recommendation_snapshot, record_snapshot)
+        return {"status": "queued", "based_on_issue": based_on, "prediction_issue": target, "algorithm_version": ALGORITHM_VERSION}
+    except Exception as exc:
+        logger.exception("shadow dynamic async generation submit failed target=%s", target)
+        return {"status": "error", "based_on_issue": based_on, "prediction_issue": target, "message": str(exc)}
 
 
 def verify_for_official_draw_async(official_draw: dict) -> dict:
