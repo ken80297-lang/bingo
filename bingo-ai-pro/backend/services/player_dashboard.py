@@ -3740,17 +3740,11 @@ def _build_player_dashboard_summary_payload(
     previous_verification.setdefault("requested_target_issue", previous_target_issue)
     previous_verification.setdefault("displayed_target_issue", None)
 
-    card_two_history = _component_result(
-        "card_two_history",
-        card_two_history_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback=_load_component_cache("card_two_history", []),
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or []
+    # History feeds Card Two/learning diagnostics only. Do not hold Card One
+    # first paint for a cold history query; the submitted future refreshes cache.
+    card_two_history = _load_component_cache("card_two_history", []) or []
+    if card_two_history:
+        timings.append(_timed_default("card_two_history", time.perf_counter(), "ok", "last_good_cache"))
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
     if analysis:
