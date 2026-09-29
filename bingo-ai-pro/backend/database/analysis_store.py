@@ -1016,11 +1016,11 @@ def get_cached_analysis_history(limit: int = 100, *, based_on_issue: str | None 
     }
 
 
-def save_analysis_history(draw: dict) -> dict:
+def save_analysis_history(draw: dict, recent_draws: list[dict] | None = None) -> dict:
     if not draw.get("issue"):
         return {"status": "error", "storage": None, "error": "missing issue"}
 
-    record = build_analysis_record(draw)
+    record = build_analysis_record(draw, recent_draws=recent_draws)
     if not record.get("numbers"):
         return {"status": "error", "storage": None, "issue": record.get("issue"), "error": "missing numbers"}
 
