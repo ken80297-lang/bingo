@@ -302,23 +302,7 @@ def verify_for_official_draw(official_draw: dict, production_numbers: list[int] 
     actual = _numbers((official_draw or {}).get("numbers"))
     if not issue or len(actual) != 20:
         return {"status": "skipped", "reason": "invalid_official_draw", "issue": issue}
-    production = _numbers(production_numbers)
-    if len(production) != 20:
-        try:
-            from database.prediction_history_store import get_prediction_history_records
-
-            prediction = next(
-                (
-                    item
-                    for item in get_prediction_history_records(200)
-                    if str(item.get("prediction_issue") or "") == issue
-                    and str(item.get("strategy") or "") == "ProductionFastPath"
-                ),
-                {},
-            )
-            production = _numbers(prediction.get("recommend_numbers"))
-        except Exception:
-            production = []
-    if len(production) != 20:
-        return {"status": "skipped", "reason": "missing_production_prediction", "issue": issue}
-    return verify_shadow_dynamic_predictions(issue, actual, production)
+    # The production recommendation was frozen into each shadow row at
+    # generation time. Verification must use that persisted snapshot instead
+    # of rescanning prediction_history.
+    return verify_shadow_dynamic_predictions(issue, actual, _numbers(production_numbers))
