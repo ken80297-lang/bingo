@@ -456,10 +456,17 @@ def collect_official_today() -> dict:
         result = _collect_official_today_locked(start)
         result["schema_init"] = schema_init
         _log_collector_finished(result)
+        timing = ((result.get("latest_sync") or {}).get("timing") or {})
         print(
             "latest_official_collector_finished "
             f"status={result.get('status')} count={result.get('count')} "
-            f"exit_reason={result.get('exit_reason')}",
+            f"exit_reason={result.get('exit_reason')} "
+            f"latest_db_ms={timing.get('latest_db_ms')} "
+            f"source_fetch_ms={timing.get('source_fetch_ms')} "
+            f"existing_lookup_ms={timing.get('existing_lookup_ms')} "
+            f"analysis_lookup_ms={timing.get('analysis_lookup_ms')} "
+            f"prediction_lookup_ms={timing.get('prediction_lookup_ms')} "
+            f"sync_total_ms={timing.get('total_ms')}",
             flush=True,
         )
         return result
