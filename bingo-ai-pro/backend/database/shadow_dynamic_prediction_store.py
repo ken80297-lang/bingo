@@ -247,12 +247,11 @@ def save_shadow_dynamic_prediction(item: dict) -> dict:
         return {"status": "error", "error": str(exc), "cloud_error": cloud_error}
 
 
-def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: list[int], production_numbers: list[int]) -> dict:
+def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: list[int], production_numbers: list[int] | None = None) -> dict:
     _ensure_initialized()
     issue = str(prediction_issue or "")
     actual = sorted({int(n) for n in actual_numbers if 1 <= int(n) <= 80})
-    production = sorted({int(n) for n in production_numbers if 1 <= int(n) <= 80})
-    production_hits = len(set(actual) & set(production))
+    supplied_production = sorted({int(n) for n in (production_numbers or []) if 1 <= int(n) <= 80})
     cloud_error = None
     if _cloud_enabled():
         try:
@@ -272,12 +271,20 @@ def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: lis
                                 from jsonb_array_elements_text(recommend_numbers) item(value)
                                 where (value)::int = any(%s)
                             ),
-                            production_hit_count = %s,
+                            production_hit_count = (
+                                select count(*)::int
+                                from jsonb_array_elements_text(production_numbers) item(value)
+                                where (value)::int = any(%s)
+                            ),
                             delta_vs_production = (
                                 select count(*)::int
                                 from jsonb_array_elements_text(recommend_numbers) item(value)
                                 where (value)::int = any(%s)
-                            ) - %s,
+                            ) - (
+                                select count(*)::int
+                                from jsonb_array_elements_text(production_numbers) item(value)
+                                where (value)::int = any(%s)
+                            ),
                             delta_vs_random_baseline = (
                                 select count(*)::double precision
                                 from jsonb_array_elements_text(recommend_numbers) item(value)
@@ -287,13 +294,14 @@ def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: lis
                             status = 'verified',
                             updated_at = now()
                         where prediction_issue = %s and status = 'pending'
-                        returning id
+                        returning id, production_hit_count
                         """,
-                        (_json_dumps(actual), actual, actual, production_hits, actual, production_hits, actual, issue),
+                        (_json_dumps(actual), actual, actual, actual, actual, actual, actual, issue),
                         prepare=False,
                     )
                     updated = cur.fetchall()
                 conn.commit()
+            production_hits = int(updated[0][1]) if updated else (len(set(actual) & set(supplied_production)) if supplied_production else 0)
             return {"status": "ok", "storage": "cloud", "updated": len(updated), "production_hit_count": production_hits}
         except Exception as exc:
             logger.exception("cloud shadow_dynamic_predictions verify failed")
@@ -303,17 +311,21 @@ def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: lis
         with _sqlite_connection() as conn:
             rows = conn.execute(
                 """
-                select id, recommend_numbers
+                select id, recommend_numbers, production_numbers
                 from shadow_dynamic_predictions
                 where prediction_issue = ? and status = 'pending'
                 """,
                 (issue,),
             ).fetchall()
             updated = 0
-            for row_id, raw_numbers in rows:
+            production_hits_result = 0
+            for row_id, raw_numbers, raw_production in rows:
                 recommended = sorted({int(n) for n in (_json_loads(raw_numbers) or []) if 1 <= int(n) <= 80})
+                production = sorted({int(n) for n in (_json_loads(raw_production) or supplied_production) if 1 <= int(n) <= 80})
                 matched = sorted(set(recommended) & set(actual))
                 hit_count = len(matched)
+                production_hits = len(set(actual) & set(production))
+                production_hits_result = production_hits
                 conn.execute(
                     """
                     update shadow_dynamic_predictions
@@ -336,7 +348,7 @@ def verify_shadow_dynamic_predictions(prediction_issue: str, actual_numbers: lis
                     ),
                 )
                 updated += 1
-        return {"status": "ok", "storage": "sqlite", "updated": updated, "production_hit_count": production_hits, "cloud_error": cloud_error}
+        return {"status": "ok", "storage": "sqlite", "updated": updated, "production_hit_count": production_hits_result, "cloud_error": cloud_error}
     except Exception as exc:
         logger.exception("sqlite shadow_dynamic_predictions verify failed")
         return {"status": "error", "error": str(exc), "cloud_error": cloud_error}
