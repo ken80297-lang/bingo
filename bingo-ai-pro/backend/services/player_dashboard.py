@@ -3713,7 +3713,10 @@ def _build_player_dashboard_summary_payload(
             },
         }
 
-    analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
+    # Analysis is enrichment, not a Card One dependency. Serve the last-good
+    # snapshot immediately and refresh asynchronously so it never extends TTFB.
+    analysis = _load_component_cache("analysis", {}) or {}
+    _submit_component("analysis", get_latest_analysis_history)
 
     if cached_aggregates:
         aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
@@ -3767,17 +3770,8 @@ def _build_player_dashboard_summary_payload(
     ) or []
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
-    analysis = _component_result(
-        "analysis",
-        analysis_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    if analysis:
+        timings.append(_timed_default("analysis", time.perf_counter(), "ok", "last_good_cache"))
     active_release = {
         key: next_prediction.get(key)
         for key in (
