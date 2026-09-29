@@ -1081,9 +1081,16 @@ def process_latest_official_draw() -> dict[str, Any]:
 
     source_issue = str(source_draw.get("issue"))
     prediction_target_issue = _next_issue(source_issue)
-    stage_started = time.perf_counter()
-    existing = get_official_draw_by_issue(source_issue)
-    existing_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+    # get_latest_official_draw() already returned the complete row for the
+    # common no-op case. Reuse it when the source confirms the same issue
+    # instead of making a second remote lookup for identical data.
+    if str((existing_latest or {}).get("issue") or "") == source_issue:
+        existing = existing_latest
+        existing_lookup_ms = 0.0
+    else:
+        stage_started = time.perf_counter()
+        existing = get_official_draw_by_issue(source_issue)
+        existing_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     existing_complete = is_complete_official_draw(existing)
 
     # Polling the already-complete latest issue must stay cheap.  Do not rerun
