@@ -753,6 +753,55 @@ def get_learning_records(
 
 
 
+def get_complete_live_learning_targets(window: int = 100) -> list[dict]:
+    """Return one representative snapshot for each newest complete live target."""
+    window = max(1, min(int(window or 100), 500))
+    if not _cloud_enabled():
+        rows = get_complete_live_learning_records(window)
+        seen = set()
+        compact = []
+        for row in rows:
+            issue = str(row.get("issue") or "")
+            if issue and issue not in seen:
+                seen.add(issue)
+                compact.append(row)
+        return compact[:window]
+    with _cloud_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                with complete as (
+                    select issue, max(id) as representative_id
+                    from learning_history
+                    where production_generation = %s
+                      and prediction_type = 'live_prediction'
+                      and verification_status = 'verified'
+                      and learned_status = 'learned'
+                    group by issue
+                    having count(*) = 18
+                       and count(distinct (model_name, top_n)) = 18
+                    order by issue desc
+                    limit %s
+                )
+                select lh.issue, lh.official_numbers, lh.analysis_snapshot
+                from learning_history lh
+                join complete c on c.representative_id = lh.id
+                order by lh.issue desc
+                """,
+                (get_production_generation(), window),
+                prepare=False,
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "issue": str(row[0] or ""),
+            "official_numbers": _json_loads(row[1]) or [],
+            "analysis_snapshot": _json_loads(row[2]) or {},
+        }
+        for row in rows
+    ]
+
+
 def get_complete_live_learning_records(
     window: int = 100,
     *,
