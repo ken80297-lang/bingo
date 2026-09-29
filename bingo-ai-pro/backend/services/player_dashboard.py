@@ -3571,10 +3571,12 @@ def _build_player_dashboard_summary_payload(
         "prediction_aggregates",
         PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
     )
-    if cached_aggregates:
-        aggregates_future = None
-    else:
-        aggregates_future, _ = _submit_component(
+    # Aggregates are operational enrichment and can take multiple seconds on a
+    # cold query. Never hold first paint for them: refresh asynchronously and
+    # serve the last-good snapshot (fresh or stale) immediately.
+    aggregates_future = None
+    if not cached_aggregates:
+        _submit_component(
             "prediction_aggregates",
             lambda: _timed_component_stage(
                 "prediction_aggregates",
@@ -3718,40 +3720,21 @@ def _build_player_dashboard_summary_payload(
     analysis = _load_component_cache("analysis", {}) or {}
     _submit_component("analysis", get_latest_analysis_history)
 
-    if cached_aggregates:
-        aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
-        logger.warning(
-            "dashboard_component_cache_hit component=prediction_aggregates age_ms=%s ttl_seconds=%s",
-            round(max(0.0, time.monotonic() - aggregate_cache_updated_at) * 1000, 2)
-            if aggregate_cache_updated_at is not None
-            else None,
-            PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
-        )
-        aggregates = dict(cached_aggregates)
+    aggregates = dict(cached_aggregates or _load_component_cache("prediction_aggregates", {}) or {})
+    aggregate_source = "fresh_cache" if cached_aggregates else "last_good_cache"
+    if aggregates:
         component_metadata["prediction_aggregates"] = _component_metadata(
             "prediction_aggregates",
             aggregates,
-            source="live",
+            source="cache",
             timed_out=False,
-            result="fresh_cache",
+            result=aggregate_source,
             dashboard_generation_id=dashboard_generation_id,
         )
         aggregates["_component_metadata"] = component_metadata["prediction_aggregates"]
-        aggregates["source"] = "live"
-        aggregates["stale"] = False
-        timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", "fresh_cache"))
-    else:
-        aggregates = _component_result(
-            "prediction_aggregates",
-            aggregates_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            fallback={},
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        ) or {}
+        aggregates["source"] = "cache"
+        aggregates["stale"] = not bool(cached_aggregates)
+    timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", aggregate_source))
     previous_verification = _unavailable_previous_result(previous_target_issue)
     previous_verification["previous_result_mode"] = "stale_unavailable"
     previous_verification.setdefault("requested_target_issue", previous_target_issue)
