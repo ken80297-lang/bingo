@@ -163,11 +163,44 @@ def _production_where(alias: str = "") -> str:
     return f"{prefix}issue is not null and {prefix}issue not like '99%' and upper({prefix}issue) not like 'TEST%'"
 
 
+def _issue_number(issue: Any) -> int | None:
+    try:
+        text = str(issue or "").strip()
+        if not text.isdigit():
+            return None
+        return int(text)
+    except Exception:
+        return None
+
+
+def _is_production_draw(draw: dict) -> bool:
+    issue = str(draw.get("issue") or "").strip().upper()
+    source = str(draw.get("source") or "").strip().lower()
+    if not issue or issue.startswith("99") or issue.startswith("TEST"):
+        return False
+    if "test" in source or "phase" in source:
+        return False
+    return _issue_number(issue) is not None
+
+
+def _prior_production_draws(draw: dict, recent: list[dict]) -> list[dict]:
+    current_issue = _issue_number(draw.get("issue"))
+    prior: list[dict] = []
+    for item in recent or []:
+        if not isinstance(item, dict) or not _is_production_draw(item):
+            continue
+        item_issue = _issue_number(item.get("issue"))
+        if current_issue is not None and item_issue is not None and item_issue >= current_issue:
+            continue
+        prior.append(item)
+    return prior
+
+
 def _recent_draws(limit: int = 120) -> list[dict]:
     try:
-        from database.collector_store import get_draw_history
+        from database.official_draw_store import get_official_draw_history
 
-        return get_draw_history(limit)
+        return get_official_draw_history(limit)
     except Exception:
         logger.exception("failed to load recent draw history for analysis")
         return []
@@ -175,7 +208,7 @@ def _recent_draws(limit: int = 120) -> list[dict]:
 
 def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) -> dict:
     numbers = sorted(_as_int_list(draw.get("numbers")))
-    recent = recent_draws if recent_draws is not None else _recent_draws()
+    recent = _prior_production_draws(draw, recent_draws if recent_draws is not None else _recent_draws())
     previous_numbers = _as_int_list(recent[0].get("numbers")) if recent else []
 
     all_numbers = []
