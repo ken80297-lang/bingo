@@ -1041,13 +1041,17 @@ def process_latest_official_draw() -> dict[str, Any]:
     with _STATE_LOCK:
         attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
 
+    stage_started = time.perf_counter()
     existing_latest = get_latest_official_draw()
+    latest_db_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     database_issue = (existing_latest or {}).get("issue")
     # Latest-only polling only needs the newest handful of official rows.
     # Keep the wider page for catch-up semantics, where older missing issues
     # may legitimately need to be selected from the same response.
     source_page_size = 10 if LATEST_ISSUE_PRIORITY and not HISTORICAL_CATCHUP_ENABLED else 100
+    stage_started = time.perf_counter()
     source_draws = _source_draws_today(page_size=source_page_size)
+    source_fetch_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     source_draw, detected_source_issue, target_select_reason = _select_collector_target_draw(database_issue, source_draws)
     if not source_draw:
         snapshot = _failure(database_issue, "detect", target_select_reason or "official_latest_issue_unavailable", detected_at, attempt_count)
@@ -1077,7 +1081,9 @@ def process_latest_official_draw() -> dict[str, Any]:
 
     source_issue = str(source_draw.get("issue"))
     prediction_target_issue = _next_issue(source_issue)
+    stage_started = time.perf_counter()
     existing = get_official_draw_by_issue(source_issue)
+    existing_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     existing_complete = is_complete_official_draw(existing)
 
     # Polling the already-complete latest issue must stay cheap.  Do not rerun
@@ -1089,9 +1095,23 @@ def process_latest_official_draw() -> dict[str, Any]:
         target_select_reason == "database_already_at_source_latest"
         and existing_complete
     ):
+        stage_started = time.perf_counter()
         analysis_created = _analysis_exists(source_issue)
+        analysis_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+        stage_started = time.perf_counter()
         prediction_created = _prediction_exists_for_latest(source_issue)
+        prediction_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
         if analysis_created and prediction_created:
+            logger.info(
+                "latest sync noop timing issue=%s latest_db_ms=%.2f source_fetch_ms=%.2f existing_lookup_ms=%.2f analysis_lookup_ms=%.2f prediction_lookup_ms=%.2f total_ms=%.2f",
+                source_issue,
+                latest_db_ms,
+                source_fetch_ms,
+                existing_lookup_ms,
+                analysis_lookup_ms,
+                prediction_lookup_ms,
+                (time.perf_counter() - start) * 1000,
+            )
             stages = _snapshot_stages(
                 database_saved=True,
                 analysis_created=True,
