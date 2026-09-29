@@ -3098,20 +3098,26 @@ def get_player_card_one_snapshot(
     dashboard_generation_id: str | None = None,
 ) -> dict:
     started = time.perf_counter()
+    # The collector keeps this cache current. First paint should not wait on
+    # the same latest-row DB query again; refresh it asynchronously instead.
+    official = _load_component_cache("official_draw")
     official_future, official_state = _submit_component(
         "official_draw",
         get_latest_official_draw,
     )
-    official = _component_result(
-        "official_draw",
-        official_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    )
+    if official:
+        timings.append(_timed_default("official_draw", time.perf_counter(), "ok", "last_good_cache"))
+    else:
+        official = _component_result(
+            "official_draw",
+            official_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        )
     current = _current_draw(official)
 
     # Kuaishou is advisory only. Never block Card One on a secondary source:
