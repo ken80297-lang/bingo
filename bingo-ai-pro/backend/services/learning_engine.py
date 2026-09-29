@@ -136,6 +136,7 @@ def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
     with _SHADOW_PROMOTION_LOCK:
         _SHADOW_PROMOTION_CACHE["source_issue"] = payload.get("source_issue")
         _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(payload.get("rules") or {})
+    payload["promotion_persistence"] = save_shadow_rule_promotions(payload)
     return payload
 
 
