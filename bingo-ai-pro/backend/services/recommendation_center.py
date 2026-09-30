@@ -14,7 +14,7 @@ from database.collector_store import (
     get_latest_kuaishou_snapshot,
 )
 from database.data_quality_store import get_data_quality_status
-from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_latest_prediction_history, get_prediction_history_statistics
 from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
 from database.strategy_ranking_store import get_latest_strategy_rankings
@@ -592,19 +592,38 @@ def calculate_fast_recommendation(
         timings["promotion_lookup_ms"] = promotion_lookup_ms
         timings["final_selection_ms"] = final_selection_ms
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-        # Confidence must reflect the current model/learning evidence instead
-        # of the historical fixed 62 fallback. Blend model confidence with the
-        # share of selected numbers that received adaptive/shadow support.
+        # Calibrate the displayed confidence against verified production
+        # performance. A 20-number pick has a random expectation of 5 hits, so
+        # recent results near 5/20 should read as neutral rather than 80%+.
+        # Current model evidence may move the score, but cannot dominate the
+        # observed production record.
         supported_numbers = sum(1 for number in numbers if adaptive_number_scores.get(number, 0.0) > 0)
         support_ratio = supported_numbers / max(1, len(numbers))
         mature_bonus = min(6.0, len(applied_mature_rules) * 1.5)
-        dynamic_confidence = (
-            learning_confidence * 0.65
-            + support_ratio * 100.0 * 0.25
-            + mature_bonus
+        evidence_score = max(
+            0.0,
+            min(
+                100.0,
+                learning_confidence * 0.65
+                + support_ratio * 100.0 * 0.25
+                + mature_bonus,
+            ),
+        )
+        try:
+            verified_stats = get_prediction_history_statistics(30)
+        except Exception:
+            logger.exception("failed to load verified history for confidence calibration")
+            verified_stats = {}
+        verified_samples = int((verified_stats or {}).get("sample_size") or 0)
+        recent_average_hits = float((verified_stats or {}).get("average_hit_last_30") or 5.0)
+        performance_score = max(20.0, min(80.0, 50.0 + (recent_average_hits - 5.0) * 12.0))
+        history_weight = min(0.80, 0.35 + min(30, verified_samples) / 30.0 * 0.45)
+        calibrated_confidence = (
+            performance_score * history_weight
+            + evidence_score * (1.0 - history_weight)
         )
         confidence = (
-            int(round(max(35.0, min(95.0, dynamic_confidence))))
+            int(round(max(25.0, min(85.0, calibrated_confidence))))
             if output.get("is_valid")
             else 0
         )
