@@ -494,11 +494,12 @@ def create_for_official_draw(
             _stage_done(stages, "validation", start, status="skipped", reason="target_unconfirmed")
             return skipped("target_unconfirmed")
 
+        mark = time.perf_counter()
         distributed_lock_handle = _distributed_prediction_lock(based_on, target)
         if distributed_lock_handle is None and (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
-            _stage_done(stages, "distributed_lock", start, status="busy")
+            _stage_done(stages, "distributed_lock", mark, status="busy")
             return skipped("distributed_lock_busy")
-        _stage_done(stages, "distributed_lock", start, status="locked" if distributed_lock_handle is not None else "local_only")
+        _stage_done(stages, "distributed_lock", mark, status="locked" if distributed_lock_handle is not None else "local_only")
 
         mark = time.perf_counter()
         existing = _existing_prediction(based_on, target)
