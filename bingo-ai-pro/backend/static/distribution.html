@@ -29,7 +29,12 @@ const dateEl=document.getElementById('date'),body=document.getElementById('body'
 for(let n=1;n<=80;n++){const th=document.createElement('th');th.textContent=pad(n);head.appendChild(th)}
 dateEl.value=localDate();
 function nextTime(t){if(!t)return '';const m=t.match(/(\d{1,2}):(\d{2})/);if(!m)return '';let x=+m[1]*60 + +m[2]+5;return pad(Math.floor(x/60)%24)+':'+pad(x%60)}
-function cleanTime(v){const m=String(v||'').match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'}
+function cleanTime(v){
+ const s=String(v||'');
+ const iso=s.match(/T(\\d{2}):(\\d{2})/);
+ if(iso){const mins=(+iso[1]*60 + +iso[2] + 480)%(24*60);return pad(Math.floor(mins/60))+':'+pad(mins%60)}
+ const m=s.match(/(\\d{1,2}):(\\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'
+}
 async function load(){
  document.getElementById('msg').textContent='載入中…';
  try{
