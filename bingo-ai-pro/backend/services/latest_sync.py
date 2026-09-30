@@ -1194,6 +1194,13 @@ def process_latest_official_draw() -> dict[str, Any]:
             )
             return snapshot
 
+    save_ms = 0.0
+    invalidate_ms = 0.0
+    confirm_ms = 0.0
+    verification_ms = 0.0
+    analysis_ms = 0.0
+    prediction_ms = 0.0
+
     if existing_complete:
         saved_draw = existing
         save_result = {"status": "ok", "saved": 0, "storage": "existing"}
@@ -1202,15 +1209,18 @@ def process_latest_official_draw() -> dict[str, Any]:
         source_draw["fetched_at"] = detected_at
         save_started = time.perf_counter()
         save_result = save_official_draws([source_draw])
-        logger.info("latest sync official save timing source_issue=%s duration_ms=%.2f status=%s saved=%s", source_issue, (time.perf_counter() - save_started) * 1000, save_result.get("status"), save_result.get("saved"))
+        save_ms = round((time.perf_counter() - save_started) * 1000, 2)
+        logger.info("latest sync official save timing source_issue=%s duration_ms=%.2f status=%s saved=%s", source_issue, save_ms, save_result.get("status"), save_result.get("saved"))
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
             return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
         invalidate_started = time.perf_counter()
         _invalidate_downstream_caches("official_draw_saved")
-        logger.info("latest sync cache invalidation timing source_issue=%s duration_ms=%.2f", source_issue, (time.perf_counter() - invalidate_started) * 1000)
+        invalidate_ms = round((time.perf_counter() - invalidate_started) * 1000, 2)
+        logger.info("latest sync cache invalidation timing source_issue=%s duration_ms=%.2f", source_issue, invalidate_ms)
         confirm_started = time.perf_counter()
         saved_draw = get_official_draw_by_issue(source_issue)
-        logger.info("latest sync official confirm timing source_issue=%s duration_ms=%.2f complete=%s", source_issue, (time.perf_counter() - confirm_started) * 1000, is_complete_official_draw(saved_draw))
+        confirm_ms = round((time.perf_counter() - confirm_started) * 1000, 2)
+        logger.info("latest sync official confirm timing source_issue=%s duration_ms=%.2f complete=%s", source_issue, confirm_ms, is_complete_official_draw(saved_draw))
         if not is_complete_official_draw(saved_draw):
             return _failure(source_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
     else:
@@ -1235,7 +1245,8 @@ def process_latest_official_draw() -> dict[str, Any]:
                 "super_number": (saved_draw or {}).get("super_number"),
             }
         )
-        logger.info("latest sync priority verification timing source_issue=%s duration_ms=%.2f status=%s", source_issue, (time.perf_counter() - verification_started) * 1000, priority_verification.get("status"))
+        verification_ms = round((time.perf_counter() - verification_started) * 1000, 2)
+        logger.info("latest sync priority verification timing source_issue=%s duration_ms=%.2f status=%s", source_issue, verification_ms, priority_verification.get("status"))
     except Exception as exc:
         logger.exception("latest sync priority verification failed source_issue=%s", source_issue)
         priority_verification = {"status": "error", "message": str(exc)}
@@ -1264,7 +1275,8 @@ def process_latest_official_draw() -> dict[str, Any]:
             analysis_started = time.perf_counter()
             analysis_result = save_analysis_history(saved_draw, recent_draws=source_draws)
             analysis_created = _analysis_created_from_result(analysis_result, source_issue)
-            logger.info("latest sync priority analysis timing source_issue=%s duration_ms=%.2f created=%s", source_issue, (time.perf_counter() - analysis_started) * 1000, analysis_created)
+            analysis_ms = round((time.perf_counter() - analysis_started) * 1000, 2)
+            logger.info("latest sync priority analysis timing source_issue=%s duration_ms=%.2f created=%s", source_issue, analysis_ms, analysis_created)
         except Exception as exc:
             logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
             analysis_result = {"status": "error", "message": str(exc)}
@@ -1278,7 +1290,8 @@ def process_latest_official_draw() -> dict[str, Any]:
             prediction_started = time.perf_counter()
             priority_prediction = ensure_next_prediction(saved_draw)
             prediction_created = _prediction_created_from_result(priority_prediction, source_issue)
-            logger.info("latest sync priority prediction timing source_issue=%s duration_ms=%.2f created=%s", source_issue, (time.perf_counter() - prediction_started) * 1000, prediction_created)
+            prediction_ms = round((time.perf_counter() - prediction_started) * 1000, 2)
+            logger.info("latest sync priority prediction timing source_issue=%s duration_ms=%.2f created=%s", source_issue, prediction_ms, prediction_created)
         except Exception as exc:
             logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
             priority_prediction = {"status": "error", "message": str(exc)}
@@ -1338,6 +1351,18 @@ def process_latest_official_draw() -> dict[str, Any]:
             # presentation cache without delaying lock release.
             "snapshot_reload": {"status": "deferred", "reason": "production_persisted"},
             "elapsed_seconds": round(time.perf_counter() - start, 3),
+            "timing": {
+                "latest_db_ms": latest_db_ms,
+                "source_fetch_ms": source_fetch_ms,
+                "existing_lookup_ms": existing_lookup_ms,
+                "official_save_ms": save_ms,
+                "cache_invalidation_ms": invalidate_ms,
+                "official_confirm_ms": confirm_ms,
+                "verification_ms": verification_ms,
+                "analysis_ms": analysis_ms,
+                "prediction_ms": prediction_ms,
+                "total_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
             "exit_reason": "completed" if completed else "partial",
         }
     )
