@@ -34,6 +34,7 @@ from api.backtest import router as backtest_router
 from api.collector import router as collector_router
 from api.data_quality import router as data_quality_router
 from api.draws import router as draws_router
+from api.distribution import router as distribution_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_features import router as laowanjia_features_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
@@ -131,6 +132,7 @@ print("startup_import_completed host=0.0.0.0 port_env=PORT")
 app.include_router(adaptive_weight_router)
 app.include_router(admin_router)
 app.include_router(draws_router)
+app.include_router(distribution_router)
 app.include_router(analysis_router)
 app.include_router(analysis_history_router)
 app.include_router(collector_router)
@@ -1070,6 +1072,16 @@ def api_health_wake_status() -> dict[str, str | int | None]:
         "wake_source": app.state.wake_source,
         "wake_status": _wake_status(seconds),
     }
+
+
+@app.get("/distribution")
+def distribution_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "distribution.html")
+
+
+@app.head("/distribution")
+def distribution_head() -> FileResponse:
+    return FileResponse(STATIC_DIR / "distribution.html")
 
 
 @app.get("/dashboard")
