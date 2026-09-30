@@ -4399,7 +4399,7 @@ def get_prediction_for_source_target(source_issue: str, target_issue: str, *, us
           and recommend_numbers not in ('', '[]')
         order by created_at desc, id desc
         limit 1
-        """.format(columns=PREDICTION_SELECT_COLUMNS),,
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
         cloud_connection_factory=_prediction_lock_connection if use_prediction_pool else None,
         use_shared_connection=not use_prediction_pool,
     )
