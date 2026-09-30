@@ -506,29 +506,29 @@ def calculate_fast_recommendation(
         applied_shadow_rules: list[str] = []
         shadow_rule_weights: dict[str, float] = {}
         ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
-        state_factors = {"learning": 0.10, "observing": 0.25, "candidate": 0.50, "mature": 1.00}
         for rule_key, promotion in promotion_rules.items():
             if not isinstance(promotion, dict) or not promotion.get("retained", True):
                 continue
+
+            # Promotion is the production gate: learning/observing/candidate
+            # rules remain visible for research but must not affect formal
+            # recommendation scoring until they are explicitly eligible.
+            if not promotion.get("eligible_for_recommendation"):
+                shadow_rule_weights[rule_key] = 0.0
+                continue
+
             rule_data = ai_score.get(rule_key) if isinstance(ai_score, dict) else {}
             candidates = _recommendation_numbers((rule_data or {}).get("candidate_numbers"))[:20]
             if not candidates:
+                shadow_rule_weights[rule_key] = 0.0
                 continue
 
-            state = str(promotion.get("state") or "learning")
             long_lift = float(promotion.get("average_lift_vs_random") or 0)
             recent_lift = float(promotion.get("recent_20_lift_vs_random") or 0)
-            sample_size = int(promotion.get("sample_size") or 0)
-            sample_factor = min(1.0, max(0.10, sample_size / 100.0))
             evidence = max(0.0, long_lift + recent_lift * 0.25)
-            rule_weight = min(1.0, state_factors.get(state, 0.10) * sample_factor * evidence / 0.25)
-            if promotion.get("eligible_for_recommendation"):
-                rule_weight = max(rule_weight, 0.75)
-                applied_mature_rules.append(rule_key)
+            rule_weight = max(0.75, min(1.0, evidence / 0.25))
             shadow_rule_weights[rule_key] = round(rule_weight, 6)
-            if rule_weight <= 0:
-                continue
-
+            applied_mature_rules.append(rule_key)
             applied_shadow_rules.append(rule_key)
             for rank, number in enumerate(candidates):
                 bonus = 2.0 * rule_weight * max(0.25, 1.0 - rank * 0.035)
