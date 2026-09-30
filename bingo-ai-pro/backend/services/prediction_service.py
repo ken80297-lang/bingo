@@ -333,7 +333,7 @@ def _record_event(
 
 
 def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
-    return get_prediction_for_source_target(based_on_issue, target_issue)
+    return get_prediction_for_source_target(based_on_issue, target_issue, use_prediction_pool=True)
 
 
 def _distributed_prediction_lock(based_on_issue: str, target_issue: str):
