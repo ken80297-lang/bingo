@@ -1212,7 +1212,7 @@ def process_latest_official_draw() -> dict[str, Any]:
         save_started = time.perf_counter()
         save_result = save_official_draws([source_draw])
         save_ms = round((time.perf_counter() - save_started) * 1000, 2)
-        logger.info("latest sync official latency issue=%s draw_time=%s detected_at=%s source_fetch_ms=%.2f save_ms=%.2f status=%s saved=%s", source_issue, source_draw.get("draw_time"), detected_at.isoformat(), source_fetch_ms, save_ms, save_result.get("status"), save_result.get("saved"))
+        logger.info("latest sync official latency issue=%s draw_time=%s detected_at=%s source_fetch_ms=%.2f save_ms=%.2f status=%s saved=%s", source_issue, source_draw.get("draw_time"), detected_at.isoformat() if hasattr(detected_at, "isoformat") else str(detected_at), source_fetch_ms, save_ms, save_result.get("status"), save_result.get("saved"))
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
             return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
         invalidate_started = time.perf_counter()
