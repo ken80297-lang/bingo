@@ -1426,7 +1426,7 @@ def get_analysis_history(limit: int = 100, *, use_prediction_pool: bool = False)
           and cluster_level is not null
         order by issue desc
         limit ?
-        """,,
+        """,
         cloud_connection_factory=_prediction_read_connection if use_prediction_pool else None,
         use_shared_connection=not use_prediction_pool,
     )
