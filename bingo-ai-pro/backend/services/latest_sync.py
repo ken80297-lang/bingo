@@ -982,6 +982,13 @@ def _run_full_official_lifecycle_background(saved_draw: dict, source_issue: str,
             caller="process_latest_official_draw_background",
             create_next_prediction=True,
         )
+        try:
+            from services.learning_engine import ensure_live_prediction_snapshot
+
+            learning_snapshot_recovery = ensure_live_prediction_snapshot(target_issue)
+        except Exception as exc:
+            logger.exception("latest sync learning snapshot recovery failed target_issue=%s", target_issue)
+            learning_snapshot_recovery = {"status": "error", "message": str(exc)}
         analysis_created = _analysis_exists(source_issue)
         prediction_created = _prediction_exists_for_latest(source_issue)
         completed = analysis_created and prediction_created
