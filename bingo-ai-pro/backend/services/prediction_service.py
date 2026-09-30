@@ -339,28 +339,30 @@ def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
 def _distributed_prediction_lock(based_on_issue: str, target_issue: str):
     if not (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
         return None
-    from database import get_connection
+    from database.postgres import prediction_lock_connection
 
-    conn = get_connection()
+    manager = prediction_lock_connection()
     key = f"bingo-prediction:{based_on_issue}:{target_issue}"
     try:
+        conn = manager.__enter__()
         with conn.cursor() as cur:
             cur.execute("select pg_try_advisory_lock(hashtext(%s))", (key,), prepare=False)
             row = cur.fetchone()
         if row and bool(row[0]):
-            return conn
+            return manager, conn
     except Exception:
         logger.exception("distributed prediction lock acquire failed based_on=%s target=%s", based_on_issue, target_issue)
     try:
-        conn.close()
+        manager.__exit__(None, None, None)
     except Exception:
         pass
     return None
 
 
-def _release_distributed_prediction_lock(conn, based_on_issue: str, target_issue: str) -> None:
-    if conn is None:
+def _release_distributed_prediction_lock(lock_handle, based_on_issue: str, target_issue: str) -> None:
+    if lock_handle is None:
         return
+    manager, conn = lock_handle
     key = f"bingo-prediction:{based_on_issue}:{target_issue}"
     try:
         with conn.cursor() as cur:
@@ -369,7 +371,7 @@ def _release_distributed_prediction_lock(conn, based_on_issue: str, target_issue
         logger.exception("distributed prediction lock release failed based_on=%s target=%s", based_on_issue, target_issue)
     finally:
         try:
-            conn.close()
+            manager.__exit__(None, None, None)
         except Exception:
             pass
 
@@ -492,11 +494,11 @@ def create_for_official_draw(
             _stage_done(stages, "validation", start, status="skipped", reason="target_unconfirmed")
             return skipped("target_unconfirmed")
 
-        distributed_lock_conn = _distributed_prediction_lock(based_on, target)
-        if distributed_lock_conn is None and (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
+        distributed_lock_handle = _distributed_prediction_lock(based_on, target)
+        if distributed_lock_handle is None and (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
             _stage_done(stages, "distributed_lock", start, status="busy")
             return skipped("distributed_lock_busy")
-        _stage_done(stages, "distributed_lock", start, status="locked" if distributed_lock_conn is not None else "local_only")
+        _stage_done(stages, "distributed_lock", start, status="locked" if distributed_lock_handle is not None else "local_only")
 
         mark = time.perf_counter()
         existing = _existing_prediction(based_on, target)
@@ -869,7 +871,7 @@ def create_for_official_draw(
         raise
     finally:
         _release_distributed_prediction_lock(
-            locals().get("distributed_lock_conn"),
+            locals().get("distributed_lock_handle"),
             based_on or "",
             target or "",
         )
