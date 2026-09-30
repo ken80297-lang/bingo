@@ -937,3 +937,53 @@ def test_closed_loop_prediction_once_uses_production_path_without_force(monkeypa
     assert result["status"] == "ok"
     assert result["result"]["status"] == "created"
     assert captured == {"issue": "115054089", "source": "runtime_diagnostics", "trigger": "manual_closed_loop_once", "force": False}
+
+
+def test_live_snapshot_captures_shadow_features_without_weight_effect(monkeypatch):
+    saved = []
+    monkeypatch.setattr(learning_engine, "_resolve_pending_snapshot", lambda *args: None)
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: [])
+    monkeypatch.setattr(learning_engine, "_analysis_by_issue", lambda issue: {"issue": issue})
+    monkeypatch.setattr(
+        learning_engine,
+        "_shadow_feature_snapshot",
+        lambda issue: {
+            "mode": "shadow",
+            "production_weight_effect": False,
+            "history_cutoff_issue": issue,
+            "number_omission": {1: 3},
+        },
+    )
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", lambda row: saved.append(row) or row)
+
+    result = learning_engine.save_live_prediction_snapshot(_recommendation())
+
+    assert result["status"] == "ok"
+    assert len(saved) == 18
+    assert all(row["prediction_snapshot"]["shadow_features"]["mode"] == "shadow" for row in saved)
+    assert all(row["prediction_snapshot"]["shadow_features"]["production_weight_effect"] is False for row in saved)
+    assert all(row["prediction_snapshot"]["shadow_features"]["history_cutoff_issue"] == "115099900" for row in saved)
+
+
+def test_shadow_snapshot_filters_out_future_issues(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        learning_engine,
+        "get_cloud_history_draws",
+        lambda limit: [
+            {"issue": "115099902", "numbers": list(range(1, 21)), "super_number": 1},
+            {"issue": "115099900", "numbers": list(range(21, 41)), "super_number": 21},
+            {"issue": "115099899", "numbers": list(range(41, 61)), "super_number": 41},
+        ],
+    )
+    monkeypatch.setattr(
+        learning_engine,
+        "build_shadow_snapshot",
+        lambda draws: seen.extend(draws) or {"mode": "shadow", "production_weight_effect": False},
+    )
+
+    payload = learning_engine._shadow_feature_snapshot("115099900")
+
+    assert [row["issue"] for row in seen] == ["115099900", "115099899"]
+    assert payload["history_cutoff_issue"] == "115099900"
+    assert payload["production_weight_effect"] is False
