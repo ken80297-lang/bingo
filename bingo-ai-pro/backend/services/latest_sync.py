@@ -1264,19 +1264,13 @@ def process_latest_official_draw() -> dict[str, Any]:
             analysis_result = {"status": "error", "message": str(exc)}
 
     prediction_created = False if newly_persisted_official else _prediction_exists_for_latest(source_issue)
-    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "skipped"}
-    if analysis_created and not prediction_created:
-        try:
-            from services.prediction_refresh import ensure_next_prediction
-
-            prediction_started = time.perf_counter()
-            priority_prediction = ensure_next_prediction(saved_draw)
-            prediction_created = _prediction_created_from_result(priority_prediction, source_issue)
-            prediction_ms = round((time.perf_counter() - prediction_started) * 1000, 2)
-            logger.info("latest sync priority prediction timing source_issue=%s duration_ms=%.2f created=%s", source_issue, prediction_ms, prediction_created)
-        except Exception as exc:
-            logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
-            priority_prediction = {"status": "error", "message": str(exc)}
+    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "deferred", "reason": None if prediction_created else "full_lifecycle"}
+    # Recommendation generation is durable downstream work. Running it here
+    # blocks the 30-second collector for 20-27 seconds even though the same
+    # full lifecycle below already guarantees creation/recovery. Defer it so
+    # the official draw and analysis become visible immediately; dashboard
+    # handoff keeps the previous complete recommendation until the new row is ready.
+    prediction_ms = 0.0
 
     if existing_complete and prediction_created and analysis_created:
         lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
