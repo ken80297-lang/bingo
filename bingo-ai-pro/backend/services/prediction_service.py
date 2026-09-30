@@ -338,7 +338,13 @@ def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
 
 def _existing_fast_path_status(existing: dict | None) -> dict:
     previous_version = fast_path_strategy_version_from_prediction(existing)
-    is_current = previous_version == FAST_PATH_STRATEGY_VERSION
+    legacy_current_fast_path = bool(
+        existing
+        and previous_version is None
+        and str(existing.get("strategy") or "") == "ProductionFastPath"
+        and len(_numbers(existing.get("recommend_numbers"))) == 20
+    )
+    is_current = previous_version == FAST_PATH_STRATEGY_VERSION or legacy_current_fast_path
     return {
         "is_current": is_current,
         "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
