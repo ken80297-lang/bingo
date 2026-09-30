@@ -36,6 +36,7 @@ _LEARNED_ISSUES_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 LEARNED_ISSUES_TTL_SECONDS = 30
 _PREDICTION_STATS_CACHE: dict[str, Any] = {"payload": {}, "expires_at": {}}
 PREDICTION_STATS_TTL_SECONDS = 60
+_LATEST_PREDICTION_CACHE: dict[str, Any] = {"payload": None}
 MIN_PRODUCTION_ISSUE_LENGTH = 6
 PRODUCTION_PREDICTION_QUERY_NAME = "production_latest_prediction_v2"
 _NON_PRODUCTION_TEXT_MARKERS = ("preview", "simulation", "test", "fixture", "synthetic")
@@ -586,6 +587,7 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     row_id = int(row[0])
                 conn.commit()
             _invalidate_prediction_stats_cache()
+            _LATEST_PREDICTION_CACHE["payload"] = deepcopy(item)
             _record_prediction_event(
                 item=item,
                 event_type="prediction_created",
@@ -621,6 +623,7 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                 return {"status": "already_exists", "storage": "sqlite", "skip_reason": "canonical_prediction_exists", "cloud_error": cloud_error}
             row_id = int(cursor.lastrowid or 0)
         _invalidate_prediction_stats_cache()
+        _LATEST_PREDICTION_CACHE["payload"] = deepcopy(item)
         _record_prediction_event(
             item=item,
             event_type="prediction_created",
@@ -3492,6 +3495,16 @@ def _row_to_prediction_summary(row: Any) -> dict:
 
 def get_latest_prediction_history() -> dict | None:
     _ensure_initialized()
+    cached = _LATEST_PREDICTION_CACHE.get("payload")
+    if cached and is_production_prediction(cached):
+        record = deepcopy(cached)
+        record["read_layer"] = {
+            "data_source": "memory",
+            "table_name": "prediction_history",
+            "query_name": PRODUCTION_PREDICTION_QUERY_NAME,
+            "production_filtered": True,
+        }
+        return record
     cloud_sql = """
         select {columns}
         from prediction_history p
