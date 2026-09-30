@@ -1200,11 +1200,17 @@ def process_latest_official_draw() -> dict[str, Any]:
     elif is_complete_official_draw(source_draw):
         source_draw["verification_status"] = "validated"
         source_draw["fetched_at"] = detected_at
+        save_started = time.perf_counter()
         save_result = save_official_draws([source_draw])
+        logger.info("latest sync official save timing source_issue=%s duration_ms=%.2f status=%s saved=%s", source_issue, (time.perf_counter() - save_started) * 1000, save_result.get("status"), save_result.get("saved"))
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
             return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
+        invalidate_started = time.perf_counter()
         _invalidate_downstream_caches("official_draw_saved")
+        logger.info("latest sync cache invalidation timing source_issue=%s duration_ms=%.2f", source_issue, (time.perf_counter() - invalidate_started) * 1000)
+        confirm_started = time.perf_counter()
         saved_draw = get_official_draw_by_issue(source_issue)
+        logger.info("latest sync official confirm timing source_issue=%s duration_ms=%.2f complete=%s", source_issue, (time.perf_counter() - confirm_started) * 1000, is_complete_official_draw(saved_draw))
         if not is_complete_official_draw(saved_draw):
             return _failure(source_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
     else:
