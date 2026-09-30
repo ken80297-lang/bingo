@@ -452,9 +452,10 @@ def collect_official_today() -> dict:
             }
             _log_collector_finished(result)
             return result
-        schema_init = _ensure_official_collection_tables()
+        # Schema initialization belongs to startup/migrations. Re-running all
+        # table initializers on every 30-second latest poll can consume the
+        # collector deadline before latest-sync even starts.
         result = _collect_official_today_locked(start)
-        result["schema_init"] = schema_init
         _log_collector_finished(result)
         timing = ((result.get("latest_sync") or {}).get("timing") or {})
         print(
