@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bingo AI Pro｜每日球號分布</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f8fc;color:#14243b}
+header{height:64px;background:linear-gradient(110deg,#06294c,#06477b);color:#fff;display:flex;align-items:center;padding:0 18px;gap:18px;position:sticky;top:0;z-index:20;box-shadow:0 2px 10px #001b3b33}
+.brand{font-size:22px;font-weight:800;white-space:nowrap}.brand b{color:#ffd447}.title{font-size:18px;font-weight:700;border-left:1px solid #ffffff66;padding-left:18px}
+main{padding:12px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:10px;border:1px solid #d9e2ef;border-radius:10px;margin-bottom:10px}
+input,button{height:38px;border:1px solid #cbd7e6;border-radius:7px;background:#fff;padding:0 12px;font-size:14px}button{cursor:pointer;font-weight:700}button.primary{background:#0878e8;color:#fff;border-color:#0878e8}
+.info{margin-left:auto;font-size:13px;color:#51657e}.legend{display:flex;gap:12px;align-items:center;font-size:13px}.sw{width:22px;height:18px;border-radius:4px;display:inline-block;vertical-align:middle;margin-right:4px}.hit{background:#18a83a;color:#fff}.super{background:#ef3340!important;color:#fff}.latest-label{color:#098c2e;font-weight:800}
+.table-wrap{background:#fff;border:1px solid #d9e2ef;border-radius:8px;overflow:auto;max-height:calc(100vh - 190px);box-shadow:0 2px 8px #24466a0d}
+table{border-collapse:separate;border-spacing:0;min-width:2050px;width:100%;font-size:11px}th,td{border-right:1px solid #d8e0e9;border-bottom:1px solid #d8e0e9;text-align:center;height:24px;min-width:23px;padding:0}
+thead th{position:sticky;top:0;background:#eaf1f9;z-index:5;font-size:11px;height:30px}.issue,.time{position:sticky;background:#fff;z-index:3}.issue{left:0;min-width:92px;font-weight:650}.time{left:92px;min-width:54px}.head-issue{left:0!important;z-index:8!important}.head-time{left:92px!important;z-index:8!important}
+tr.latest td{background-color:#eefbea}tr.latest .issue,tr.latest .time{background:#dff7df;color:#078529;font-weight:800}
+td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
+@media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{max-height:calc(100vh - 205px)}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.head-time{left:82px!important}}
+</style></head>
+<body><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
+<main><div class="toolbar">
+<input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
+<div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
+<div class="info">每日 07:05～23:55・每 5 分鐘一期・共 203 期</div></div>
+<div class="table-wrap"><table id="grid"><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th></tr></thead><tbody id="body"></tbody></table></div>
+<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
+</main>
+<script>
+const pad=n=>String(n).padStart(2,'0'); const localDate=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
+const dateEl=document.getElementById('date'),body=document.getElementById('body'),head=document.getElementById('head');
+for(let n=1;n<=80;n++){const th=document.createElement('th');th.textContent=pad(n);head.appendChild(th)}
+dateEl.value=localDate();
+function nextTime(t){if(!t)return '';const m=t.match(/(\d{1,2}):(\d{2})/);if(!m)return '';let x=+m[1]*60 + +m[2]+5;return pad(Math.floor(x/60)%24)+':'+pad(x%60)}
+function cleanTime(v){const m=String(v||'').match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'}
+async function load(){
+ document.getElementById('msg').textContent='載入中…';
+ try{
+  const r=await fetch('/api/distribution?date='+encodeURIComponent(dateEl.value),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
+  const p=await r.json(),rows=p.draws||[]; body.innerHTML='';
+  rows.forEach((d,i)=>{const tr=document.createElement('tr');if(i===0)tr.className='latest';
+   const nums=new Set((d.numbers||[]).map(Number)),sup=Number(d.super_number);
+   tr.innerHTML='<td class="issue">'+d.issue+'</td><td class="time">'+cleanTime(d.draw_time)+'</td>';
+   for(let n=1;n<=80;n++){const td=document.createElement('td');td.className='ball';if(nums.has(n)){td.classList.add('hit');td.textContent=pad(n);if(n===sup)td.classList.add('super')}tr.appendChild(td)}
+   body.appendChild(tr)
+  });
+  document.getElementById('day').textContent=dateEl.value+(dateEl.value===localDate()?'（今天）':'');
+  document.getElementById('count').textContent=rows.length;
+  document.getElementById('latest').textContent=rows[0]?(rows[0].issue+'（'+cleanTime(rows[0].draw_time)+'）'):'—';
+  const nt=rows[0]?nextTime(cleanTime(rows[0].draw_time)):'';document.getElementById('next').textContent=(dateEl.value===localDate()&&nt)?'下一期：'+nt:'';
+  document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
+ }catch(e){document.getElementById('msg').innerHTML='<span class="error">載入失敗：'+e.message+'</span>'}
+}
+dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},30000);
+</script></body></html>
