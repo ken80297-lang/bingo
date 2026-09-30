@@ -3772,6 +3772,35 @@ def _build_player_dashboard_summary_payload(
         cache_name="card_two",
     ) or _card_two_empty(previous_target_issue)
 
+    # The history refresh is intentionally non-blocking. If this request used an
+    # older Card Two snapshot, its late completion updates card_two_history and
+    # the next summary build must be allowed to consume it immediately instead
+    # of serving the old 60-second whole-summary cache.
+    latest_card_two_history = _load_component_cache("card_two_history", []) or []
+    latest_finalized = get_latest_finalized_analysis_report(
+        latest_card_two_history,
+        current,
+    )
+    latest_finalized_issue = _valid_production_issue(
+        (latest_finalized or {}).get("prediction_issue")
+        or (latest_finalized or {}).get("target_issue")
+    )
+    displayed_card_two_issue = _valid_production_issue((card_two or {}).get("issue"))
+    if (
+        latest_finalized_issue
+        and (
+            displayed_card_two_issue is None
+            or (_as_int(latest_finalized_issue) or 0) > (_as_int(displayed_card_two_issue) or 0)
+        )
+    ):
+        card_two = _card_two_from_record(
+            latest_finalized,
+            current,
+            latest_finalized_issue,
+            use_dashboard_read_pool=True,
+            include_rules=False,
+        )
+
     database_issue = (current or {}).get("issue")
     official_issue = detected_latest_issue or (current or {}).get("issue")
     database_int = _as_int(database_issue)
