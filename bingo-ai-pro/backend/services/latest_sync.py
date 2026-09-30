@@ -1232,31 +1232,13 @@ def process_latest_official_draw() -> dict[str, Any]:
     # Keep explicit stage markers here: new-issue work is the only remaining
     # collector path capable of exhausting the job deadline.
     logger.info("latest sync new issue persisted source_issue=%s", source_issue)
-    priority_verification: dict[str, Any] = {"status": "skipped"}
-    priority_shadow_verification: dict[str, Any] = {"status": "skipped"}
-    try:
-        from services.prediction_lifecycle import verify_prediction
-
-        verification_started = time.perf_counter()
-        priority_verification = verify_prediction(
-            {
-                "issue": source_issue,
-                "numbers": _valid_numbers((saved_draw or {}).get("numbers")),
-                "super_number": (saved_draw or {}).get("super_number"),
-            }
-        )
-        verification_ms = round((time.perf_counter() - verification_started) * 1000, 2)
-        logger.info("latest sync priority verification timing source_issue=%s duration_ms=%.2f status=%s", source_issue, verification_ms, priority_verification.get("status"))
-    except Exception as exc:
-        logger.exception("latest sync priority verification failed source_issue=%s", source_issue)
-        priority_verification = {"status": "error", "message": str(exc)}
-    try:
-        from services.shadow_dynamic_observer import verify_for_official_draw_async
-
-        priority_shadow_verification = verify_for_official_draw_async(saved_draw)
-    except Exception as exc:
-        logger.exception("latest sync priority shadow verification submit failed source_issue=%s", source_issue)
-        priority_shadow_verification = {"status": "error", "message": str(exc)}
+    # Verification is durable downstream work and does not need to block the
+    # new-draw critical path. The queued full lifecycle below performs the
+    # canonical prediction/shadow verification after the next recommendation
+    # is persisted. Keep this collector focused on draw -> analysis -> prediction.
+    priority_verification: dict[str, Any] = {"status": "deferred", "reason": "full_lifecycle"}
+    priority_shadow_verification: dict[str, Any] = {"status": "deferred", "reason": "full_lifecycle"}
+    verification_ms = 0.0
     # Prediction is latency-sensitive: a five-minute Bingo target must not wait
     # behind the single-worker background lifecycle (especially prior learning).
     # Persist the current analysis and create the next prediction immediately
