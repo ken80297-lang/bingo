@@ -1005,7 +1005,7 @@ def get_cached_analysis_history(limit: int = 100, *, based_on_issue: str | None 
     if cache_complete and cache_current:
         return cached, {"source": "memory", "records": len(cached), "based_on_issue": expected_issue or None}
 
-    records = get_analysis_history(limit)
+    records = get_analysis_history(limit, use_prediction_pool=True)
     with _ANALYSIS_HISTORY_CACHE_LOCK:
         _ANALYSIS_HISTORY_CACHE[:] = [dict(item) for item in records[:_ANALYSIS_HISTORY_CACHE_MAX]]
     return records, {
@@ -1296,6 +1296,12 @@ def _dashboard_read_connection():
     return dashboard_read_connection()
 
 
+def _prediction_read_connection():
+    from database.postgres import prediction_lock_connection
+
+    return prediction_lock_connection()
+
+
 def get_analysis_history_by_issue_with_timing(
     issue: str,
     *,
@@ -1388,7 +1394,7 @@ def get_analysis_history_with_timing(
     timing["query_tag"] = "analysis_history.recent"
     return records, timing
 
-def get_analysis_history(limit: int = 100) -> list[dict]:
+def get_analysis_history(limit: int = 100, *, use_prediction_pool: bool = False) -> list[dict]:
     rows = _query_with_fallback(
         """
         select issue, draw_time, numbers, super_number, big_small, odd_even,
@@ -1420,7 +1426,9 @@ def get_analysis_history(limit: int = 100) -> list[dict]:
           and cluster_level is not null
         order by issue desc
         limit ?
-        """,
+        """,,
+        cloud_connection_factory=_prediction_read_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
     )
     return [_row_to_record(row) for row in rows]
 
