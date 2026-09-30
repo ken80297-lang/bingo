@@ -944,10 +944,12 @@ def startup_event() -> None:
 def shutdown_event() -> None:
     try:
         from services.latest_sync import shutdown_latest_sync_background_tasks
+        from services.prediction_lifecycle_orchestrator import shutdown_lifecycle_background_tasks
         from services.prediction_service import shutdown_prediction_background_tasks
         from database.postgres import close_dashboard_read_pool
 
         shutdown_latest_sync_background_tasks()
+        shutdown_lifecycle_background_tasks()
         shutdown_prediction_background_tasks()
         close_dashboard_read_pool()
     except Exception as exc:

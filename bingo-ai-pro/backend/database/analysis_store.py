@@ -1020,14 +1020,17 @@ def save_analysis_history(draw: dict, recent_draws: list[dict] | None = None) ->
     if not draw.get("issue"):
         return {"status": "error", "storage": None, "error": "missing issue"}
 
-    record = build_analysis_record(draw, recent_draws=recent_draws)
+    if recent_draws is None:
+        record = build_analysis_record(draw)
+    else:
+        record = build_analysis_record(draw, recent_draws=recent_draws)
     if not record.get("numbers"):
         return {"status": "error", "storage": None, "issue": record.get("issue"), "error": "missing numbers"}
 
     try:
         _save_cloud(record)
         _update_analysis_history_cache(record)
-        return {"status": "ok", "storage": "cloud", "issue": record.get("issue")}
+        return {"status": "ok", "storage": "cloud", "issue": record.get("issue"), "record": record}
     except Exception as exc:
         logger.exception("cloud analysis_history upsert failed")
         cloud_error = str(exc)
@@ -1040,6 +1043,7 @@ def save_analysis_history(draw: dict, recent_draws: list[dict] | None = None) ->
             "status": "ok",
             "storage": "sqlite",
             "issue": record.get("issue"),
+            "record": record,
             "cloud_error": cloud_error,
         }
     except Exception as exc:
@@ -1169,9 +1173,20 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    cloud_connection_factory=None,
+    use_shared_connection: bool = True,
+) -> list[Any]:
     try:
-        return _query_cloud(sql, params)
+        connection_factory = cloud_connection_factory or _cloud_connection
+        with connection_factory() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchall()
     except Exception:
         logger.exception("cloud analysis_history query failed")
 

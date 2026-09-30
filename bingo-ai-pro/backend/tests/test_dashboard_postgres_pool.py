@@ -128,7 +128,7 @@ def test_dashboard_read_pool_is_lazy_and_bounded(monkeypatch):
     assert pool.kwargs["conninfo"] == "postgres://example"
     assert pool.kwargs["kwargs"] == {"connect_timeout": 2}
     assert pool.kwargs["min_size"] == 0
-    assert pool.kwargs["max_size"] == 2
+    assert pool.kwargs["max_size"] == 3
     assert pool.kwargs["open"] is False
     assert pool.kwargs["timeout"] == 1.0
     assert pool.open_calls == [{"wait": False}]

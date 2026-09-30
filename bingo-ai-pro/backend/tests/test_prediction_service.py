@@ -6,11 +6,19 @@ import sys
 import threading
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from api import recommendation_center as recommendation_api
 from database import prediction_history_store
 from services import next_prediction_center, prediction_refresh, prediction_service
+
+
+@pytest.fixture(autouse=True)
+def _disable_distributed_prediction_lock(monkeypatch):
+    monkeypatch.setattr(prediction_service, "_distributed_prediction_lock", lambda *args, **kwargs: ("unit-test-lock", None))
+    monkeypatch.setattr(prediction_service, "_release_distributed_prediction_lock", lambda *args, **kwargs: None)
 
 
 def setup_function():
@@ -66,7 +74,7 @@ def test_prediction_service_creates_single_entry_snapshot(monkeypatch):
     saved = []
     contexts = []
 
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
 
     def calculate(*args, **kwargs):
         contexts.append(kwargs.get("context") or {})
@@ -103,7 +111,7 @@ def test_prediction_service_uses_fast_path_before_heavy_recommendation(monkeypat
     fast["recommendation"]["best_strategy"] = "ProductionFastPath"
     fast["recommendation_status"] = "production_fast_path"
 
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: fast)
     monkeypatch.setattr(
         prediction_service,
@@ -124,6 +132,58 @@ def test_prediction_service_uses_fast_path_before_heavy_recommendation(monkeypat
     assert any(stage["stage"] == "fast_recommendation_build" and stage["status"] == "ok" for stage in result["timings"])
 
 
+def test_prediction_service_reuses_caller_existing_lookup(monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        prediction_service,
+        "get_prediction_for_source_target",
+            lambda source_issue, target_issue, **kwargs: (_ for _ in ()).throw(AssertionError("service lookup should be reused")),
+    )
+    monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: _recommendation())
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 45, "storage": "cloud"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    result = prediction_service.create_for_official_draw(
+        "115040800",
+        source="official_collector",
+        trigger="official_draw_saved",
+        existing_prediction=None,
+        existing_prediction_lookup_performed=True,
+    )
+
+    assert result["status"] == "created"
+    lookup_stage = next(stage for stage in result["timings"] if stage["stage"] == "existing_prediction_lookup")
+    assert lookup_stage["lookup_source"] == "caller"
+    assert saved[0]["recommend_numbers"] == list(range(1, 21))
+
+
+def test_prediction_service_passes_analysis_record_to_fast_path(monkeypatch):
+    contexts = []
+    saved = []
+    analysis_record = {"issue": "115040800", "patch_numbers": [1, 2, 3]}
+
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
+
+    def fast_path(issue, target, context=None):
+        contexts.append(context or {})
+        return _recommendation()
+
+    monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", fast_path)
+    monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 46, "storage": "cloud"})
+    monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
+
+    result = prediction_service.create_for_official_draw(
+        "115040800",
+        source="official_collector",
+        trigger="official_draw_saved",
+        collector_metadata={"analysis_record": analysis_record},
+    )
+
+    assert result["status"] == "created"
+    assert contexts[0]["analysis_record"] == analysis_record
+    assert saved[0]["recommend_numbers"] == list(range(1, 21))
+
+
 def test_prediction_service_shutdown_rejects_background_submit(monkeypatch):
     submit_calls = []
 
@@ -136,7 +196,7 @@ def test_prediction_service_shutdown_rejects_background_submit(monkeypatch):
             pass
 
     monkeypatch.setattr(prediction_service, "_PREDICTION_EXECUTOR", FakeExecutor())
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: {"status": "fallback"})
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
 
@@ -167,7 +227,7 @@ def test_prediction_service_single_flight_allows_one_recommendation_submit(monke
             return BlockingFuture()
 
     monkeypatch.setattr(prediction_service, "_PREDICTION_EXECUTOR", FakeExecutor())
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "calculate_fast_recommendation", lambda *args, **kwargs: {"status": "fallback"})
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: {"status": "ok", "id": 101, "storage": "sqlite"})
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
@@ -209,7 +269,7 @@ def test_prediction_service_skips_invalid_target(monkeypatch):
 
 
 def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: _recommendation([1, 2, 3]))
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)
@@ -224,7 +284,7 @@ def test_prediction_service_skips_insufficient_recommendations(monkeypatch):
 def test_prediction_service_times_out_slow_recommendation(monkeypatch):
     events = []
     monkeypatch.setattr(prediction_service, "PREDICTION_RECOMMENDATION_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not save")))
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: events.append(kwargs))
 
@@ -249,7 +309,7 @@ def test_prediction_service_duplicate_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
         "get_prediction_for_source_target",
-        lambda source_issue, target_issue: {
+            lambda source_issue, target_issue, **kwargs: {
             "id": 9,
             "issue": "115040800",
             "prediction_issue": "115040801",
@@ -292,7 +352,7 @@ def test_prediction_service_regenerates_stale_fast_path_strategy(monkeypatch):
         }
     }
 
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: stale_existing)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: stale_existing)
     monkeypatch.setattr(
         prediction_service,
         "calculate_fast_recommendation",
@@ -308,8 +368,8 @@ def test_prediction_service_regenerates_stale_fast_path_strategy(monkeypatch):
     assert result["regenerated_reason"] == "fast_path_strategy_version_changed"
     assert result["previous_strategy_version"] == "28.0-old"
     assert contexts[0]["regenerated_reason"] == "fast_path_strategy_version_changed"
-    assert saved[0]["model_scores"]["production_fast_path"]["fast_path_strategy_version"] == prediction_service.FAST_PATH_STRATEGY_VERSION
-    assert saved[0]["model_scores"]["production_fast_path"]["previous_strategy_version"] == "28.0-old"
+    assert saved[0]["fast_path_metadata"]["fast_path_strategy_version"] == prediction_service.FAST_PATH_STRATEGY_VERSION
+    assert saved[0]["fast_path_metadata"]["previous_strategy_version"] == "28.0-old"
 
 
 def test_prediction_service_persists_requested_source_and_target_from_fallback(monkeypatch):
@@ -318,7 +378,7 @@ def test_prediction_service_persists_requested_source_and_target_from_fallback(m
     fallback["recommendation"]["issue"] = "115040781"
     fallback["recommendation"]["target_issue"] = "115040782"
 
-    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue: None)
+    monkeypatch.setattr(prediction_service, "get_prediction_for_source_target", lambda source_issue, target_issue, **kwargs: None)
     monkeypatch.setattr(prediction_service, "calculate_recommendation", lambda *args, **kwargs: fallback)
     monkeypatch.setattr(prediction_service, "save_prediction_history", lambda record, caller_context=None: saved.append(record) or {"status": "ok", "id": 43, "storage": "cloud"})
     monkeypatch.setattr(prediction_service, "_record_event", lambda **kwargs: None)

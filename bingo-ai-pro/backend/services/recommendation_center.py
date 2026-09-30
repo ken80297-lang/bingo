@@ -440,9 +440,15 @@ def calculate_fast_recommendation(
             }
 
         mark = time.perf_counter()
-        analysis = get_latest_analysis_history() or {}
+        analysis = context.get("analysis_record") if isinstance(context.get("analysis_record"), dict) else None
+        analysis_source = "context" if analysis else "database"
+        if not analysis:
+            analysis = get_latest_analysis_history() or {}
         analysis_issue = str(analysis.get("issue") or "")
-        timings = {"analysis_ms": round((time.perf_counter() - mark) * 1000, 2)}
+        timings = {
+            "analysis_ms": round((time.perf_counter() - mark) * 1000, 2),
+            "analysis_source": analysis_source,
+        }
         if analysis_issue != source_issue:
             return {
                 "status": "skipped",

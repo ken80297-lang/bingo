@@ -19,6 +19,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _elapsed_ms_between(start_value: Any, end_value: Any) -> float | None:
+    try:
+        start_dt = datetime.fromisoformat(str(start_value).replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(str(end_value).replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+        return round((end_dt - start_dt).total_seconds() * 1000, 2)
+    except Exception:
+        return None
+
+
 def _valid_issue(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text or not text.isdigit():
@@ -116,8 +129,27 @@ def _record_trigger_event(
         logger.exception("failed to record prediction trigger event")
 
 
+def _record_stage_timing_event(payload: dict) -> None:
+    try:
+        from services.operations_center import record_operation_event
+
+        record_operation_event(
+            component="prediction",
+            event_type="production_prediction_stage_timing",
+            status=payload.get("status") or "ok",
+            issue=payload.get("based_on_issue"),
+            message=json.dumps(payload, ensure_ascii=False),
+            duration_ms=payload.get("total_ms"),
+            error_type=payload.get("error_type"),
+            error_message=payload.get("error_message"),
+        )
+    except Exception:
+        logger.exception("failed to record prediction stage timing event")
+
+
 def refresh_next_prediction_for_draw(draw: dict) -> dict:
     start = time.perf_counter()
+    stage_durations: dict[str, Any] = {}
     source_issue = _valid_issue((draw or {}).get("issue"))
     proposed_target = _next_issue(source_issue) if source_issue else None
     _record_trigger_event(
@@ -183,7 +215,9 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
         return payload
 
     try:
+        mark = time.perf_counter()
         existing = _existing_prediction(source_issue, target_issue)
+        stage_durations["prediction_lookup_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         previous_strategy_version = fast_path_strategy_version_from_prediction(existing)
         existing_is_current = previous_strategy_version == FAST_PATH_STRATEGY_VERSION
         if existing and existing_is_current:
@@ -196,6 +230,7 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                 "prediction_status": existing.get("prediction_status"),
                 "fast_path_strategy_version": previous_strategy_version,
                 "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+                "stage_timings_ms": stage_durations,
                 **base_payload,
             }
             _record_trigger_event(
@@ -219,6 +254,7 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             proposed_target_issue=target_issue,
             start=start,
         )
+        mark = time.perf_counter()
         service_result = create_for_official_draw(
             source_issue,
             source="official_collector",
@@ -230,9 +266,13 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,
+                "analysis_record": draw.get("analysis_record") if isinstance(draw.get("analysis_record"), dict) else None,
             },
             force=bool(regenerated_reason),
+            existing_prediction=existing,
+            existing_prediction_lookup_performed=True,
         )
+        stage_durations["prediction_service_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         if service_result.get("status") == "already_running":
             recovery = recover_prediction_lock_for_target(
                 source_issue,
@@ -266,12 +306,16 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
                         "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                         "regenerated_reason": recovery_regenerated_reason,
                         "previous_strategy_version": recovery_previous_version or previous_strategy_version,
+                        "analysis_record": draw.get("analysis_record") if isinstance(draw.get("analysis_record"), dict) else None,
                     },
                     force=bool(recovery_regenerated_reason),
+                    existing_prediction=existing_after_recovery,
+                    existing_prediction_lookup_performed=True,
                 )
                 service_result["lock_recovery"] = recovery
         status = service_result.get("status")
         refresh_ready = status in ("created", "already_exists")
+        fetched_at_to_prediction_ms = _elapsed_ms_between(draw.get("fetched_at"), service_result.get("predict_time"))
         payload = {
             "status": status,
             "refresh_status": "ready" if refresh_ready else "failed",
@@ -280,8 +324,26 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "prediction_history": service_result,
             "recommendation_status": "single_entry_prediction_service",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            "fetched_at_to_prediction_ms": fetched_at_to_prediction_ms,
+            "stage_timings_ms": {
+                **stage_durations,
+                "prediction_service_timings": service_result.get("timings") or [],
+            },
             **base_payload,
         }
+        _record_stage_timing_event(
+            {
+                "status": "ok" if refresh_ready else "warning",
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+                "total_ms": payload["elapsed_ms"],
+                "fetched_at": draw.get("fetched_at"),
+                "predict_time": service_result.get("predict_time"),
+                "fetched_at_to_prediction_ms": fetched_at_to_prediction_ms,
+                "stage_timings_ms": payload["stage_timings_ms"],
+                "prediction_status": status,
+            }
+        )
         if not refresh_ready:
             _record_trigger_event(
                 "prediction_trigger_skipped",
@@ -301,8 +363,20 @@ def refresh_next_prediction_for_draw(draw: dict) -> dict:
             "refresh_reason": str(exc),
             "last_refresh_success": None,
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            "stage_timings_ms": stage_durations,
             **base_payload,
         }
+        _record_stage_timing_event(
+            {
+                "status": "error",
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+                "total_ms": payload["elapsed_ms"],
+                "stage_timings_ms": stage_durations,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+        )
         _record_trigger_event(
             "prediction_trigger_failed",
             status="error",

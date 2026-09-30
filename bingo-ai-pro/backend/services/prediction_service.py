@@ -401,6 +401,8 @@ def create_for_official_draw(
     target_issue: str | None = None,
     collector_metadata: dict | None = None,
     force: bool = False,
+    existing_prediction: dict | None = None,
+    existing_prediction_lookup_performed: bool = False,
 ) -> dict:
     start = time.perf_counter()
     started_at = _now()
@@ -502,7 +504,12 @@ def create_for_official_draw(
         _stage_done(stages, "distributed_lock", mark, status="locked" if distributed_lock_handle is not None else "local_only")
 
         mark = time.perf_counter()
-        existing = _existing_prediction(based_on, target)
+        if existing_prediction_lookup_performed:
+            existing = existing_prediction
+            lookup_source = "caller"
+        else:
+            existing = _existing_prediction(based_on, target)
+            lookup_source = "service"
         existing_strategy = _existing_fast_path_status(existing)
         should_regenerate_existing = bool(existing and not existing_strategy["is_current"])
         _stage_done(
@@ -510,6 +517,7 @@ def create_for_official_draw(
             "existing_prediction_lookup",
             mark,
             found=bool(existing),
+            lookup_source=lookup_source,
             fast_path_strategy_version=FAST_PATH_STRATEGY_VERSION,
             previous_strategy_version=existing_strategy["previous_strategy_version"],
             regenerated_reason=existing_strategy["regenerated_reason"] if should_regenerate_existing else None,
@@ -575,6 +583,9 @@ def create_for_official_draw(
             "previous_strategy_version": previous_strategy_version,
             "learning_analysis_history": learning_analysis_history,
         }
+        analysis_record = (collector_metadata or {}).get("analysis_record")
+        if isinstance(analysis_record, dict):
+            recommendation_context["analysis_record"] = analysis_record
         mark = time.perf_counter()
         recommendation_result = calculate_fast_recommendation(
             based_on,
@@ -829,6 +840,7 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": True,
                 "storage": saved.get("storage"),
+                "predict_time": record.get("predict_time"),
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,

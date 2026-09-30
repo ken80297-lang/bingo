@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from services import latest_sync
+from services.recommendation_center import FAST_PATH_STRATEGY_VERSION
 
 
 def setup_function():
@@ -46,7 +47,7 @@ def _draw(issue: str = "115040550", numbers=None):
 def _patch_downstream(monkeypatch):
     monkeypatch.setattr(latest_sync, "_analysis_exists", lambda issue: True)
     monkeypatch.setattr(latest_sync, "_prediction_exists_for_latest", lambda issue: True)
-    monkeypatch.setattr(latest_sync, "save_analysis_history", lambda draw: {"status": "ok", "issue": draw["issue"]})
+    monkeypatch.setattr(latest_sync, "save_analysis_history", lambda draw, **kwargs: {"status": "ok", "issue": draw["issue"], "record": {"issue": draw["issue"]}})
     monkeypatch.setattr(latest_sync, "_reload_downstream_snapshot", lambda draw, reason: {"status": "ok", "reason": reason})
 
     def lifecycle(draw, **kwargs):
@@ -70,7 +71,7 @@ def test_latest_sync_treats_stale_fast_path_prediction_as_missing(monkeypatch):
             "issue": source_issue,
             "prediction_issue": target_issue,
             "recommend_numbers": list(range(1, 21)),
-            "model_scores": {"production_fast_path": {"fast_path_strategy_version": "28.0-old"}},
+            "fast_path_metadata": {"fast_path_strategy_version": "28.0-old"},
         },
     )
 
@@ -114,10 +115,10 @@ def test_latest_sync_uses_first_missing_issue_when_database_lags_source(monkeypa
 
     result = latest_sync.process_latest_official_draw()
 
-    assert saved_calls == [[source_draws[0]]]
-    assert result["official_detected_issue"] == "115042504"
-    assert result["database_latest_issue"] == "115042504"
-    assert result["target_issue"] == "115042505"
+    assert saved_calls == [[source_draws[-1]]]
+    assert result["official_detected_issue"] == "115042515"
+    assert result["database_latest_issue"] == "115042515"
+    assert result["target_issue"] == "115042516"
 
 
 def test_latest_sync_reports_existing_when_database_matches_source_latest(monkeypatch):
@@ -155,8 +156,8 @@ def test_latest_sync_does_not_jump_directly_to_source_latest(monkeypatch):
 
     result = latest_sync.process_latest_official_draw()
 
-    assert saved_calls == [[source_draws[0]]]
-    assert result["database_latest_issue"] == "115042504"
+    assert saved_calls == [[source_draws[-1]]]
+    assert result["database_latest_issue"] == "115042515"
 
 
 def test_latest_sync_recovers_to_source_latest_when_next_gap_is_not_available(monkeypatch):
@@ -180,7 +181,7 @@ def test_latest_sync_recovers_to_source_latest_when_next_gap_is_not_available(mo
     result = latest_sync.process_latest_official_draw()
 
     assert saved_calls == [[source_draws[0]]]
-    assert result["target_select_reason"] == "gap_jump_to_source_latest"
+    assert result["target_select_reason"] == "latest_issue_priority"
     assert result["official_detected_issue"] == "115042515"
     assert result["database_latest_issue"] == "115042515"
     assert result["target_issue"] == "115042516"
@@ -495,15 +496,15 @@ def test_latest_sync_stale_already_running_reconcile_runs_inline(monkeypatch):
 
 
 def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypatch):
-    draw = _draw("115040625")
+    draw = _draw("115040780")
     prediction = {
         "id": 7,
-        "issue": "115040625",
-        "prediction_issue": "115040626",
+        "issue": "115040780",
+        "prediction_issue": "115040781",
         "recommend_numbers": list(range(1, 21)),
         "model_scores": {
             "production_fast_path": {
-                "fast_path_strategy_version": "28.0-diversity-v1",
+                "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
             }
         },
     }
@@ -535,7 +536,7 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
             "draw": draw,
             "analysis_exists": True,
             "prediction_exists": True,
-            "target_issue": "115040626",
+                "target_issue": "115040781",
         },
     )
     monkeypatch.setattr(latest_sync, "get_latest_kuaishou_snapshot", lambda: None)
@@ -551,10 +552,10 @@ def test_latest_sync_snapshot_rebuilds_from_database_after_memory_reset(monkeypa
 
     result = latest_sync.get_latest_sync_snapshot()
 
-    assert result["official_detected_issue"] == "115040625"
-    assert result["source_issue"] == "115040625"
-    assert result["database_latest_issue"] == "115040625"
-    assert result["target_issue"] == "115040626"
+    assert result["official_detected_issue"] == "115040780"
+    assert result["source_issue"] == "115040780"
+    assert result["database_latest_issue"] == "115040780"
+    assert result["target_issue"] == "115040781"
     assert result["database_saved"] is True
     assert result["analysis_created"] is True
     assert result["prediction_created"] is True
@@ -625,7 +626,7 @@ def test_latest_sync_new_draw_queues_full_lifecycle_without_blocking(monkeypatch
     assert result["database_saved"] is True
     assert result["database_latest_issue"] == "115054727"
     assert result["lifecycle"]["status"] == "queued"
-    assert result["analysis"]["status"] == "queued"
+    assert result["analysis"]["status"] == "ok"
     assert len(submitted) == 1
     assert lifecycle_calls == []
 
