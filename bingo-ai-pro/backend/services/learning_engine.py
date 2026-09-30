@@ -61,7 +61,8 @@ _OBSERVATION_CACHE_LOCK = threading.Lock()
 _LEARNING_STATUS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _LEARNING_STATUS_CACHE_LOCK = threading.Lock()
 _SHADOW_PROMOTION_LOCK = threading.Lock()
-_SHADOW_PROMOTION_CACHE: dict[str, Any] = {"source_issue": None, "rules": {}}
+_SHADOW_PROMOTION_CACHE: dict[str, Any] = {"source_issue": None, "rules": {}, "expires_at": 0.0}
+SHADOW_PROMOTION_CACHE_TTL_SECONDS = 30
 SHADOW_RULE_KEYS = (
     "long_dragon",
     "multi_window_hot_cold",
@@ -139,18 +140,23 @@ def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
     with _SHADOW_PROMOTION_LOCK:
         _SHADOW_PROMOTION_CACHE["source_issue"] = payload.get("source_issue")
         _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(payload.get("rules") or {})
+        _SHADOW_PROMOTION_CACHE["expires_at"] = time.monotonic() + SHADOW_PROMOTION_CACHE_TTL_SECONDS
     payload["promotion_persistence"] = save_shadow_rule_promotions(payload)
     return payload
 
 
 def get_shadow_rule_promotion_snapshot() -> dict:
-    persisted = get_shadow_rule_promotions()
-    persisted_rules = persisted.get("rules") or {}
+    now = time.monotonic()
     with _SHADOW_PROMOTION_LOCK:
         cached = copy.deepcopy(_SHADOW_PROMOTION_CACHE)
+    if cached.get("rules") and float(cached.get("expires_at") or 0.0) > now:
+        return {"source_issue": cached.get("source_issue"), "rules": cached.get("rules") or {}}
+
+    persisted = get_shadow_rule_promotions()
+    persisted_rules = persisted.get("rules") or {}
 
     if not persisted_rules:
-        return cached
+        return {"source_issue": cached.get("source_issue"), "rules": cached.get("rules") or {}}
 
     # Persisted promotion is the production gate. Fresh shadow evaluation may
     # keep learning in memory, but it must not erase a previously qualified
@@ -162,10 +168,15 @@ def get_shadow_rule_promotion_snapshot() -> dict:
         elif key not in merged_rules:
             merged_rules[key] = copy.deepcopy(rule)
 
-    return {
+    result = {
         "source_issue": persisted.get("source_issue") or cached.get("source_issue"),
         "rules": merged_rules,
     }
+    with _SHADOW_PROMOTION_LOCK:
+        _SHADOW_PROMOTION_CACHE["source_issue"] = result["source_issue"]
+        _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(result["rules"])
+        _SHADOW_PROMOTION_CACHE["expires_at"] = time.monotonic() + SHADOW_PROMOTION_CACHE_TTL_SECONDS
+    return result
 
 
 
