@@ -588,7 +588,22 @@ def calculate_fast_recommendation(
         timings["promotion_lookup_ms"] = promotion_lookup_ms
         timings["final_selection_ms"] = final_selection_ms
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-        confidence = 62 if output.get("is_valid") else 0
+        # Confidence must reflect the current model/learning evidence instead
+        # of the historical fixed 62 fallback. Blend model confidence with the
+        # share of selected numbers that received adaptive/shadow support.
+        supported_numbers = sum(1 for number in numbers if adaptive_number_scores.get(number, 0.0) > 0)
+        support_ratio = supported_numbers / max(1, len(numbers))
+        mature_bonus = min(6.0, len(applied_mature_rules) * 1.5)
+        dynamic_confidence = (
+            learning_confidence * 0.65
+            + support_ratio * 100.0 * 0.25
+            + mature_bonus
+        )
+        confidence = (
+            int(round(max(35.0, min(95.0, dynamic_confidence))))
+            if output.get("is_valid")
+            else 0
+        )
         recommendation = {
             "issue": source_issue,
             "target_issue": target_issue,
