@@ -1182,6 +1182,42 @@ def backfill_learning_records(limit: int = 50) -> dict:
     return {"status": "ok", "processed": len(processed), "results": processed}
 
 
+
+def ensure_live_prediction_snapshot(target_issue: str, prediction: dict | None = None) -> dict:
+    """Ensure the canonical live-learning snapshot exists for a Production target."""
+    target = str(target_issue or "").strip()
+    if not target:
+        return {"status": "skipped", "reason": "missing_target_issue", "records": 0}
+
+    existing = _learning_snapshots_for_issue(target)
+    if _is_complete_learning_record_set(existing):
+        return {"status": "ok", "skipped": True, "reason": "already_complete", "records": EXPECTED_RECORDS_PER_TARGET}
+
+    prediction = prediction or _latest_prediction_for_issue(target)
+    if not prediction:
+        return {"status": "missing_prediction", "target_issue": target, "records": 0}
+
+    records = _learning_records_from_prediction(prediction, None, {})
+    if len(records) != EXPECTED_RECORDS_PER_TARGET:
+        return {
+            "status": "incomplete_prediction",
+            "target_issue": target,
+            "records": len(records),
+            "expected_records": EXPECTED_RECORDS_PER_TARGET,
+        }
+
+    saved = upsert_learning_records(records)
+    refreshed = _learning_snapshots_for_issue(target)
+    complete = _is_complete_learning_record_set(refreshed)
+    return {
+        "status": "ok" if complete else "error",
+        "target_issue": target,
+        "records": len(refreshed),
+        "expected_records": EXPECTED_RECORDS_PER_TARGET,
+        "complete": complete,
+        "saved": saved,
+    }
+
 def evaluate_historical_backtest_issue(issue: str, prediction: dict | None = None) -> dict:
     try:
         prediction = prediction or _latest_prediction_for_issue(issue)
