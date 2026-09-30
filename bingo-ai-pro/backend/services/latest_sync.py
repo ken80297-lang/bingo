@@ -1062,6 +1062,15 @@ def process_latest_official_draw() -> dict[str, Any]:
     source_draws = _source_draws_today(page_size=source_page_size)
     source_fetch_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     source_draw, detected_source_issue, target_select_reason = _select_collector_target_draw(database_issue, source_draws)
+    if source_draw and str(source_draw.get("issue") or "") != str(database_issue or ""):
+        logger.info(
+            "latest sync new official issue detected source_issue=%s database_issue=%s detected_at=%s source_fetch_ms=%.2f latest_db_ms=%.2f",
+            source_draw.get("issue"),
+            database_issue,
+            detected_at if isinstance(detected_at, str) else detected_at.isoformat(),
+            source_fetch_ms,
+            latest_db_ms,
+        )
     if not source_draw:
         snapshot = _failure(database_issue, "detect", target_select_reason or "official_latest_issue_unavailable", detected_at, attempt_count)
         if detected_source_issue:
