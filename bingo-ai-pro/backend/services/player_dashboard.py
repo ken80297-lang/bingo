@@ -745,6 +745,13 @@ def _complete_component(
                 late_diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
             )
     updated = _store_component_cache(name, result)
+    if updated and name in {"card_two_history", "next_prediction_snapshot", "official_draw"}:
+        # A late background completion can make a previously built whole-summary
+        # cache obsolete. Keep component caches, but force the next HTTP request
+        # to rebuild the composed cards from the newly completed snapshot.
+        with _PLAYER_SUMMARY_CACHE_LOCK:
+            _PLAYER_SUMMARY_CACHE["payload"] = None
+            _PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
     logger.warning(
         "dashboard_late_component_completion component=%s generation_id=%s issue=%s elapsed_ms=%s cache_updated=%s cache_update_reason=%s",
         name,
