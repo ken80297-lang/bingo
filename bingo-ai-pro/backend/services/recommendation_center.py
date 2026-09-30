@@ -339,7 +339,7 @@ def _build_fast_path_numbers(
     tail_counts = {tail: 0 for tail in range(10)}
     previous_count = 0
     overrides = constraint_overrides or {}
-    zone_limit = int(overrides.get("zone_limit", 5))
+    zone_limit = int(overrides.get("zone_limit", 7))
     zone_quota = {zone: zone_limit for zone in range(4)}
     tail_limit = int(overrides.get("tail_limit", 3))
     previous_limit = int(overrides.get("previous_limit", 10))
@@ -365,9 +365,13 @@ def _build_fast_path_numbers(
         if number in previous_set:
             previous_count += 1
 
+    # Keep geographic diversity without forcing an exact 5/5/5/5 split.
+    # The old exact quota mathematically forced 10 small + 10 big every issue,
+    # so the dashboard could never express a genuine big/small lean.
+    zone_floor = int(overrides.get("zone_floor", 3))
     for zone in range(4):
         for number in [candidate for candidate in ranked if _number_zone(candidate) == zone]:
-            if zone_counts[zone] >= zone_quota[zone]:
+            if zone_counts[zone] >= zone_floor:
                 break
             if can_select(number):
                 add_number(number)
