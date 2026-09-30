@@ -583,6 +583,11 @@ def create_for_official_draw(
             "previous_strategy_version": previous_strategy_version,
             "learning_analysis_history": learning_analysis_history,
         }
+        # Reuse collector-provided analysis in the fast path. This avoids a
+        # second latest-analysis DB lookup for the same immutable source issue.
+        collector_analysis = (collector_metadata or {}).get("analysis_record")
+        if isinstance(collector_analysis, dict):
+            recommendation_context["analysis_record"] = collector_analysis
         analysis_record = (collector_metadata or {}).get("analysis_record")
         if isinstance(analysis_record, dict):
             recommendation_context["analysis_record"] = analysis_record
