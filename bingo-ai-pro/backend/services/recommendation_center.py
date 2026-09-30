@@ -468,7 +468,10 @@ def calculate_fast_recommendation(
         learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
         learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
         learning_models = learning_models_payload.get("models") or []
+
+        adaptive_started = time.perf_counter()
         adaptive = get_active_adaptive_weights()
+        adaptive_lookup_ms = round((time.perf_counter() - adaptive_started) * 1000.0, 2)
         adaptive_keys = {
             "laowanjia": "laowanjia_weight",
             "hotcold": "hot_cold_weight",
@@ -494,7 +497,9 @@ def calculate_fast_recommendation(
 
         from services.learning_engine import get_shadow_rule_promotion_snapshot
 
+        promotion_started = time.perf_counter()
         promotion_snapshot = get_shadow_rule_promotion_snapshot()
+        promotion_lookup_ms = round((time.perf_counter() - promotion_started) * 1000.0, 2)
         promotion_rules = promotion_snapshot.get("rules") or {}
         mature_rule_scores: dict[int, float] = {}
         applied_mature_rules: list[str] = []
@@ -531,6 +536,7 @@ def calculate_fast_recommendation(
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + bonus
 
         previous_numbers = _previous_fast_path_numbers(context)
+        selection_started = time.perf_counter()
         numbers, diversity = _build_fast_path_numbers(
             analysis,
             source_issue=source_issue,
@@ -539,6 +545,7 @@ def calculate_fast_recommendation(
             trace=trace,
             adaptive_number_scores=adaptive_number_scores,
         )
+        final_selection_ms = round((time.perf_counter() - selection_started) * 1000.0, 2)
 
         learning_model_scores = {
             str(model.get("model")): {
@@ -576,6 +583,10 @@ def calculate_fast_recommendation(
             reason="analysis_diversified_lightweight_merge",
         )
         output = _recommendation_output_status(numbers, trace, {"models": [{"model_name": "Production Fast Path"}]})
+        timings["learning_models_compute_ms"] = learning_models_compute_ms
+        timings["adaptive_lookup_ms"] = adaptive_lookup_ms
+        timings["promotion_lookup_ms"] = promotion_lookup_ms
+        timings["final_selection_ms"] = final_selection_ms
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         confidence = 62 if output.get("is_valid") else 0
         recommendation = {
