@@ -345,6 +345,12 @@ def _prediction_lock_connection():
     return prediction_lock_connection()
 
 
+def _prediction_write_connection():
+    from database.postgres import prediction_write_connection
+
+    return prediction_write_connection()
+
+
 def _sqlite_connection() -> sqlite3.Connection:
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(SQLITE_PATH, check_same_thread=False)
@@ -550,7 +556,7 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
     cloud_error = None
     if _cloud_enabled():
         try:
-            with _cloud_connection() as conn:
+            with _prediction_write_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
