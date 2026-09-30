@@ -3680,8 +3680,10 @@ def _build_player_dashboard_summary_payload(
     previous_verification.setdefault("displayed_target_issue", None)
 
     # History feeds Card Two/learning diagnostics only. Do not hold Card One
-    # first paint for a cold history query; the submitted future refreshes cache.
+    # first paint for a cold history query. Always refresh it in the background
+    # so a long-lived Render worker cannot keep serving an old finalized report.
     card_two_history = _load_component_cache("card_two_history", []) or []
+    _submit_component("card_two_history", _card_two_history_component)
     if card_two_history:
         timings.append(_timed_default("card_two_history", time.perf_counter(), "ok", "last_good_cache"))
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
@@ -3733,19 +3735,28 @@ def _build_player_dashboard_summary_payload(
             "current_issue": (current or {}).get("issue"),
             "previous_target_issue": previous_target_issue,
         }}
-        return _card_two_from_record(
-            _timed_component_stage(
-                "card_two",
-                "finalized_analysis_report",
-                lambda: get_latest_finalized_analysis_report(
-                    card_two_history,
-                    current,
-                    previous_target_issue,
-                    diagnostics=diagnostics,
-                ),
+        # Card Two is a report of the newest completed prediction lifecycle.
+        # Do not pin it to Card One's source issue: during normal draw handoff
+        # Card One may be cached while verification/learning has already moved
+        # forward. Select the newest finalized record available in history.
+        finalized = _timed_component_stage(
+            "card_two",
+            "finalized_analysis_report",
+            lambda: get_latest_finalized_analysis_report(
+                card_two_history,
+                current,
+                diagnostics=diagnostics,
             ),
+        )
+        finalized_issue = (
+            (finalized or {}).get("prediction_issue")
+            or (finalized or {}).get("target_issue")
+            or previous_target_issue
+        )
+        return _card_two_from_record(
+            finalized,
             current,
-            previous_target_issue,
+            finalized_issue,
             diagnostics=diagnostics,
             use_dashboard_read_pool=True,
             include_rules=False,
