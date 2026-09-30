@@ -1005,3 +1005,37 @@ def get_official_statistics_counts() -> dict:
         "waiting_count": waiting_kuaishou + waiting_official + waiting_super,
         "total_count": int(row[5] or 0),
     }
+
+
+def get_official_draws_by_date(draw_date: str) -> list[dict]:
+    """Return one calendar day's official draws, newest first (max 203)."""
+    rows = _query_with_fallback(
+        """
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where draw_date = %s
+          and issue ~ '^[0-9]+$'
+          and length(issue) >= 6
+          and issue not like '99%%'
+          and upper(issue) not like 'TEST%%'
+        order by issue::bigint desc
+        limit 203
+        """,
+        (str(draw_date),),
+        sqlite_sql="""
+        select id, issue, draw_date, draw_time, numbers, open_order_numbers,
+               super_number, win_no_only, source, verification_status, fetched_at,
+               verified, created_at, updated_at
+        from official_draw_history
+        where draw_date = ?
+          and issue glob '[0-9]*'
+          and length(issue) >= 6
+          and issue not like '99%'
+          and upper(issue) not like 'TEST%'
+        order by cast(issue as integer) desc
+        limit 203
+        """,
+    )
+    return [_row_to_official_summary(row) for row in rows]
