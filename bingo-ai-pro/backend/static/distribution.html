@@ -20,9 +20,9 @@ td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
-<div class="info">每日 07:05～23:55・每 5 分鐘一期・共 203 期</div></div>
+<div class="info"><span id="liveClock" class="live-clock">--:--:--</span></div></div>
 <div class="table-wrap"><table id="grid"><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th></tr></thead><tbody id="body"></tbody></table></div>
-<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span id="liveClock" class="live-clock">--:--:--</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
+<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
 </main>
 <script>
 const pad=n=>String(n).padStart(2,'0'); const localDate=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
