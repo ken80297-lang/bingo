@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,14 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = ROOT / "data" / "bingo.db"
+_ACTIVE_CACHE_TTL_SECONDS = 30.0
+_ACTIVE_CACHE_LOCK = threading.Lock()
+_ACTIVE_CACHE = {"loaded_at": 0.0, "value": None, "initialized": False}
+
+
+def invalidate_active_adaptive_weights_cache() -> None:
+    with _ACTIVE_CACHE_LOCK:
+        _ACTIVE_CACHE.update({"loaded_at": 0.0, "value": None, "initialized": False})
 
 
 def _now() -> str:
@@ -162,6 +172,7 @@ def _save_sqlite(weights: dict) -> int:
 def save_adaptive_weights(weights: dict) -> dict:
     try:
         weight_id = _save_cloud(weights)
+        invalidate_active_adaptive_weights_cache()
         return {"status": "ok", "storage": "cloud", "weight_id": weight_id}
     except Exception as exc:
         logger.exception("cloud adaptive weights save failed")
@@ -169,6 +180,7 @@ def save_adaptive_weights(weights: dict) -> dict:
 
     try:
         weight_id = _save_sqlite(weights)
+        invalidate_active_adaptive_weights_cache()
         return {
             "status": "ok",
             "storage": "sqlite",
@@ -233,6 +245,12 @@ def _row_to_weights(row: Any) -> dict:
 
 
 def get_active_adaptive_weights() -> dict | None:
+    now = time.monotonic()
+    with _ACTIVE_CACHE_LOCK:
+        if _ACTIVE_CACHE["initialized"] and now - float(_ACTIVE_CACHE["loaded_at"]) < _ACTIVE_CACHE_TTL_SECONDS:
+            value = _ACTIVE_CACHE["value"]
+            return dict(value) if isinstance(value, dict) else None
+
     # A V7 row is eligible to affect predictions only after its source issue's
     # current-generation 18-row learning ledger is complete, weight_changed is
     # persisted, and the corresponding verified prediction has learning_used.
@@ -311,7 +329,10 @@ def get_active_adaptive_weights() -> dict | None:
         params=(generation, generation),
         sqlite_params=(generation, generation),
     )
-    return _row_to_weights(rows[0]) if rows else None
+    value = _row_to_weights(rows[0]) if rows else None
+    with _ACTIVE_CACHE_LOCK:
+        _ACTIVE_CACHE.update({"loaded_at": time.monotonic(), "value": dict(value) if value else None, "initialized": True})
+    return dict(value) if value else None
 
 
 def get_latest_adaptive_weights() -> dict | None:
