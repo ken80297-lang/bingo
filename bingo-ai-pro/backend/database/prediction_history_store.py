@@ -339,6 +339,12 @@ def _dashboard_read_connection():
     return dashboard_read_connection()
 
 
+def _prediction_lock_connection():
+    from database.postgres import prediction_lock_connection
+
+    return prediction_lock_connection()
+
+
 def _sqlite_connection() -> sqlite3.Connection:
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(SQLITE_PATH, check_same_thread=False)
@@ -4362,7 +4368,7 @@ def _prediction_records_for_target_issue(issue: str) -> list[dict]:
     return [_row_to_prediction(row) for row in rows]
 
 
-def get_prediction_for_source_target(source_issue: str, target_issue: str) -> dict | None:
+def get_prediction_for_source_target(source_issue: str, target_issue: str, *, use_prediction_pool: bool = False) -> dict | None:
     source = _valid_issue(source_issue)
     target = _valid_issue(target_issue)
     if not source or not target:
@@ -4393,7 +4399,9 @@ def get_prediction_for_source_target(source_issue: str, target_issue: str) -> di
           and recommend_numbers not in ('', '[]')
         order by created_at desc, id desc
         limit 1
-        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        """.format(columns=PREDICTION_SELECT_COLUMNS),,
+        cloud_connection_factory=_prediction_lock_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
     )
     if not rows:
         return None
