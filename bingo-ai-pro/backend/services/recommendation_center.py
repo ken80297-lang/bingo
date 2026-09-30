@@ -474,7 +474,7 @@ def calculate_fast_recommendation(
         learning_models = learning_models_payload.get("models") or []
 
         adaptive_started = time.perf_counter()
-        adaptive = get_active_adaptive_weights()
+        adaptive = context.get("active_adaptive_weights") if "active_adaptive_weights" in context else get_active_adaptive_weights()
         adaptive_lookup_ms = round((time.perf_counter() - adaptive_started) * 1000.0, 2)
         adaptive_keys = {
             "laowanjia": "laowanjia_weight",
@@ -502,7 +502,9 @@ def calculate_fast_recommendation(
         from services.learning_engine import get_shadow_rule_promotion_snapshot
 
         promotion_started = time.perf_counter()
-        promotion_snapshot = get_shadow_rule_promotion_snapshot()
+        promotion_snapshot = context.get("shadow_rule_promotion_snapshot")
+        if not isinstance(promotion_snapshot, dict):
+            promotion_snapshot = get_shadow_rule_promotion_snapshot()
         promotion_lookup_ms = round((time.perf_counter() - promotion_started) * 1000.0, 2)
         promotion_rules = promotion_snapshot.get("rules") or {}
         mature_rule_scores: dict[int, float] = {}
