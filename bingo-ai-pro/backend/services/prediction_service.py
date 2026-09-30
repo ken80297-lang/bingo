@@ -745,6 +745,12 @@ def create_for_official_draw(
             shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         completed_at = _now()
         duration = _duration_ms(start)
+        print(
+            "prediction_service_stage_timings "
+            f"based_on_issue={based_on} target_issue={target} duration_ms={duration} "
+            f"stages={stages}",
+            flush=True,
+        )
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
             snapshot_ok = snapshot_result.get("status") in {"ok", "queued", "deferred"}
