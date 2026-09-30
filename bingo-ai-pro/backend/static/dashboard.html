@@ -751,6 +751,7 @@
   <script>
     const API_TIMEOUT_MS = 10000;
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
+    const CARD_ONE_PREDICTION_STORAGE_KEY = "bingo-ai-card-one-prediction-cache";
     let cardOneCommittedHtml = "";
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
@@ -1039,6 +1040,11 @@
         saveCardTwoBrowserCache(raw);
         return raw;
       }
+      const cached = loadCardTwoBrowserCache();
+      if (cached) {
+        cached.component_metadata = componentMeta;
+        return cached;
+      }
       if (raw) raw.component_metadata = componentMeta;
       if (raw) return raw;
       if (player) {
@@ -1052,8 +1058,6 @@
           rules: []
         };
       }
-      const cached = loadCardTwoBrowserCache();
-      if (cached) return cached;
       return raw || {
         title: "📖 AI 驗證與分析報告",
         available: false,
@@ -1394,11 +1398,39 @@
       return "";
     }
 
+    function saveCardOnePredictionBrowserCache(raw) {
+      const numbers = raw && (raw.candidates || raw.main_numbers || raw.recommend_numbers || []);
+      if (!raw || !hasValidNumberSet(numbers, 20)) return;
+      try {
+        localStorage.setItem(CARD_ONE_PREDICTION_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload: raw }));
+      } catch (error) {
+        console.warn("[dashboard] card one prediction cache save failed", error);
+      }
+    }
+
+    function loadCardOnePredictionBrowserCache() {
+      try {
+        const value = localStorage.getItem(CARD_ONE_PREDICTION_STORAGE_KEY);
+        if (!value) return null;
+        const cached = JSON.parse(value);
+        const raw = cached && cached.payload;
+        const numbers = raw && (raw.candidates || raw.main_numbers || raw.recommend_numbers || []);
+        return raw && hasValidNumberSet(numbers, 20) ? raw : null;
+      } catch (error) {
+        console.warn("[dashboard] card one prediction cache load failed", error);
+        return null;
+      }
+    }
+
     function normalizeNext(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
-      const raw = cardOne.next_prediction || {};
-      const componentMeta = raw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
+      const incomingRaw = cardOne.next_prediction || {};
+      const incomingCandidates = incomingRaw.candidates || incomingRaw.main_numbers || incomingRaw.recommend_numbers || [];
+      const incomingComplete = hasValidNumberSet(incomingCandidates, 20);
+      if (incomingComplete) saveCardOnePredictionBrowserCache(incomingRaw);
+      const raw = incomingComplete ? incomingRaw : (loadCardOnePredictionBrowserCache() || incomingRaw);
+      const componentMeta = incomingRaw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
