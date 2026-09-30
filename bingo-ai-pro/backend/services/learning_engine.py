@@ -1183,6 +1183,25 @@ def backfill_learning_records(limit: int = 50) -> dict:
 
 
 
+
+def ensure_live_prediction_snapshot_async(target_issue: str, prediction: dict | None = None) -> dict:
+    """Queue snapshot recovery without delaying the Production prediction path."""
+    target = str(target_issue or "").strip()
+    if not target:
+        return {"status": "skipped", "reason": "missing_target_issue"}
+
+    def worker() -> None:
+        try:
+            result = ensure_live_prediction_snapshot(target, prediction)
+            if result.get("status") != "ok":
+                logger.warning("live learning snapshot async recovery incomplete target_issue=%s result=%s", target, result)
+        except Exception:
+            logger.exception("live learning snapshot async recovery failed target_issue=%s", target)
+
+    thread = threading.Thread(target=worker, name=f"learning-snapshot-{target}", daemon=True)
+    thread.start()
+    return {"status": "queued", "target_issue": target}
+
 def ensure_live_prediction_snapshot(target_issue: str, prediction: dict | None = None) -> dict:
     """Ensure the canonical live-learning snapshot exists for a Production target."""
     target = str(target_issue or "").strip()
