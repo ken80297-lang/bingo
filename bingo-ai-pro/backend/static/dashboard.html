@@ -1721,16 +1721,30 @@
 
     function renderCardTwoConsecutiveGroups(groups) {
       const source = groups || {};
-      const rows = [
-        ["三星", source.three_star],
-        ["四星", source.four_star],
+      const levels = [
+        ["六星", source.six_star],
         ["五星", source.five_star],
-        ["六星", source.six_star]
+        ["四星", source.four_star],
+        ["三星", source.three_star]
       ];
-      const html = rows.map(([label, values]) => {
+      const claimed = [];
+      const rendered = new Map();
+
+      levels.forEach(([label, values]) => {
         const combos = asList(values)
           .map((combo) => normalizeNumbers(combo))
           .filter((combo) => combo.length);
+        const unique = combos.filter((combo) => {
+          const containedByHigher = claimed.some((higher) => combo.every((number) => higher.includes(number)));
+          if (containedByHigher) return false;
+          claimed.push(combo);
+          return true;
+        });
+        rendered.set(label, unique);
+      });
+
+      const html = ["三星", "四星", "五星", "六星"].map((label) => {
+        const combos = rendered.get(label) || [];
         const body = combos.length
           ? combos.map((combo) => combo.map(numberLabel).join("、")).join("　")
           : "無";
