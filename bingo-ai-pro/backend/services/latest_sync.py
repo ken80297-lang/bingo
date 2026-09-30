@@ -1213,11 +1213,15 @@ def process_latest_official_draw() -> dict[str, Any]:
     # Verification is also latency-sensitive and must not wait behind prior
     # learning on the single background worker. This path only verifies already
     # persisted predictions/shadow rows; it never regenerates recommendations.
+    # Keep explicit stage markers here: new-issue work is the only remaining
+    # collector path capable of exhausting the job deadline.
+    logger.info("latest sync new issue persisted source_issue=%s", source_issue)
     priority_verification: dict[str, Any] = {"status": "skipped"}
     priority_shadow_verification: dict[str, Any] = {"status": "skipped"}
     try:
         from services.prediction_lifecycle import verify_prediction
 
+        verification_started = time.perf_counter()
         priority_verification = verify_prediction(
             {
                 "issue": source_issue,
@@ -1225,6 +1229,7 @@ def process_latest_official_draw() -> dict[str, Any]:
                 "super_number": (saved_draw or {}).get("super_number"),
             }
         )
+        logger.info("latest sync priority verification timing source_issue=%s duration_ms=%.2f status=%s", source_issue, (time.perf_counter() - verification_started) * 1000, priority_verification.get("status"))
     except Exception as exc:
         logger.exception("latest sync priority verification failed source_issue=%s", source_issue)
         priority_verification = {"status": "error", "message": str(exc)}
@@ -1250,8 +1255,10 @@ def process_latest_official_draw() -> dict[str, Any]:
     analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
     if not analysis_created:
         try:
+            analysis_started = time.perf_counter()
             analysis_result = save_analysis_history(saved_draw, recent_draws=source_draws)
             analysis_created = _analysis_created_from_result(analysis_result, source_issue)
+            logger.info("latest sync priority analysis timing source_issue=%s duration_ms=%.2f created=%s", source_issue, (time.perf_counter() - analysis_started) * 1000, analysis_created)
         except Exception as exc:
             logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
             analysis_result = {"status": "error", "message": str(exc)}
@@ -1262,8 +1269,10 @@ def process_latest_official_draw() -> dict[str, Any]:
         try:
             from services.prediction_refresh import ensure_next_prediction
 
+            prediction_started = time.perf_counter()
             priority_prediction = ensure_next_prediction(saved_draw)
             prediction_created = _prediction_created_from_result(priority_prediction, source_issue)
+            logger.info("latest sync priority prediction timing source_issue=%s duration_ms=%.2f created=%s", source_issue, (time.perf_counter() - prediction_started) * 1000, prediction_created)
         except Exception as exc:
             logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
             priority_prediction = {"status": "error", "message": str(exc)}
