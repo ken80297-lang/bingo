@@ -467,6 +467,12 @@ def collect_official_today() -> dict:
             f"existing_lookup_ms={timing.get('existing_lookup_ms')} "
             f"analysis_lookup_ms={timing.get('analysis_lookup_ms')} "
             f"prediction_lookup_ms={timing.get('prediction_lookup_ms')} "
+            f"official_save_ms={timing.get('official_save_ms')} "
+            f"cache_invalidation_ms={timing.get('cache_invalidation_ms')} "
+            f"official_confirm_ms={timing.get('official_confirm_ms')} "
+            f"verification_ms={timing.get('verification_ms')} "
+            f"analysis_ms={timing.get('analysis_ms')} "
+            f"prediction_ms={timing.get('prediction_ms')} "
             f"sync_total_ms={timing.get('total_ms')}",
             flush=True,
         )
