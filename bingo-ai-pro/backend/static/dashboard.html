@@ -1405,6 +1405,7 @@
         prediction_issue: raw.prediction_issue || raw.target_issue,
         confidence_available: Number.isFinite(Number(rawConfidence)),
         confidence_percent: confidencePercentValue(rawConfidence),
+        raw_candidates: rawCandidates,
         candidates: normalizeNumbers(rawCandidates),
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
