@@ -783,9 +783,23 @@ def get_complete_live_learning_targets(window: int = 100) -> list[dict]:
                     order by issue desc
                     limit %s
                 )
-                select lh.issue, lh.official_numbers, lh.analysis_snapshot
+                select
+                    lh.issue,
+                    lh.official_numbers,
+                    case
+                        when lh.analysis_snapshot is not null
+                         and lh.analysis_snapshot <> '{}'::jsonb
+                        then lh.analysis_snapshot
+                        else coalesce(ah.ai_score_payload, '{}'::jsonb)
+                    end as analysis_snapshot
                 from learning_history lh
                 join complete c on c.representative_id = lh.id
+                left join lateral (
+                    select jsonb_build_object('ai_score', a.ai_score) as ai_score_payload
+                    from analysis_history a
+                    where a.issue = lh.issue
+                    limit 1
+                ) ah on true
                 order by lh.issue desc
                 """,
                 (get_production_generation(), window),
