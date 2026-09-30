@@ -726,18 +726,20 @@ def create_for_official_draw(
             # recovery. Do not block the pre-draw critical path on the 18-row
             # learning snapshot write; latest_sync's background lifecycle
             # verifies/rebuilds the complete snapshot from this immutable row.
-            snapshot_result = {
-                "status": "deferred",
-                "reason": "background_lifecycle_recovery",
-                "records": 0,
-            }
+            try:
+                from services.learning_engine import ensure_live_prediction_snapshot_async
+
+                snapshot_result = ensure_live_prediction_snapshot_async(target, record)
+            except Exception as exc:
+                logger.exception("live prediction snapshot recovery queue failed")
+                snapshot_result = {"status": "error", "message": str(exc), "records": 0}
             _stage_done(
                 stages,
                 "learning_snapshot_save",
                 time.perf_counter(),
-                status="deferred",
-                records=0,
-                message="background_lifecycle_recovery",
+                status=snapshot_result.get("status"),
+                records=snapshot_result.get("records", 0),
+                message=snapshot_result.get("reason") or snapshot_result.get("message"),
             )
         else:
             shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
@@ -745,7 +747,7 @@ def create_for_official_draw(
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
-            snapshot_ok = snapshot_result.get("status") in {"ok", "deferred"}
+            snapshot_ok = snapshot_result.get("status") in {"ok", "queued", "deferred"}
             _record_event(
                 event_type="prediction_created",
                 status="ok" if snapshot_ok else "warning",
