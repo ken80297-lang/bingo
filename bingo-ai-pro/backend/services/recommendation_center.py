@@ -4,6 +4,7 @@ import logging
 import json
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
@@ -468,13 +469,31 @@ def calculate_fast_recommendation(
         # Production Fast Path before its final 20-number diversity selection.
         from services.model_engine import run_all_models
 
+        # Independent production reads are intentionally overlapped. Render may
+        # route consecutive draws to different instances, so process-local caches
+        # are only an optimization; correctness/performance must also hold cold.
+        io_started = time.perf_counter()
+        io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fast-path-io")
+        adaptive_future = None
+        promotion_future = None
+        previous_future = None
+        stats_future = None
+        if "active_adaptive_weights" not in context:
+            adaptive_future = io_executor.submit(get_active_adaptive_weights)
+        if not isinstance(context.get("shadow_rule_promotion_snapshot"), dict):
+            from services.learning_engine import get_shadow_rule_promotion_snapshot
+            promotion_future = io_executor.submit(get_shadow_rule_promotion_snapshot)
+        if context.get("previous_recommend_numbers") is None:
+            previous_future = io_executor.submit(get_latest_prediction_history)
+        stats_future = io_executor.submit(get_prediction_history_statistics, 30)
+
         learning_models_started = time.perf_counter()
         learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
         learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
         learning_models = learning_models_payload.get("models") or []
 
         adaptive_started = time.perf_counter()
-        adaptive = context.get("active_adaptive_weights") if "active_adaptive_weights" in context else get_active_adaptive_weights()
+        adaptive = context.get("active_adaptive_weights") if "active_adaptive_weights" in context else adaptive_future.result()
         adaptive_lookup_ms = round((time.perf_counter() - adaptive_started) * 1000.0, 2)
         adaptive_keys = {
             "laowanjia": "laowanjia_weight",
@@ -499,12 +518,10 @@ def calculate_fast_recommendation(
             for rank, number in enumerate(_recommendation_numbers(model.get("candidate_numbers"))):
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + base_weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
 
-        from services.learning_engine import get_shadow_rule_promotion_snapshot
-
         promotion_started = time.perf_counter()
         promotion_snapshot = context.get("shadow_rule_promotion_snapshot")
         if not isinstance(promotion_snapshot, dict):
-            promotion_snapshot = get_shadow_rule_promotion_snapshot()
+            promotion_snapshot = promotion_future.result()
         promotion_lookup_ms = round((time.perf_counter() - promotion_started) * 1000.0, 2)
         promotion_rules = promotion_snapshot.get("rules") or {}
         mature_rule_scores: dict[int, float] = {}
@@ -541,7 +558,13 @@ def calculate_fast_recommendation(
                 mature_rule_scores[number] = mature_rule_scores.get(number, 0.0) + bonus
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + bonus
 
-        previous_numbers = _previous_fast_path_numbers(context)
+        previous_started = time.perf_counter()
+        if context.get("previous_recommend_numbers") is not None:
+            previous_numbers = _recommendation_numbers(context.get("previous_recommend_numbers"))
+        else:
+            previous_record = previous_future.result() or {}
+            previous_numbers = _recommendation_numbers(previous_record.get("recommend_numbers"))
+        previous_prediction_lookup_ms = round((time.perf_counter() - previous_started) * 1000.0, 2)
         selection_started = time.perf_counter()
         numbers, diversity = _build_fast_path_numbers(
             analysis,
@@ -592,6 +615,7 @@ def calculate_fast_recommendation(
         timings["learning_models_compute_ms"] = learning_models_compute_ms
         timings["adaptive_lookup_ms"] = adaptive_lookup_ms
         timings["promotion_lookup_ms"] = promotion_lookup_ms
+        timings["previous_prediction_lookup_ms"] = previous_prediction_lookup_ms
         timings["final_selection_ms"] = final_selection_ms
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         # Calibrate the displayed confidence against verified production
@@ -611,11 +635,16 @@ def calculate_fast_recommendation(
                 + mature_bonus,
             ),
         )
+        confidence_stats_started = time.perf_counter()
         try:
-            verified_stats = get_prediction_history_statistics(30)
+            verified_stats = stats_future.result()
         except Exception:
             logger.exception("failed to load verified history for confidence calibration")
             verified_stats = {}
+        confidence_stats_ms = round((time.perf_counter() - confidence_stats_started) * 1000.0, 2)
+        timings["confidence_stats_ms"] = confidence_stats_ms
+        timings["parallel_io_total_ms"] = round((time.perf_counter() - io_started) * 1000.0, 2)
+        io_executor.shutdown(wait=False)
         verified_samples = int((verified_stats or {}).get("sample_size") or 0)
         recent_average_hits = float((verified_stats or {}).get("average_hit_last_30") or 5.0)
         performance_score = max(20.0, min(80.0, 50.0 + (recent_average_hits - 5.0) * 12.0))
