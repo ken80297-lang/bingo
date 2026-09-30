@@ -722,21 +722,22 @@ def create_for_official_draw(
                 count=shadow_result.get("count"),
                 message=shadow_result.get("message"),
             )
-            snapshot_mark = time.perf_counter()
-            try:
-                from services.learning_engine import save_live_prediction_snapshot
-
-                snapshot_result = save_live_prediction_snapshot(recommendation)
-            except Exception as exc:
-                logger.exception("live prediction snapshot save failed")
-                snapshot_result = {"status": "error", "message": str(exc)}
+            # The canonical Production row is the durable source for learning
+            # recovery. Do not block the pre-draw critical path on the 18-row
+            # learning snapshot write; latest_sync's background lifecycle
+            # verifies/rebuilds the complete snapshot from this immutable row.
+            snapshot_result = {
+                "status": "deferred",
+                "reason": "background_lifecycle_recovery",
+                "records": 0,
+            }
             _stage_done(
                 stages,
                 "learning_snapshot_save",
-                snapshot_mark,
-                status=snapshot_result.get("status"),
-                records=snapshot_result.get("records"),
-                message=snapshot_result.get("message"),
+                time.perf_counter(),
+                status="deferred",
+                records=0,
+                message="background_lifecycle_recovery",
             )
         else:
             shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
@@ -744,10 +745,7 @@ def create_for_official_draw(
         duration = _duration_ms(start)
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
-            snapshot_ok = (
-                snapshot_result.get("status") == "ok"
-                and int(snapshot_result.get("records") or 0) == 18
-            )
+            snapshot_ok = snapshot_result.get("status") in {"ok", "deferred"}
             _record_event(
                 event_type="prediction_created",
                 status="ok" if snapshot_ok else "warning",
