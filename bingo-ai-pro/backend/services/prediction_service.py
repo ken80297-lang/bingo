@@ -597,12 +597,20 @@ def create_for_official_draw(
             target,
             context={**recommendation_context, "path": "prediction_service_fast_path"},
         )
+        fast_timings = (recommendation_result or {}).get("timings_ms") or {}
         _stage_done(
             stages,
             "fast_recommendation_build",
             mark,
             status=(recommendation_result or {}).get("status"),
             reason=(recommendation_result or {}).get("reason") or (recommendation_result or {}).get("message"),
+            analysis_ms=fast_timings.get("analysis_ms"),
+            analysis_source=fast_timings.get("analysis_source"),
+            learning_models_compute_ms=fast_timings.get("learning_models_compute_ms"),
+            adaptive_lookup_ms=fast_timings.get("adaptive_lookup_ms"),
+            promotion_lookup_ms=fast_timings.get("promotion_lookup_ms"),
+            final_selection_ms=fast_timings.get("final_selection_ms"),
+            result_build_ms=fast_timings.get("result_build_ms"),
         )
         if recommendation_result.get("status") == "ok":
             recommendation_result.setdefault("recommendation_status", "production_fast_path")
