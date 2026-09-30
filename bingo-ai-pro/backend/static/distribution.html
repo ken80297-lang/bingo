@@ -53,5 +53,5 @@ async function load(){
   document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
  }catch(e){document.getElementById('msg').innerHTML='<span class="error">載入失敗：'+e.message+'</span>'}
 }
-dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},30000);
+dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 </script></body></html>
