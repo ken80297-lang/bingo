@@ -1275,27 +1275,28 @@ def process_latest_official_draw() -> dict[str, Any]:
             analysis_result = {"status": "error", "message": str(exc)}
 
     prediction_created = False if newly_persisted_official else _prediction_exists_for_latest(source_issue)
-    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "skipped"}
-    if analysis_created and not prediction_created:
-        try:
-            from services.prediction_refresh import ensure_next_prediction
+    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "deferred"}
 
-            prediction_started = time.perf_counter()
-            prediction_draw = dict(saved_draw)
-            if isinstance(analysis_result.get("record"), dict):
-                prediction_draw["analysis_record"] = analysis_result.get("record")
-            priority_prediction = ensure_next_prediction(prediction_draw)
-            prediction_created = _prediction_created_from_result(priority_prediction, source_issue)
-            prediction_ms = round((time.perf_counter() - prediction_started) * 1000, 2)
-            logger.info("latest sync priority prediction timing source_issue=%s duration_ms=%.2f created=%s", source_issue, prediction_ms, prediction_created)
-        except Exception as exc:
-            logger.exception("latest sync priority prediction failed source_issue=%s", source_issue)
-            priority_prediction = {"status": "error", "message": str(exc)}
-
+    # Keep the polling critical path bounded. Prediction generation can take
+    # tens of seconds and must not hold the scheduler job open. The canonical
+    # lifecycle already owns idempotent next-prediction creation, verification,
+    # learning, and snapshot recovery, so queue it once per source issue.
     if existing_complete and prediction_created and analysis_created:
         lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
     else:
         lifecycle = _queue_full_official_lifecycle(saved_draw, source_issue, prediction_target_issue)
+        if not prediction_created:
+            priority_prediction = {
+                "status": "deferred",
+                "reason": "full_lifecycle_background",
+                "target_issue": prediction_target_issue,
+            }
+        logger.info(
+            "latest sync downstream deferred source_issue=%s target_issue=%s lifecycle_status=%s",
+            source_issue,
+            prediction_target_issue,
+            lifecycle.get("status"),
+        )
 
     analysis_result = {
         **analysis_result,
