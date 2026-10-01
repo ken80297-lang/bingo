@@ -10,10 +10,10 @@ input,button{height:38px;border:1px solid #cbd7e6;border-radius:7px;background:#
 .info{margin-left:auto;font-size:13px;color:#51657e}.legend{display:flex;gap:12px;align-items:center;font-size:13px}.sw{width:22px;height:18px;border-radius:4px;display:inline-block;vertical-align:middle;margin-right:4px}.hit{background:#18a83a;color:#fff}.super{background:#ef3340!important;color:#fff}.latest-label{color:#098c2e;font-weight:800}
 .table-wrap{background:#fff;border:1px solid #d9e2ef;border-radius:8px;overflow:auto;max-height:calc(100vh - 155px);box-shadow:0 2px 8px #24466a0d;touch-action:pan-x pan-y}
 table{border-collapse:separate;border-spacing:0;min-width:2050px;width:100%;font-size:11px}th,td{border-right:1px solid #d8e0e9;border-bottom:1px solid #d8e0e9;text-align:center;height:24px;min-width:23px;padding:0}
-thead th{position:sticky;top:0;background:#eaf1f9;z-index:5;font-size:11px;height:30px}.issue,.time{position:sticky;background:#fff;z-index:3}.issue{left:0;min-width:92px;font-weight:650}.time{left:92px;min-width:54px}.head-issue{left:0!important;z-index:8!important}.head-time{left:92px!important;z-index:8!important}
+thead th{position:sticky;top:0;background:#eaf1f9;z-index:5;font-size:11px;height:30px}.issue,.time,.odd-even{position:sticky;background:#fff;z-index:3}.issue{left:0;min-width:92px;font-weight:650}.time{left:92px;min-width:54px}.odd-even{left:146px;min-width:42px;font-weight:800}.head-issue{left:0!important;z-index:8!important}.head-time{left:92px!important;z-index:8!important}.head-odd-even{left:146px!important;z-index:8!important}.issue.size-big{background:#1647d8;color:#fff!important}.issue.size-small{background:#e33131;color:#fff!important}
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
-@media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.head-time{left:82px!important}}
+@media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.odd-even{left:130px;min-width:38px}.head-time{left:82px!important}.head-odd-even{left:130px!important}}
 .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;padding:6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 4px 14px #001b3b44;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
 </style></head>
 <body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
@@ -21,7 +21,7 @@ td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
 </div>
-<div class="table-wrap"><table id="grid"><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th></tr></thead><tbody id="body"></tbody></table></div>
+<div class="table-wrap"><table id="grid"><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
 <div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
 </main>
 <script>
@@ -43,7 +43,10 @@ async function load(){
   const p=await r.json(),rows=p.draws||[]; body.innerHTML='';
   rows.forEach((d,i)=>{const tr=document.createElement('tr');if(i===0)tr.className='latest';
    const nums=new Set((d.numbers||[]).map(Number)),sup=Number(d.super_number);
-   tr.innerHTML='<td class="issue">'+d.issue+'</td><td class="time">'+cleanTime(d.draw_time)+'</td>';
+   const values=[...nums],bigCount=values.filter(n=>n>=41).length,smallCount=values.filter(n=>n<=40).length,oddCount=values.filter(n=>n%2===1).length,evenCount=values.length-oddCount;
+   const sizeClass=bigCount>=13?' size-big':smallCount>=13?' size-small':'';
+   const oddEven=oddCount>=13?'單':evenCount>=13?'雙':'－';
+   tr.innerHTML='<td class="issue'+sizeClass+'">'+d.issue+'</td><td class="time">'+cleanTime(d.draw_time)+'</td><td class="odd-even">'+oddEven+'</td>';
    for(let n=1;n<=80;n++){const td=document.createElement('td');td.className='ball';if(nums.has(n)){td.classList.add('hit');td.textContent=pad(n);if(n===sup)td.classList.add('super')}tr.appendChild(td)}
    body.appendChild(tr)
   });
