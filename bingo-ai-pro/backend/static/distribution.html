@@ -57,18 +57,11 @@ async function load(){
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,250);
 const island=document.getElementById('dynamicIsland');
-function pinIslandToVisualViewport(){
- const vv=window.visualViewport;
- if(!vv){island.style.left='auto';island.style.right='8px';island.style.top='8px';island.style.transform='none';return}
- const scale=vv.scale||1;
- const x=vv.offsetLeft+vv.width-(8/scale);
- const y=vv.offsetTop+(8/scale);
+function pinClock(){
  island.style.left='auto';
- island.style.right=(document.documentElement.clientWidth-x)+'px';
- island.style.top=y+'px';
- island.style.transform='scale('+(1/scale)+')';
+ island.style.right='8px';
+ island.style.top='max(8px, env(safe-area-inset-top))';
+ island.style.transform='none';
 }
-pinIslandToVisualViewport();
-if(window.visualViewport){visualViewport.addEventListener('resize',pinIslandToVisualViewport);visualViewport.addEventListener('scroll',pinIslandToVisualViewport)}
-window.addEventListener('scroll',pinIslandToVisualViewport,{passive:true});
+pinClock();
 </script></body></html>
