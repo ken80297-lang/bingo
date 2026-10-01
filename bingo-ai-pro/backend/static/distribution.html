@@ -14,7 +14,7 @@ thead th{position:sticky;top:0;background:#eaf1f9;z-index:5;font-size:11px;heigh
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.head-time{left:82px!important}}
-.dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));left:50vw;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:9px;max-width:calc(100vw - 20px);padding:7px 14px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 6px 20px #001b3b55;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top center}.island-brand{font-weight:800}.island-title{font-weight:700;padding-left:9px;border-left:1px solid #ffffff55}.live-clock{font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px;padding-left:9px;border-left:1px solid #ffffff55}@media(max-width:700px){.dynamic-island{font-size:13px;padding:6px 11px;gap:7px}.island-title,.live-clock{padding-left:7px}header{visibility:hidden;height:48px}}
+.dynamic-island{position:fixed;top:8px;left:50%;transform:translateX(-50%);transform-origin:top left;z-index:9999;display:flex;align-items:center;gap:9px;max-width:calc(100vw - 20px);padding:7px 14px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 6px 20px #001b3b55;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top center}.island-brand{font-weight:800}.island-title{font-weight:700;padding-left:9px;border-left:1px solid #ffffff55}.live-clock{font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px;padding-left:9px;border-left:1px solid #ffffff55}@media(max-width:700px){.dynamic-island{font-size:13px;padding:6px 11px;gap:7px}.island-title,.live-clock{padding-left:7px}header{visibility:hidden;height:48px}}
 </style></head>
 <body><div class="dynamic-island" id="dynamicIsland"><span class="island-brand">♛ Bingo AI Pro</span><span class="island-title">每日球號分布表</span><span id="liveClock" class="live-clock">--:--:--</span></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
@@ -56,4 +56,18 @@ async function load(){
 }
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,250);
+const island=document.getElementById('dynamicIsland');
+function pinIslandToVisualViewport(){
+ const vv=window.visualViewport;
+ if(!vv){island.style.left='50%';island.style.top='8px';island.style.transform='translateX(-50%)';return}
+ const scale=vv.scale||1;
+ const x=vv.offsetLeft+(vv.width/2);
+ const y=vv.offsetTop+(8/scale);
+ island.style.left=x+'px';
+ island.style.top=y+'px';
+ island.style.transform='translateX(-50%) scale('+(1/scale)+')';
+}
+pinIslandToVisualViewport();
+if(window.visualViewport){visualViewport.addEventListener('resize',pinIslandToVisualViewport);visualViewport.addEventListener('scroll',pinIslandToVisualViewport)}
+window.addEventListener('scroll',pinIslandToVisualViewport,{passive:true});
 </script></body></html>
