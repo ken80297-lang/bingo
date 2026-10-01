@@ -313,7 +313,7 @@ def _schedule_production_catch_up_jobs() -> None:
     scheduler.add_job(
         catch_up_missing_issues,
         "date",
-        run_date=datetime.utcnow() + timedelta(seconds=8),
+        run_date=datetime.utcnow() + timedelta(seconds=20),
         id="collector_official_catch_up_startup",
         replace_existing=True,
         max_instances=1,
@@ -334,6 +334,13 @@ def _schedule_production_catch_up_jobs() -> None:
         catch_up_scheduler_enabled=True,
         catch_up_startup_job_registered=True,
         catch_up_interval_job_registered=True,
+    )
+    print(
+        "catch_up_scheduler_registered "
+        "startup_job_id=collector_official_catch_up_startup "
+        "interval_job_id=collector_official_catch_up "
+        "startup_delay_seconds=20 interval_minutes=5",
+        flush=True,
     )
 
 
