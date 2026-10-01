@@ -631,6 +631,13 @@ def startup_event() -> None:
     _ensure_scheduler_listener()
 
     try:
+        from database.postgres import wait_for_dashboard_read_pool
+        wait_for_dashboard_read_pool(timeout=8.0)
+        print("dashboard_read_pool_ready startup=true")
+    except Exception as exc:
+        print(f"dashboard_read_pool_warmup_failed error_type={type(exc).__name__}")
+
+    try:
         if STARTUP_DB_INIT_ENABLED:
             _run_startup_db_init()
             try:
