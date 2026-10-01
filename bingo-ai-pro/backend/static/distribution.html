@@ -3,7 +3,7 @@
 <title>Bingo AI Pro｜每日球號分布</title>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f8fc;color:#14243b}
-header{height:64px;background:linear-gradient(110deg,#06294c,#06477b);color:#fff;display:flex;align-items:center;padding:0 18px;gap:18px;position:sticky;top:0;z-index:20;box-shadow:0 2px 10px #001b3b33}
+header{height:64px;background:linear-gradient(110deg,#06294c,#06477b);color:#fff;display:flex;align-items:center;padding:0 18px;gap:18px;position:relative;z-index:20;box-shadow:0 2px 10px #001b3b33}
 .brand{font-size:22px;font-weight:800;white-space:nowrap}.brand b{color:#ffd447}.title{font-size:18px;font-weight:700;border-left:1px solid #ffffff66;padding-left:18px}
 main{padding:12px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:10px;border:1px solid #d9e2ef;border-radius:10px;margin-bottom:10px}
 input,button{height:38px;border:1px solid #cbd7e6;border-radius:7px;background:#fff;padding:0 12px;font-size:14px}button{cursor:pointer;font-weight:700}button.primary{background:#0878e8;color:#fff;border-color:#0878e8}
@@ -14,9 +14,9 @@ thead th{position:sticky;top:0;background:#eaf1f9;z-index:5;font-size:11px;heigh
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.head-time{left:82px!important}}
-.live-clock{display:inline-flex;align-items:center;margin-left:0;background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:16px;padding:5px 11px;font-size:15px;font-weight:800;letter-spacing:.8px;font-variant-numeric:tabular-nums;box-shadow:0 3px 10px #001b3b33;white-space:nowrap}@media(max-width:700px){.live-clock{font-size:13px;padding:4px 9px}}
+.dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));left:50vw;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:9px;max-width:calc(100vw - 20px);padding:7px 14px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 6px 20px #001b3b55;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top center}.island-brand{font-weight:800}.island-title{font-weight:700;padding-left:9px;border-left:1px solid #ffffff55}.live-clock{font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px;padding-left:9px;border-left:1px solid #ffffff55}@media(max-width:700px){.dynamic-island{font-size:13px;padding:6px 11px;gap:7px}.island-title,.live-clock{padding-left:7px}header{visibility:hidden;height:48px}}
 </style></head>
-<body><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div><span id="liveClock" class="live-clock">--:--:--</span></header>
+<body><div class="dynamic-island" id="dynamicIsland"><span class="island-brand">♛ Bingo AI Pro</span><span class="island-title">每日球號分布表</span><span id="liveClock" class="live-clock">--:--:--</span></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
