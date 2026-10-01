@@ -119,6 +119,7 @@ STATIC_DIR = ROOT / "static"
 CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
 LATEST_OFFICIAL_SCHEDULER_ENABLED = scheduler_flag_enabled("LATEST_OFFICIAL_SCHEDULER_ENABLED")
+LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS = max(30, int(os.getenv("LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS", "60")))
 LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
 STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
 OPERATIONS_DB_INIT_ENABLED = _env_bool("OPERATIONS_DB_INIT_ENABLED", False)
@@ -354,7 +355,7 @@ def _schedule_latest_official_job() -> None:
     interval_job = scheduler.add_job(
         collect_official_today,
         "interval",
-        seconds=10,
+        seconds=LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS,
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -365,6 +366,7 @@ def _schedule_latest_official_job() -> None:
         "latest_official_scheduler_registered "
         f"startup_job_id={getattr(startup_job, 'id', 'collector_official_latest_startup')} "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
+        f"interval_seconds={LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
     )
     update_collector_runtime(official_collector_interval_job_registered=True)
