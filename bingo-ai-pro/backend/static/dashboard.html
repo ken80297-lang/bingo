@@ -753,6 +753,8 @@
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
     const CARD_TWO_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
     const CARD_ONE_PREDICTION_STORAGE_KEY = "bingo-ai-card-one-prediction-cache";
+    const CARD_ONE_SNAPSHOT_STORAGE_KEY = "bingo-ai-card-one-snapshot-v1";
+    const CARD_ONE_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
     let cardOneCommittedHtml = "";
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
@@ -1434,6 +1436,50 @@
       }
     }
 
+    function saveCardOneSnapshot(officialDraw, next) {
+      const officialIssue = issueNumber(officialDraw && officialDraw.issue);
+      const targetIssue = issueNumber(next && next.prediction_issue);
+      if (!officialIssue || targetIssue !== officialIssue + 1) return;
+      if (!hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)) return;
+      if (!hasValidNumberSet(next && next.raw_candidates, 20)) return;
+      try {
+        const existing = loadCardOneSnapshot();
+        const existingIssue = issueNumber(existing && existing.officialDraw && existing.officialDraw.issue);
+        if (existingIssue && existingIssue > officialIssue) return;
+        localStorage.setItem(CARD_ONE_SNAPSHOT_STORAGE_KEY, JSON.stringify({
+          saved_at: Date.now(),
+          official_draw: officialDraw,
+          prediction: next
+        }));
+      } catch (error) {
+        console.warn("[dashboard] card one snapshot save failed", error);
+      }
+    }
+
+    function loadCardOneSnapshot() {
+      try {
+        const value = localStorage.getItem(CARD_ONE_SNAPSHOT_STORAGE_KEY);
+        if (!value) return null;
+        const cached = JSON.parse(value);
+        const savedAt = Number(cached && cached.saved_at);
+        const officialDraw = cached && cached.official_draw;
+        const next = cached && cached.prediction;
+        const officialIssue = issueNumber(officialDraw && officialDraw.issue);
+        const targetIssue = issueNumber(next && next.prediction_issue);
+        const valid = Number.isFinite(savedAt)
+          && Date.now() - savedAt <= CARD_ONE_SNAPSHOT_MAX_AGE_MS
+          && officialIssue
+          && targetIssue === officialIssue + 1
+          && hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)
+          && hasValidNumberSet(next && next.raw_candidates, 20);
+        if (!valid) return null;
+        return { officialDraw, next };
+      } catch (error) {
+        console.warn("[dashboard] card one snapshot load failed", error);
+        return null;
+      }
+    }
+
     function normalizeNext(data, officialDraw) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
@@ -1498,8 +1544,22 @@
 
     function render(data, errors) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
-      const officialDraw = normalizeOfficialDraw(data);
-      const next = normalizeNext(data, officialDraw);
+      let officialDraw = normalizeOfficialDraw(data);
+      let next = normalizeNext(data, officialDraw);
+      const officialComplete = hasValidNumberSet(officialDraw.raw_numbers, 20);
+      const predictionComplete = hasValidNumberSet(next.raw_candidates, 20);
+      const officialIssue = issueNumber(officialDraw.issue);
+      const targetIssue = issueNumber(next.prediction_issue);
+      const cardOneAligned = officialComplete && predictionComplete && officialIssue && targetIssue === officialIssue + 1;
+      if (cardOneAligned) {
+        saveCardOneSnapshot(officialDraw, next);
+      } else {
+        const snapshot = loadCardOneSnapshot();
+        if (snapshot) {
+          officialDraw = snapshot.officialDraw;
+          next = snapshot.next;
+        }
+      }
       const cardTwo = normalizeCardTwo(data, officialDraw);
       const cardThree = normalizeCardThree(data);
 
