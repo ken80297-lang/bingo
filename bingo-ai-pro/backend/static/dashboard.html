@@ -1029,7 +1029,7 @@
       }
     }
 
-    function normalizeCardTwo(data) {
+    function normalizeCardTwo(data, officialDraw) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const raw = player && player.card_two ? player.card_two : null;
       const componentMeta = raw && raw._component_metadata
@@ -1041,7 +1041,12 @@
         return raw;
       }
       const cached = loadCardTwoBrowserCache();
-      if (cached) {
+      const officialIssue = issueNumber((officialDraw || {}).issue);
+      const cachedIssue = issueNumber(cached && (cached.issue || cached.target_issue || cached.prediction_issue));
+      const cachedFreshEnough = Boolean(cached) && (!officialIssue || (
+        cachedIssue !== null && cachedIssue >= officialIssue - 1 && cachedIssue <= officialIssue
+      ));
+      if (cachedFreshEnough) {
         cached.component_metadata = componentMeta;
         return cached;
       }
@@ -1402,6 +1407,10 @@
       const numbers = raw && (raw.candidates || raw.main_numbers || raw.recommend_numbers || []);
       if (!raw || !hasValidNumberSet(numbers, 20)) return;
       try {
+        const existing = loadCardOnePredictionBrowserCache();
+        const incomingTarget = issueNumber(raw.prediction_issue || raw.target_issue);
+        const existingTarget = issueNumber(existing && (existing.prediction_issue || existing.target_issue));
+        if (existingTarget && incomingTarget && existingTarget > incomingTarget) return;
         localStorage.setItem(CARD_ONE_PREDICTION_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload: raw }));
       } catch (error) {
         console.warn("[dashboard] card one prediction cache save failed", error);
@@ -1422,14 +1431,28 @@
       }
     }
 
-    function normalizeNext(data) {
+    function normalizeNext(data, officialDraw) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
       const incomingRaw = cardOne.next_prediction || {};
       const incomingCandidates = incomingRaw.candidates || incomingRaw.main_numbers || incomingRaw.recommend_numbers || [];
-      const incomingComplete = hasValidNumberSet(incomingCandidates, 20);
+      const officialIssue = issueNumber((officialDraw || {}).issue);
+      const incomingSourceIssue = issueNumber(incomingRaw.based_on_issue || incomingRaw.source_issue || cardOne.source_issue);
+      const incomingTargetIssue = issueNumber(incomingRaw.prediction_issue || incomingRaw.target_issue || cardOne.target_issue);
+      const incomingAligned = !officialIssue || (
+        incomingSourceIssue === officialIssue
+        && incomingTargetIssue === officialIssue + 1
+      );
+      const incomingComplete = hasValidNumberSet(incomingCandidates, 20) && incomingAligned;
       if (incomingComplete) saveCardOnePredictionBrowserCache(incomingRaw);
-      const raw = incomingComplete ? incomingRaw : (loadCardOnePredictionBrowserCache() || incomingRaw);
+      const cachedRaw = loadCardOnePredictionBrowserCache();
+      const cachedSourceIssue = issueNumber(cachedRaw && (cachedRaw.based_on_issue || cachedRaw.source_issue));
+      const cachedTargetIssue = issueNumber(cachedRaw && (cachedRaw.prediction_issue || cachedRaw.target_issue));
+      const cachedAligned = Boolean(cachedRaw) && (!officialIssue || (
+        cachedSourceIssue === officialIssue
+        && cachedTargetIssue === officialIssue + 1
+      ));
+      const raw = incomingComplete ? incomingRaw : (cachedAligned ? cachedRaw : incomingRaw);
       const componentMeta = incomingRaw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
@@ -1472,9 +1495,9 @@
 
     function render(data, errors) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
-      const next = normalizeNext(data);
       const officialDraw = normalizeOfficialDraw(data);
-      const cardTwo = normalizeCardTwo(data);
+      const next = normalizeNext(data, officialDraw);
+      const cardTwo = normalizeCardTwo(data, officialDraw);
       const cardThree = normalizeCardThree(data);
 
       const errorBox = document.getElementById("errorBox");
