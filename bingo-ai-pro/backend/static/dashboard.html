@@ -751,6 +751,7 @@
   <script>
     const API_TIMEOUT_MS = 10000;
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
+    const CARD_TWO_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
     const CARD_ONE_PREDICTION_STORAGE_KEY = "bingo-ai-card-one-prediction-cache";
     let cardOneCommittedHtml = "";
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1022,7 +1023,9 @@
         if (!raw) return null;
         const cached = JSON.parse(raw);
         if (!cached || !cached.payload || cached.payload.available !== true) return null;
-        return { ...cached.payload, update_hint: "資料更新中" };
+        const savedAt = Number(cached.saved_at);
+        if (!Number.isFinite(savedAt) || Date.now() - savedAt > CARD_TWO_CACHE_MAX_AGE_MS) return null;
+        return { ...cached.payload, _browser_cache_saved_at: savedAt, update_hint: "資料更新中" };
       } catch (error) {
         console.warn("[dashboard] card two browser cache load failed", error);
         return null;
@@ -1043,9 +1046,9 @@
       const cached = loadCardTwoBrowserCache();
       const officialIssue = issueNumber((officialDraw || {}).issue);
       const cachedIssue = issueNumber(cached && (cached.issue || cached.target_issue || cached.prediction_issue));
-      const cachedFreshEnough = Boolean(cached) && (!officialIssue || (
+      const cachedFreshEnough = Boolean(cached) && officialIssue !== null && (
         cachedIssue !== null && cachedIssue >= officialIssue - 1 && cachedIssue <= officialIssue
-      ));
+      );
       if (cachedFreshEnough) {
         cached.component_metadata = componentMeta;
         return cached;
