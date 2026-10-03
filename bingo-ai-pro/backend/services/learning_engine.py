@@ -4,6 +4,7 @@ import logging
 import copy
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
@@ -42,6 +43,9 @@ ENGINE_VERSION = "22.1"  # learning closed-loop CI
 OBSERVATION_VERSION = "22.1.5"
 OBSERVATION_CACHE_TTL_SECONDS = 30
 LEARNING_STATUS_CACHE_TTL_SECONDS = 60
+_LEARNING_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="learning-snapshot")
+_LEARNING_SNAPSHOT_PENDING: set[str] = set()
+_LEARNING_SNAPSHOT_PENDING_LOCK = threading.Lock()
 DEFAULT_MODEL_VERSION = "v7"
 TOP_N_VALUES = (5, 10, 20)
 EXPECTED_LIVE_MODELS = {"laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"}
@@ -1196,22 +1200,44 @@ def backfill_learning_records(limit: int = 50) -> dict:
 
 
 def ensure_live_prediction_snapshot_async(target_issue: str, prediction: dict | None = None) -> dict:
-    """Queue snapshot recovery without delaying the Production prediction path."""
+    """Queue snapshot recovery on one bounded worker without delaying Production."""
     target = str(target_issue or "").strip()
     if not target:
         return {"status": "skipped", "reason": "missing_target_issue"}
 
+    with _LEARNING_SNAPSHOT_PENDING_LOCK:
+        if target in _LEARNING_SNAPSHOT_PENDING:
+            return {"status": "skipped", "reason": "already_queued", "target_issue": target}
+        _LEARNING_SNAPSHOT_PENDING.add(target)
+
     def worker() -> None:
+        started = time.perf_counter()
         try:
             result = ensure_live_prediction_snapshot(target, prediction)
+            logger.info(
+                "live_learning_snapshot_async_complete target_issue=%s duration_ms=%.2f status=%s records=%s",
+                target,
+                _duration_ms(started),
+                result.get("status"),
+                result.get("records"),
+            )
             if result.get("status") != "ok":
                 logger.warning("live learning snapshot async recovery incomplete target_issue=%s result=%s", target, result)
         except Exception:
             logger.exception("live learning snapshot async recovery failed target_issue=%s", target)
+        finally:
+            with _LEARNING_SNAPSHOT_PENDING_LOCK:
+                _LEARNING_SNAPSHOT_PENDING.discard(target)
 
-    thread = threading.Thread(target=worker, name=f"learning-snapshot-{target}", daemon=True)
-    thread.start()
-    return {"status": "queued", "target_issue": target}
+    try:
+        _LEARNING_SNAPSHOT_EXECUTOR.submit(worker)
+    except Exception:
+        with _LEARNING_SNAPSHOT_PENDING_LOCK:
+            _LEARNING_SNAPSHOT_PENDING.discard(target)
+        logger.exception("live learning snapshot async queue failed target_issue=%s", target)
+        return {"status": "error", "reason": "queue_failed", "target_issue": target}
+    return {"status": "queued", "target_issue": target, "worker_limit": 1}
+
 
 def ensure_live_prediction_snapshot(target_issue: str, prediction: dict | None = None) -> dict:
     """Ensure the canonical live-learning snapshot exists for a Production target."""
