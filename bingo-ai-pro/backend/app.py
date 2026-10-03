@@ -377,7 +377,16 @@ def _collect_latest_official_in_window() -> dict:
     latest_sync = result.get("latest_sync") or {}
     draw_time = str(latest_sync.get("draw_time") or "")
     expected_hhmm = draw_key[-5:]
-    if result.get("status") == "ok" and expected_hhmm in draw_time:
+    detected_hhmm = None
+    if draw_time:
+        try:
+            parsed_draw_time = datetime.fromisoformat(draw_time.replace("Z", "+00:00"))
+            if parsed_draw_time.tzinfo is None:
+                parsed_draw_time = parsed_draw_time.replace(tzinfo=timezone.utc)
+            detected_hhmm = parsed_draw_time.astimezone(timezone(timedelta(hours=8))).strftime("%H:%M")
+        except ValueError:
+            detected_hhmm = None
+    if result.get("status") == "ok" and detected_hhmm == expected_hhmm:
         _LATEST_OFFICIAL_COMPLETED_DRAW_KEY = draw_key
         print(
             f"latest_official_poll_completed draw_key={draw_key} offset_seconds={offset} "
@@ -387,7 +396,7 @@ def _collect_latest_official_in_window() -> dict:
     else:
         print(
             f"latest_official_poll_retry draw_key={draw_key} offset_seconds={offset} "
-            f"status={result.get('status')} detected_draw_time={draw_time or None}",
+            f"status={result.get('status')} detected_draw_time={draw_time or None} detected_hhmm={detected_hhmm}",
             flush=True,
         )
     return result
