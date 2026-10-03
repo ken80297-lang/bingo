@@ -61,4 +61,18 @@ async function load(){
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,250);
 const island=document.getElementById('dynamicIsland');
+function keepIslandVisible(){
+ const vv=window.visualViewport;
+ if(!vv){island.style.top='max(8px,env(safe-area-inset-top))';island.style.right='8px';return}
+ const top=Math.max(8,vv.offsetTop+8);
+ const right=Math.max(8,window.innerWidth-(vv.offsetLeft+vv.width)+8);
+ island.style.top=top+'px';
+ island.style.right=right+'px';
+}
+keepIslandVisible();
+if(window.visualViewport){
+ visualViewport.addEventListener('resize',keepIslandVisible,{passive:true});
+ visualViewport.addEventListener('scroll',keepIslandVisible,{passive:true});
+}
+window.addEventListener('orientationchange',()=>setTimeout(keepIslandVisible,100),{passive:true});
 </script></body></html>
