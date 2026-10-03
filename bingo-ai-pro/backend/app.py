@@ -119,7 +119,10 @@ STATIC_DIR = ROOT / "static"
 CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
 LATEST_OFFICIAL_SCHEDULER_ENABLED = scheduler_flag_enabled("LATEST_OFFICIAL_SCHEDULER_ENABLED")
-LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS = max(30, int(os.getenv("LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS", "60")))
+LATEST_OFFICIAL_POLL_OFFSETS_SECONDS = (60, 75, 90, 105, 120, 135, 150)
+LATEST_OFFICIAL_DRAW_START_MINUTE = 7 * 60 + 5
+LATEST_OFFICIAL_DRAW_END_MINUTE = 23 * 60 + 55
+_LATEST_OFFICIAL_COMPLETED_DRAW_KEY: str | None = None
 LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
 STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
 OPERATIONS_DB_INIT_ENABLED = _env_bool("OPERATIONS_DB_INIT_ENABLED", False)
@@ -344,36 +347,72 @@ def _schedule_production_catch_up_jobs() -> None:
     )
 
 
+def _latest_official_poll_window(now: datetime | None = None) -> tuple[str | None, int | None]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8)))
+    total_minutes = current.hour * 60 + current.minute
+    seconds_today = total_minutes * 60 + current.second
+    first_draw_seconds = LATEST_OFFICIAL_DRAW_START_MINUTE * 60
+    last_draw_seconds = LATEST_OFFICIAL_DRAW_END_MINUTE * 60
+    if seconds_today < first_draw_seconds + 60 or seconds_today > last_draw_seconds + 150:
+        return None, None
+    draw_index = min((seconds_today - first_draw_seconds) // 300, (last_draw_seconds - first_draw_seconds) // 300)
+    draw_seconds = first_draw_seconds + draw_index * 300
+    offset = seconds_today - draw_seconds
+    if offset not in LATEST_OFFICIAL_POLL_OFFSETS_SECONDS:
+        return None, None
+    draw_hour, draw_minute = divmod(draw_seconds // 60, 60)
+    draw_key = f"{current.date().isoformat()}T{draw_hour:02d}:{draw_minute:02d}"
+    return draw_key, offset
+
+
+def _collect_latest_official_in_window() -> dict:
+    global _LATEST_OFFICIAL_COMPLETED_DRAW_KEY
+    draw_key, offset = _latest_official_poll_window()
+    if draw_key is None:
+        return {"status": "skipped", "reason": "outside_poll_window"}
+    if _LATEST_OFFICIAL_COMPLETED_DRAW_KEY == draw_key:
+        return {"status": "skipped", "reason": "draw_already_collected", "draw_key": draw_key, "offset_seconds": offset}
+
+    result = collect_official_today()
+    latest_sync = result.get("latest_sync") or {}
+    draw_time = str(latest_sync.get("draw_time") or "")
+    expected_hhmm = draw_key[-5:]
+    if result.get("status") == "ok" and expected_hhmm in draw_time:
+        _LATEST_OFFICIAL_COMPLETED_DRAW_KEY = draw_key
+        print(
+            f"latest_official_poll_completed draw_key={draw_key} offset_seconds={offset} "
+            f"issue={latest_sync.get('official_detected_issue') or latest_sync.get('source_issue')}",
+            flush=True,
+        )
+    else:
+        print(
+            f"latest_official_poll_retry draw_key={draw_key} offset_seconds={offset} "
+            f"status={result.get('status')} detected_draw_time={draw_time or None}",
+            flush=True,
+        )
+    return result
+
+
 def _schedule_latest_official_job() -> None:
     if not LATEST_OFFICIAL_SCHEDULER_ENABLED:
         print("latest_official_scheduler_disabled interval_job_registered=false")
         update_collector_runtime(official_collector_interval_job_registered=False)
         return
-    startup_job = scheduler.add_job(
-        collect_official_today,
-        "date",
-        run_date=datetime.utcnow() + timedelta(seconds=8),
-        id="collector_official_latest_startup",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=90,
-    )
     interval_job = scheduler.add_job(
-        collect_official_today,
-        "interval",
-        seconds=LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS,
+        _collect_latest_official_in_window,
+        "cron",
+        second="0,15,30,45",
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=90,
+        misfire_grace_time=10,
     )
     print(
         "latest_official_scheduler_registered "
-        f"startup_job_id={getattr(startup_job, 'id', 'collector_official_latest_startup')} "
+        "strategy=draw_window offsets_seconds=60,75,90,105,120,135,150 "
+        "draw_window=07:05-23:55 "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
-        f"interval_seconds={LATEST_OFFICIAL_SCHEDULER_INTERVAL_SECONDS} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
     )
     update_collector_runtime(official_collector_interval_job_registered=True)
@@ -680,7 +719,7 @@ def startup_event() -> None:
     if not scheduler.running and _scheduler_has_jobs():
         scheduler.start()
     if LATEST_OFFICIAL_SCHEDULER_ENABLED and scheduler.running:
-        for job_id in ("collector_official_latest_startup", "collector_official_latest"):
+        for job_id in ("collector_official_latest",):
             job = scheduler.get_job(job_id)
             print(
                 "latest_official_scheduler_active "
