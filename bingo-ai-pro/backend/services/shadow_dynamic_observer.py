@@ -3,7 +3,9 @@ from __future__ import annotations
 import atexit
 import logging
 import math
+import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from statistics import pstdev
@@ -34,6 +36,8 @@ STRATEGIES = {
     "long_term_conf_vol": "SHADOW_BC",
 }
 MAX_SHADOW_BONUS = 70.0
+SHADOW_GENERATE_DELAY_SECONDS = float(os.getenv("SHADOW_GENERATE_DELAY_SECONDS", "45"))
+SHADOW_SAMPLE_LIMIT = max(20, min(int(os.getenv("SHADOW_SAMPLE_LIMIT", "100")), 220))
 
 _SHADOW_VERIFY_EXECUTOR: ThreadPoolExecutor | None = None
 _SHADOW_VERIFY_EXECUTOR_LOCK = threading.Lock()
@@ -106,7 +110,7 @@ def _hit_count(candidates: list[int], actual: list[int]) -> int:
     return len(set(candidates) & set(actual))
 
 
-def _query_rule_samples(based_on_issue: str, limit: int = 220) -> list[dict]:
+def _query_rule_samples(based_on_issue: str, limit: int = SHADOW_SAMPLE_LIMIT) -> list[dict]:
     from database.learning_store import get_complete_live_learning_targets, get_learning_records
 
     by_issue: dict[str, dict] = {}
@@ -329,9 +333,37 @@ def generate_for_prediction_async(recommendation: dict, record: dict) -> dict:
     record_snapshot = dict(record or {})
     based_on = _valid_issue(record_snapshot.get("issue") or recommendation_snapshot.get("issue"))
     target = _valid_issue(record_snapshot.get("prediction_issue") or recommendation_snapshot.get("target_issue"))
+    def delayed_generate() -> dict:
+        # Keep the memory-heavy shadow scan away from the prediction/save burst.
+        # Shadow output is observational only, so a short delay does not affect
+        # the Production recommendation shown to the user.
+        if SHADOW_GENERATE_DELAY_SECONDS > 0:
+            time.sleep(SHADOW_GENERATE_DELAY_SECONDS)
+        started = time.perf_counter()
+        result = generate_for_prediction(recommendation_snapshot, record_snapshot)
+        logger.info(
+            "shadow_dynamic_generation_complete based_on_issue=%s target_issue=%s "
+            "duration_ms=%.2f sample_limit=%s delay_seconds=%s status=%s count=%s",
+            based_on,
+            target,
+            (time.perf_counter() - started) * 1000,
+            SHADOW_SAMPLE_LIMIT,
+            SHADOW_GENERATE_DELAY_SECONDS,
+            result.get("status"),
+            result.get("count"),
+        )
+        return result
+
     try:
-        _shadow_generate_executor().submit(generate_for_prediction, recommendation_snapshot, record_snapshot)
-        return {"status": "queued", "based_on_issue": based_on, "prediction_issue": target, "algorithm_version": ALGORITHM_VERSION}
+        _shadow_generate_executor().submit(delayed_generate)
+        return {
+            "status": "queued",
+            "based_on_issue": based_on,
+            "prediction_issue": target,
+            "algorithm_version": ALGORITHM_VERSION,
+            "delay_seconds": SHADOW_GENERATE_DELAY_SECONDS,
+            "sample_limit": SHADOW_SAMPLE_LIMIT,
+        }
     except Exception as exc:
         logger.exception("shadow dynamic async generation submit failed target=%s", target)
         return {"status": "error", "based_on_issue": based_on, "prediction_issue": target, "message": str(exc)}
