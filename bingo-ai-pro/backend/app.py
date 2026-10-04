@@ -119,7 +119,7 @@ STATIC_DIR = ROOT / "static"
 CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
 LATEST_OFFICIAL_SCHEDULER_ENABLED = scheduler_flag_enabled("LATEST_OFFICIAL_SCHEDULER_ENABLED")
-LATEST_OFFICIAL_POLL_OFFSETS_SECONDS = (60, 80, 100, 120, 140, 160)
+LATEST_OFFICIAL_POLL_OFFSETS_SECONDS = (60, 90, 120, 150)
 LATEST_OFFICIAL_DRAW_START_MINUTE = 7 * 60 + 5
 LATEST_OFFICIAL_DRAW_END_MINUTE = 23 * 60 + 55
 _LATEST_OFFICIAL_COMPLETED_DRAW_KEY: str | None = None
@@ -410,7 +410,7 @@ def _schedule_latest_official_job() -> None:
     interval_job = scheduler.add_job(
         _collect_latest_official_in_window,
         "cron",
-        second="0,20,40",
+        second="0,30",
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -419,7 +419,7 @@ def _schedule_latest_official_job() -> None:
     )
     print(
         "latest_official_scheduler_registered "
-        "strategy=draw_window offsets_seconds=60,80,100,120,140,160 "
+        "strategy=draw_window offsets_seconds=60,90,120,150 "
         "draw_window=07:05-23:55 "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
