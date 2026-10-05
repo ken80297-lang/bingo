@@ -737,6 +737,45 @@ def startup_event() -> None:
     except Exception as exc:
         print(f"Collector scheduler setup failed: {exc}")
 
+    startup_ai_issue = os.getenv("AI_LIFECYCLE_STARTUP_ISSUE", "").strip()
+    if startup_ai_issue:
+        def _run_ai_lifecycle_startup_once() -> None:
+            import subprocess
+            import time
+
+            time.sleep(8)
+            env = os.environ.copy()
+            env["AI_LIFECYCLE_ISSUE"] = startup_ai_issue
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "ai_lifecycle_worker_once.py")],
+                    cwd=str(ROOT),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                print(
+                    "AI_LIFECYCLE_STARTUP_ONCE "
+                    f"issue={startup_ai_issue} returncode={completed.returncode} "
+                    f"stdout={completed.stdout[-4000:]!r} stderr={completed.stderr[-2000:]!r}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    "AI_LIFECYCLE_STARTUP_ONCE_ERROR "
+                    f"issue={startup_ai_issue} error_type={type(exc).__name__} error={exc}",
+                    flush=True,
+                )
+
+        threading.Thread(
+            target=_run_ai_lifecycle_startup_once,
+            name="ai-lifecycle-startup-once",
+            daemon=True,
+        ).start()
+        print(f"AI_LIFECYCLE_STARTUP_ONCE_SCHEDULED issue={startup_ai_issue}", flush=True)
+
     _schedule_legacy_refresh_jobs()
 
     if not scheduler.running and _scheduler_has_jobs():
