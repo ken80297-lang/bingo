@@ -21,6 +21,7 @@ def main() -> int:
 
     env = os.environ.copy()
     env["AI_LIFECYCLE_ISSUE"] = issue
+    env["AI_LIFECYCLE_CRON_CORE_ONLY"] = "1"
     completed = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "ai_lifecycle_worker_once.py")],
         cwd=str(ROOT),
