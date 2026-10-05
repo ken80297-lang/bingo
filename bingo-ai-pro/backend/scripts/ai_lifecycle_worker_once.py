@@ -44,6 +44,17 @@ def main() -> int:
         }), flush=True)
         return 3
 
+    next_issue = str(int(issue) + 1)
+    next_draw = get_official_draw_by_issue(next_issue)
+    allow_prediction = next_draw is None
+    if not allow_prediction:
+        print(json.dumps({
+            "guard": "historical_target_already_drawn",
+            "issue": issue,
+            "next_issue": next_issue,
+            "create_next_prediction": False,
+        }, ensure_ascii=False, sort_keys=True), flush=True)
+
     result = process_official_draw_lifecycle(
         draw,
         source="ai_lifecycle_worker",
