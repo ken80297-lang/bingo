@@ -49,7 +49,7 @@ def main() -> int:
         source="ai_lifecycle_worker",
         trigger="isolated_recovery",
         caller="scripts.ai_lifecycle_worker_once",
-        create_next_prediction=True,
+        create_next_prediction=allow_prediction,
         learning_synchronous=True,
     )
 
@@ -62,6 +62,8 @@ def main() -> int:
         "learning_status": (result.get("learning") or {}).get("status"),
         "prediction_status": (result.get("prediction") or {}).get("status"),
         "prediction_target_issue": (result.get("prediction") or {}).get("target_issue"),
+        "create_next_prediction": allow_prediction,
+        "next_draw_already_exists": next_draw is not None,
         "timings_ms": result.get("timings_ms"),
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         "rss_mb_before": rss_before,
