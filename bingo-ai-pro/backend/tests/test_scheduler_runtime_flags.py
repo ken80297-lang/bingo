@@ -132,6 +132,26 @@ def test_enabled_schedulers_register_expected_job_ids(monkeypatch):
     assert any(update.get("collector_scheduler_enabled") is True for update in runtime_updates)
 
 
+def test_latest_official_scheduler_registers_startup_and_interval_jobs(monkeypatch):
+    import app as app_module
+
+    scheduler = FakeScheduler()
+    runtime_updates = []
+    monkeypatch.setattr(app_module, "scheduler", scheduler)
+    monkeypatch.setattr(app_module, "LATEST_OFFICIAL_SCHEDULER_ENABLED", True)
+    monkeypatch.setattr(app_module, "update_collector_runtime", lambda **kwargs: runtime_updates.append(kwargs))
+
+    app_module._schedule_latest_official_job()
+
+    by_id = {call["id"]: call for call in scheduler.calls}
+    assert set(by_id) == {"collector_official_latest_startup", "collector_official_latest"}
+    assert by_id["collector_official_latest_startup"]["trigger"] == "date"
+    assert by_id["collector_official_latest"]["trigger"] == "interval"
+    assert by_id["collector_official_latest"]["minutes"] == 1
+    assert by_id["collector_official_latest"]["func"] is app_module.run_lightweight_official_polling_tick
+    assert runtime_updates[-1] == {"official_collector_interval_job_registered": True}
+
+
 def test_disabled_schedulers_do_not_call_outbound_collectors(monkeypatch):
     import app as app_module
 

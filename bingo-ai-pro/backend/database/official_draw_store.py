@@ -226,13 +226,14 @@ def _valid_draw(draw: dict) -> bool:
     if any(number < 1 or number > 80 for number in numbers):
         return False
     super_number = draw.get("super_number")
-    if super_number is not None:
-        try:
-            super_value = int(super_number)
-        except Exception:
-            return False
-        if super_value < 1 or super_value > 80:
-            return False
+    if super_number is None:
+        return False
+    try:
+        super_value = int(super_number)
+    except Exception:
+        return False
+    if super_value < 1 or super_value > 80 or super_value not in numbers:
+        return False
     return True
 
 
