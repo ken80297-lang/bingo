@@ -1586,6 +1586,7 @@
       const numbers = normalizeNumbers(next.candidates);
       const officialNumbers = normalizeNumbers((officialDraw || {}).numbers);
       const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]).filter((number) => officialNumbers.includes(number));
+      const predictedSuper = normalizeNumbers([(next || {}).super_number]).filter((number) => numbers.includes(number));
       const ruleLibrary = next.rule_library || {};
       const stateNotice = componentStateNotice(next.component_metadata);
       const officialStatus = (officialDraw || {}).verification_status;
@@ -1595,8 +1596,11 @@
         ? numberGrid(officialNumbers, "", officialSuper, "super")
         : `<div class="empty">等待官方驗證</div>`;
       const predictionNumbersHtml = hasPredictionNumbers
-        ? numberGrid(numbers)
+        ? numberGrid(numbers, "", predictedSuper, "super")
         : `<div class="empty">等待 AI 推薦</div>`;
+      const predictedSuperHtml = hasPredictionNumbers && predictedSuper.length
+        ? `<div class="card1-fixed-row"><span>超級獎推薦</span><strong>${String(predictedSuper[0]).padStart(2, "0")}</strong></div>`
+        : "";
       const card = document.getElementById("cardNext");
       const cardHtml = `
         <div class="card1-title">
@@ -1632,6 +1636,7 @@
           <div>
             ${predictionNumbersHtml}
           </div>
+          ${predictedSuperHtml}
         </div>
 
         <div class="card1-section">
