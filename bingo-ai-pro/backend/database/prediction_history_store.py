@@ -36,6 +36,7 @@ _LEARNED_ISSUES_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0}
 LEARNED_ISSUES_TTL_SECONDS = 30
 _PREDICTION_STATS_CACHE: dict[str, Any] = {"payload": {}, "expires_at": {}}
 PREDICTION_STATS_TTL_SECONDS = 60
+_LATEST_PREDICTION_CACHE: dict[str, Any] = {"payload": None}
 MIN_PRODUCTION_ISSUE_LENGTH = 6
 PRODUCTION_PREDICTION_QUERY_NAME = "production_latest_prediction_v2"
 _NON_PRODUCTION_TEXT_MARKERS = ("preview", "simulation", "test", "fixture", "synthetic")
@@ -339,6 +340,18 @@ def _dashboard_read_connection():
     return dashboard_read_connection()
 
 
+def _prediction_lock_connection():
+    from database.postgres import prediction_lock_connection
+
+    return prediction_lock_connection()
+
+
+def _prediction_write_connection():
+    from database.postgres import prediction_write_connection
+
+    return prediction_write_connection()
+
+
 def _sqlite_connection() -> sqlite3.Connection:
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(SQLITE_PATH, check_same_thread=False)
@@ -544,7 +557,7 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
     cloud_error = None
     if _cloud_enabled():
         try:
-            with _cloud_connection() as conn:
+            with _prediction_write_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -561,46 +574,20 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                         values (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb,
                                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb,
                                 %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
-                        on conflict (prediction_issue, strategy) do update set
-                            issue = excluded.issue,
-                            predict_time = excluded.predict_time,
-                            confidence = excluded.confidence,
-                            recommend_numbers = excluded.recommend_numbers,
-                            super_number = excluded.super_number,
-                            three_star = excluded.three_star,
-                            four_star = excluded.four_star,
-                            twins = excluded.twins,
-                            consecutive = excluded.consecutive,
-                            patch_numbers = excluded.patch_numbers,
-                            tails = excluded.tails,
-                            big_small = excluded.big_small,
-                            odd_even = excluded.odd_even,
-                            reasons = excluded.reasons,
-                            model_scores = excluded.model_scores,
-                            winning_model = excluded.winning_model,
-                            prediction_status = case
-                                when prediction_history.prediction_status in ('verified', 'failed')
-                                then prediction_history.prediction_status
-                                else excluded.prediction_status
-                            end,
-                            prediction_count = excluded.prediction_count,
-                            production_generation = excluded.production_generation,
-                            production_valid = excluded.production_valid,
-                            release_version = excluded.release_version,
-                            git_commit_hash = excluded.git_commit_hash,
-                            model_version = excluded.model_version,
-                            feature_version = excluded.feature_version,
-                            fast_path_strategy_version = excluded.fast_path_strategy_version,
-                            fast_path_metadata = excluded.fast_path_metadata,
-                            updated_at = now()
+                        on conflict (prediction_issue, strategy) do nothing
                         returning id
                         """,
                         _prediction_params(item),
                         prepare=False,
                     )
-                    row_id = int(cur.fetchone()[0])
+                    row = cur.fetchone()
+                    if row is None:
+                        conn.commit()
+                        return {"status": "already_exists", "storage": "cloud", "skip_reason": "canonical_prediction_exists"}
+                    row_id = int(row[0])
                 conn.commit()
             _invalidate_prediction_stats_cache()
+            _LATEST_PREDICTION_CACHE["payload"] = deepcopy(item)
             _record_prediction_event(
                 item=item,
                 event_type="prediction_created",
@@ -628,43 +615,15 @@ def save_prediction_history(item: dict, *, caller_context: str | None = None) ->
                     fast_path_strategy_version, fast_path_metadata, updated_at
                 )
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(prediction_issue, strategy) do update set
-                    issue = excluded.issue,
-                    predict_time = excluded.predict_time,
-                    confidence = excluded.confidence,
-                    recommend_numbers = excluded.recommend_numbers,
-                    super_number = excluded.super_number,
-                    three_star = excluded.three_star,
-                    four_star = excluded.four_star,
-                    twins = excluded.twins,
-                    consecutive = excluded.consecutive,
-                    patch_numbers = excluded.patch_numbers,
-                    tails = excluded.tails,
-                    big_small = excluded.big_small,
-                    odd_even = excluded.odd_even,
-                    reasons = excluded.reasons,
-                    model_scores = excluded.model_scores,
-                    winning_model = excluded.winning_model,
-                    prediction_status = case
-                        when prediction_history.prediction_status in ('verified', 'failed')
-                        then prediction_history.prediction_status
-                        else excluded.prediction_status
-                    end,
-                    prediction_count = excluded.prediction_count,
-                    production_generation = excluded.production_generation,
-                    production_valid = excluded.production_valid,
-                    release_version = excluded.release_version,
-                    git_commit_hash = excluded.git_commit_hash,
-                    model_version = excluded.model_version,
-                    feature_version = excluded.feature_version,
-                    fast_path_strategy_version = excluded.fast_path_strategy_version,
-                    fast_path_metadata = excluded.fast_path_metadata,
-                    updated_at = excluded.updated_at
+                on conflict(prediction_issue, strategy) do nothing
                 """,
                 (*_prediction_params(item), _now()),
             )
+            if cursor.rowcount == 0:
+                return {"status": "already_exists", "storage": "sqlite", "skip_reason": "canonical_prediction_exists", "cloud_error": cloud_error}
             row_id = int(cursor.lastrowid or 0)
         _invalidate_prediction_stats_cache()
+        _LATEST_PREDICTION_CACHE["payload"] = deepcopy(item)
         _record_prediction_event(
             item=item,
             event_type="prediction_created",
@@ -3536,6 +3495,16 @@ def _row_to_prediction_summary(row: Any) -> dict:
 
 def get_latest_prediction_history() -> dict | None:
     _ensure_initialized()
+    cached = _LATEST_PREDICTION_CACHE.get("payload")
+    if cached and is_production_prediction(cached):
+        record = deepcopy(cached)
+        record["read_layer"] = {
+            "data_source": "memory",
+            "table_name": "prediction_history",
+            "query_name": PRODUCTION_PREDICTION_QUERY_NAME,
+            "production_filtered": True,
+        }
+        return record
     cloud_sql = """
         select {columns}
         from prediction_history p
@@ -4281,6 +4250,19 @@ def get_prediction_lifecycle_aggregates(
             ),
         ),
     )
+    if diagnostic_component and db_timing:
+        logger.warning(
+            "prediction_aggregate_db_timing component=%s pool_acquire_ms=%s connect_ms=%s execute_ms=%s fetch_ms=%s total_ms=%s result=%s backend_pid=%s connection_hash=%s",
+            diagnostic_component,
+            db_timing.get("pool_acquire_ms"),
+            db_timing.get("connect_ms"),
+            db_timing.get("execute_ms"),
+            db_timing.get("fetch_ms"),
+            db_timing.get("total_ms"),
+            db_timing.get("result"),
+            db_timing.get("backend_pid"),
+            db_timing.get("connection_hash"),
+        )
     row = rows[0] if rows else [0] * 10
     return {
         "total_prediction_count": int(row[0] or 0),
@@ -4405,7 +4387,7 @@ def _prediction_records_for_target_issue(issue: str) -> list[dict]:
     return [_row_to_prediction(row) for row in rows]
 
 
-def get_prediction_for_source_target(source_issue: str, target_issue: str) -> dict | None:
+def get_prediction_for_source_target(source_issue: str, target_issue: str, *, use_prediction_pool: bool = False) -> dict | None:
     source = _valid_issue(source_issue)
     target = _valid_issue(target_issue)
     if not source or not target:
@@ -4437,6 +4419,8 @@ def get_prediction_for_source_target(source_issue: str, target_issue: str) -> di
         order by created_at desc, id desc
         limit 1
         """.format(columns=PREDICTION_SELECT_COLUMNS),
+        cloud_connection_factory=_prediction_lock_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
     )
     if not rows:
         return None

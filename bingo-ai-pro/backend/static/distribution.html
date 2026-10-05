@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=0.25,maximum-scale=5,user-scalable=yes,viewport-fit=cover">
+<title>Bingo AI Pro｜每日球號分布</title>
+<style>
+*{box-sizing:border-box}html,body{width:100%;min-height:100%;overflow:auto}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f8fc;color:#14243b}
+header{height:64px;background:linear-gradient(110deg,#06294c,#06477b);color:#fff;display:flex;align-items:center;padding:0 18px;gap:18px;position:relative;z-index:20;box-shadow:0 2px 10px #001b3b33}
+.brand{font-size:22px;font-weight:800;white-space:nowrap}.brand b{color:#ffd447}.title{font-size:18px;font-weight:700;border-left:1px solid #ffffff66;padding-left:18px}
+main{padding:12px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:10px;border:1px solid #d9e2ef;border-radius:10px;margin-bottom:10px}
+input,button{height:38px;border:1px solid #cbd7e6;border-radius:7px;background:#fff;padding:0 12px;font-size:14px}button{cursor:pointer;font-weight:700}button.primary{background:#0878e8;color:#fff;border-color:#0878e8}
+.info{margin-left:auto;font-size:13px;color:#51657e}.legend{display:flex;gap:12px;align-items:center;font-size:13px}.sw{width:22px;height:18px;border-radius:4px;display:inline-block;vertical-align:middle;margin-right:4px}.hit{background:#18a83a;color:#fff}.super{background:#ef3340!important;color:#fff}.latest-label{color:#098c2e;font-weight:800}
+.table-wrap{background:#fff;border:1px solid #d9e2ef;border-radius:8px;overflow:visible;box-shadow:0 2px 8px #24466a0d;position:relative}#grid{position:relative}
+table{border-collapse:separate;border-spacing:0;min-width:2050px;width:2050px;font-size:11px;table-layout:auto}th,td{border-right:1px solid #d8e0e9;border-bottom:1px solid #d8e0e9;text-align:center;height:24px;min-width:23px;padding:0;white-space:nowrap}
+thead th{background:#eaf1f9;font-size:11px;height:30px}.issue,.time,.odd-even{background:#fff}.issue{left:0;min-width:92px;font-weight:650}.time{left:92px;min-width:54px}.odd-even{left:146px;min-width:42px;font-weight:800}.issue.size-big{background:#1647d8;color:#fff!important}.issue.size-small{background:#e33131;color:#fff!important}
+tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
+td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
+@media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{overflow:visible}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.odd-even{left:130px;min-width:38px}}
+.dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;padding:6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 4px 14px #001b3b44;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
+</style></head>
+<body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
+<main><div class="toolbar">
+<input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
+<div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
+</div>
+<div class="table-wrap"><table id="grid"><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
+<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
+</main>
+<script>
+const pad=n=>String(n).padStart(2,'0'); const localDate=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
+const dateEl=document.getElementById('date'),body=document.getElementById('body'),head=document.getElementById('head');
+for(let n=1;n<=80;n++){const th=document.createElement('th');th.textContent=pad(n);head.appendChild(th)}
+dateEl.value=localDate();
+
+function nextTime(t){if(!t)return '';const m=t.match(/(\d{1,2}):(\d{2})/);if(!m)return '';let x=+m[1]*60 + +m[2]+5;return pad(Math.floor(x/60)%24)+':'+pad(x%60)}
+function cleanTime(v){
+ const s=String(v||'');
+ const iso=s.match(/T(\d{2}):(\d{2})/);
+ if(iso){const mins=(+iso[1]*60 + +iso[2] + 480)%(24*60);return pad(Math.floor(mins/60))+':'+pad(mins%60)}
+ const m=s.match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'
+}
+async function load(){
+ document.getElementById('msg').textContent='載入中…';
+ try{
+  const r=await fetch('/api/distribution?date='+encodeURIComponent(dateEl.value),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
+  const p=await r.json(),rows=p.draws||[]; body.innerHTML='';
+  rows.forEach((d,i)=>{const tr=document.createElement('tr');if(i===0)tr.className='latest';
+   const nums=new Set((d.numbers||[]).map(Number)),sup=Number(d.super_number);
+   const values=[...nums],bigCount=values.filter(n=>n>=41).length,smallCount=values.filter(n=>n<=40).length,oddCount=values.filter(n=>n%2===1).length,evenCount=values.length-oddCount;
+   const sizeClass=bigCount>=13?' size-big':smallCount>=13?' size-small':'';
+   const oddEven=oddCount>=13?'單':evenCount>=13?'雙':'－';
+   tr.innerHTML='<td class="issue'+sizeClass+'">'+d.issue+'</td><td class="time">'+cleanTime(d.draw_time)+'</td><td class="odd-even">'+oddEven+'</td>';
+   for(let n=1;n<=80;n++){const td=document.createElement('td');td.className='ball';if(nums.has(n)){td.classList.add('hit');td.textContent=pad(n);if(n===sup)td.classList.add('super')}tr.appendChild(td)}
+   body.appendChild(tr)
+  });
+  document.getElementById('day').textContent=dateEl.value+(dateEl.value===localDate()?'（今天）':'');
+  document.getElementById('count').textContent=rows.length;
+  document.getElementById('latest').textContent=rows[0]?(rows[0].issue+'（'+cleanTime(rows[0].draw_time)+'）'):'—';
+  const nt=rows[0]?nextTime(cleanTime(rows[0].draw_time)):'';document.getElementById('next').textContent=(dateEl.value===localDate()&&nt)?'下一期：'+nt:'';
+  document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
+ }catch(e){document.getElementById('msg').innerHTML='<span class="error">載入失敗：'+e.message+'</span>'}
+}
+dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
+function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,250);
+const island=document.getElementById('dynamicIsland');
+function keepIslandVisible(){
+ const vv=window.visualViewport;
+ if(!vv){island.style.top='max(8px,env(safe-area-inset-top))';island.style.right='8px';return}
+ const top=Math.max(8,vv.offsetTop+8);
+ const right=Math.max(8,window.innerWidth-(vv.offsetLeft+vv.width)+8);
+ island.style.top=top+'px';
+ island.style.right=right+'px';
+}
+keepIslandVisible();
+if(window.visualViewport){
+ visualViewport.addEventListener('resize',keepIslandVisible,{passive:true});
+ visualViewport.addEventListener('scroll',keepIslandVisible,{passive:true});
+}
+window.addEventListener('orientationchange',()=>setTimeout(keepIslandVisible,100),{passive:true});
+</script></body></html>

@@ -440,6 +440,7 @@ def reverify_recent_draws(limit: int = 200) -> dict:
 def collect_official_today() -> dict:
     start = time.perf_counter()
     logger.info("collector_job_started")
+    print("latest_official_collector_started", flush=True)
     with official_collection_lock("official_collector") as (locked, lock_payload):
         if not locked:
             result = {
@@ -451,10 +452,30 @@ def collect_official_today() -> dict:
             }
             _log_collector_finished(result)
             return result
-        schema_init = _ensure_official_collection_tables()
+        # Schema initialization belongs to startup/migrations. Re-running all
+        # table initializers on every 30-second latest poll can consume the
+        # collector deadline before latest-sync even starts.
         result = _collect_official_today_locked(start)
-        result["schema_init"] = schema_init
         _log_collector_finished(result)
+        timing = ((result.get("latest_sync") or {}).get("timing") or {})
+        print(
+            "latest_official_collector_finished "
+            f"status={result.get('status')} count={result.get('count')} "
+            f"exit_reason={result.get('exit_reason')} "
+            f"latest_db_ms={timing.get('latest_db_ms')} "
+            f"source_fetch_ms={timing.get('source_fetch_ms')} "
+            f"existing_lookup_ms={timing.get('existing_lookup_ms')} "
+            f"analysis_lookup_ms={timing.get('analysis_lookup_ms')} "
+            f"prediction_lookup_ms={timing.get('prediction_lookup_ms')} "
+            f"official_save_ms={timing.get('official_save_ms')} "
+            f"cache_invalidation_ms={timing.get('cache_invalidation_ms')} "
+            f"official_confirm_ms={timing.get('official_confirm_ms')} "
+            f"verification_ms={timing.get('verification_ms')} "
+            f"analysis_ms={timing.get('analysis_ms')} "
+            f"prediction_ms={timing.get('prediction_ms')} "
+            f"sync_total_ms={timing.get('total_ms')}",
+            flush=True,
+        )
         return result
 
 
@@ -499,7 +520,7 @@ def _collect_official_today_locked(start: float) -> dict:
         if exit_reason == "deadline_exceeded":
             mark_deadline_exceeded("official_collector")
         result = {
-            "status": "ok" if latest_result.get("database_saved") else "warning",
+            "status": "ok" if latest_result.get("status") in {"ok", "partial"} and exit_reason != "deadline_exceeded" else "warning",
             "count": 1 if latest_issue else 0,
             "saved": latest_result.get("saved"),
             "lifecycle": latest_result.get("lifecycle"),

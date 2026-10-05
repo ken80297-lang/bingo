@@ -163,11 +163,44 @@ def _production_where(alias: str = "") -> str:
     return f"{prefix}issue is not null and {prefix}issue not like '99%' and upper({prefix}issue) not like 'TEST%'"
 
 
+def _issue_number(issue: Any) -> int | None:
+    try:
+        text = str(issue or "").strip()
+        if not text.isdigit():
+            return None
+        return int(text)
+    except Exception:
+        return None
+
+
+def _is_production_draw(draw: dict) -> bool:
+    issue = str(draw.get("issue") or "").strip().upper()
+    source = str(draw.get("source") or "").strip().lower()
+    if not issue or issue.startswith("99") or issue.startswith("TEST"):
+        return False
+    if "test" in source or "phase" in source:
+        return False
+    return _issue_number(issue) is not None
+
+
+def _prior_production_draws(draw: dict, recent: list[dict]) -> list[dict]:
+    current_issue = _issue_number(draw.get("issue"))
+    prior: list[dict] = []
+    for item in recent or []:
+        if not isinstance(item, dict) or not _is_production_draw(item):
+            continue
+        item_issue = _issue_number(item.get("issue"))
+        if current_issue is not None and item_issue is not None and item_issue >= current_issue:
+            continue
+        prior.append(item)
+    return prior
+
+
 def _recent_draws(limit: int = 120) -> list[dict]:
     try:
-        from database.collector_store import get_draw_history
+        from database.official_draw_store import get_official_draw_history
 
-        return get_draw_history(limit)
+        return get_official_draw_history(limit)
     except Exception:
         logger.exception("failed to load recent draw history for analysis")
         return []
@@ -175,7 +208,7 @@ def _recent_draws(limit: int = 120) -> list[dict]:
 
 def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) -> dict:
     numbers = sorted(_as_int_list(draw.get("numbers")))
-    recent = recent_draws if recent_draws is not None else _recent_draws()
+    recent = _prior_production_draws(draw, recent_draws if recent_draws is not None else _recent_draws())
     previous_numbers = _as_int_list(recent[0].get("numbers")) if recent else []
 
     all_numbers = []
@@ -222,6 +255,24 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
     }
     super_trajectory = _super_number_trajectory(draw, recent)
     cluster_aftershock = _cluster_aftershock(numbers, recent)
+    long_dragon = _long_dragon_tracking(draw, recent)
+    multi_window_hot_cold = _multi_window_hot_cold(draw, recent)
+    omission_strength = _omission_strength(draw, recent)
+    neighbor_extension = _neighbor_extension(draw, recent)
+    parity_size_trend = _parity_size_trend(draw, recent)
+    zone_cluster_strength = _zone_cluster_strength(draw, recent)
+    consecutive_extension = _consecutive_extension(draw, recent)
+    tail_trend_strength = _tail_trend_strength(draw, recent)
+    composite_market_regime = _composite_market_regime({
+        "long_dragon": long_dragon,
+        "multi_window_hot_cold": multi_window_hot_cold,
+        "omission_strength": omission_strength,
+        "neighbor_extension": neighbor_extension,
+        "parity_size_trend": parity_size_trend,
+        "zone_cluster_strength": zone_cluster_strength,
+        "consecutive_extension": consecutive_extension,
+        "tail_trend_strength": tail_trend_strength,
+    })
     ai_score = {
         "score": min(
             100,
@@ -232,6 +283,15 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
         ),
         "super_number_trajectory_recovery": super_trajectory,
         "cluster_aftershock_recovery": cluster_aftershock,
+        "long_dragon": long_dragon,
+        "multi_window_hot_cold": multi_window_hot_cold,
+        "omission_strength": omission_strength,
+        "neighbor_extension": neighbor_extension,
+        "parity_size_trend": parity_size_trend,
+        "zone_cluster_strength": zone_cluster_strength,
+        "consecutive_extension": consecutive_extension,
+        "tail_trend_strength": tail_trend_strength,
+        "composite_market_regime": composite_market_regime,
         "learning_features": {
             "trajectory_direction": super_trajectory.get("trend"),
             "trajectory_distance": super_trajectory.get("distance"),
@@ -239,6 +299,23 @@ def build_analysis_record(draw: dict, recent_draws: list[dict] | None = None) ->
             "trajectory_zone_jump": super_trajectory.get("trend") == "zone_jump",
             "cluster_recovery_age": cluster_aftershock.get("cluster_recovery_age"),
             "cluster_recovery_candidates": cluster_aftershock.get("candidate_numbers"),
+            "long_dragon_candidates": long_dragon.get("candidate_numbers"),
+            "long_dragon_max_streak": long_dragon.get("max_streak"),
+            "long_dragon_active_count": long_dragon.get("active_count"),
+            "multi_window_hot_candidates": multi_window_hot_cold.get("candidate_numbers"),
+            "multi_window_rising_numbers": multi_window_hot_cold.get("rising_numbers"),
+            "multi_window_cooling_numbers": multi_window_hot_cold.get("cooling_numbers"),
+            "omission_candidates": omission_strength.get("candidate_numbers"),
+            "omission_overdue_numbers": omission_strength.get("overdue_numbers"),
+            "omission_recovery_numbers": omission_strength.get("recovery_numbers"),
+            "neighbor_extension_candidates": neighbor_extension.get("candidate_numbers"),
+            "parity_size_trend_state": parity_size_trend.get("trend_state"),
+            "zone_cluster_candidates": zone_cluster_strength.get("candidate_numbers"),
+            "consecutive_extension_candidates": consecutive_extension.get("candidate_numbers"),
+            "tail_trend_candidates": tail_trend_strength.get("candidate_numbers"),
+            "composite_candidates": composite_market_regime.get("candidate_numbers"),
+            "composite_consensus": composite_market_regime.get("consensus"),
+            "composite_conflicts": composite_market_regime.get("conflicts"),
             "pending_verification_flag": False,
             "source_reliability": "official" if draw.get("source") == "taiwan_lottery" else "collector",
             "data_gap_detected": False,
@@ -409,6 +486,300 @@ def _cluster_aftershock(numbers: list[int], recent: list[dict]) -> dict:
         "confidence": min(100, len(candidate_numbers) * 8 + (20 if recent_cluster_age else 0)),
         "triggered_rules": ["cluster", "recovery"] if candidate_numbers else [],
         "warning_level": "high" if len(candidate_numbers) >= 6 else "medium" if candidate_numbers else "low",
+    }
+
+
+def _composite_market_regime(signals: dict[str, dict]) -> dict:
+    votes: Counter = Counter()
+    sources: dict[int, list[str]] = {}
+    confidence_total = 0.0
+    active = 0
+    for key, data in signals.items():
+        if not isinstance(data, dict):
+            continue
+        candidates = _as_int_list(data.get("candidate_numbers"))
+        if not candidates:
+            continue
+        active += 1
+        confidence = float(data.get("confidence") or 0)
+        confidence_total += confidence
+        weight = max(0.25, confidence / 100.0)
+        for rank, number in enumerate(candidates[:20]):
+            rank_weight = max(0.1, 1.0 - rank * 0.04)
+            votes[number] += round(weight * rank_weight, 4)
+            sources.setdefault(number, []).append(key)
+    ranked = sorted(votes, key=lambda number: (-votes[number], -len(set(sources[number])), number))
+    consensus = [
+        {"number": number, "score": round(votes[number], 4), "sources": sorted(set(sources[number])), "source_count": len(set(sources[number]))}
+        for number in ranked[:20]
+    ]
+    conflicts = [item for item in consensus if item["source_count"] == 1][:10]
+    regime = "strong_consensus" if consensus and consensus[0]["source_count"] >= 4 else "mixed" if active >= 3 else "insufficient"
+    return {
+        "name": "綜合盤勢型態",
+        "key": "composite_market_regime",
+        "regime": regime,
+        "candidate_numbers": [item["number"] for item in consensus],
+        "consensus": consensus,
+        "conflicts": conflicts,
+        "active_signal_count": active,
+        "average_signal_confidence": round(confidence_total / active, 2) if active else 0,
+        "confidence": min(100, round((consensus[0]["source_count"] / max(1, active)) * 100, 2)) if consensus else 0,
+        "shadow_only": True,
+    }
+
+
+def _circular_number(number: int) -> int:
+    return ((number - 1) % 80) + 1
+
+
+def _neighbor_extension(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    scores: Counter = Counter()
+    evidence: dict[int, list[dict]] = {}
+    for age, item in enumerate(prior, start=1):
+        weight = max(1, lookback - age + 1)
+        for source in set(_as_int_list(item.get("numbers"))):
+            for offset in (-2, -1, 1, 2):
+                candidate = _circular_number(source + offset)
+                scores[candidate] += weight * (2 if abs(offset) == 1 else 1)
+                evidence.setdefault(candidate, []).append({"source": source, "offset": offset, "age": age})
+    ranked = sorted(scores, key=lambda number: (-scores[number], number))
+    return {
+        "name": "鄰號延伸",
+        "key": "neighbor_extension",
+        "candidate_numbers": ranked[:20],
+        "scores": {str(number): scores[number] for number in ranked[:20]},
+        "evidence": {str(number): evidence[number][:10] for number in ranked[:20]},
+        "circular": True,
+        "offsets": [-2, -1, 1, 2],
+        "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)),
+        "shadow_only": True,
+    }
+
+
+def _parity_size_trend(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    samples = []
+    for item in prior:
+        nums = _as_int_list(item.get("numbers"))
+        if not nums:
+            continue
+        big = sum(1 for number in nums if number >= 41)
+        odd = sum(1 for number in nums if number % 2)
+        samples.append({"big": big, "small": len(nums) - big, "odd": odd, "even": len(nums) - odd})
+    big_delta = sum(s["big"] - s["small"] for s in samples)
+    odd_delta = sum(s["odd"] - s["even"] for s in samples)
+    trend_state = {
+        "size": "big" if big_delta > 0 else "small" if big_delta < 0 else "balanced",
+        "parity": "odd" if odd_delta > 0 else "even" if odd_delta < 0 else "balanced",
+    }
+    candidates = [
+        number for number in range(1, 81)
+        if (trend_state["size"] == "balanced" or (number >= 41) == (trend_state["size"] == "big"))
+        and (trend_state["parity"] == "balanced" or (number % 2 == 1) == (trend_state["parity"] == "odd"))
+    ]
+    return {"name": "大小單雙走勢", "key": "parity_size_trend", "trend_state": trend_state, "big_delta": big_delta, "odd_delta": odd_delta,
+            "candidate_numbers": candidates[:20], "available_draws": len(samples), "confidence": min(100, len(samples) * 5), "shadow_only": True}
+
+
+def _zone_cluster_strength(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    counts = {start: 0 for start in range(1, 80, 10)}
+    for item in prior:
+        for number in _as_int_list(item.get("numbers")):
+            counts[((number - 1) // 10) * 10 + 1] += 1
+    ranked = sorted(counts, key=lambda start: (-counts[start], start))
+    hot_starts = ranked[:2]
+    candidates = [number for start in hot_starts for number in range(start, min(start + 10, 81))]
+    return {"name": "分區群聚強度", "key": "zone_cluster_strength", "zone_counts": {f"{s:02d}-{s+9:02d}": counts[s] for s in counts},
+            "hot_zones": [f"{s:02d}-{s+9:02d}" for s in hot_starts], "candidate_numbers": candidates[:20],
+            "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)), "shadow_only": True}
+
+
+def _consecutive_extension(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    scores: Counter = Counter()
+    groups: list[dict] = []
+    for age, item in enumerate(prior, start=1):
+        nums = sorted(set(_as_int_list(item.get("numbers"))))
+        for run in _runs(nums):
+            left = _circular_number(run[0] - 1)
+            right = _circular_number(run[-1] + 1)
+            weight = max(1, lookback - age + 1) * len(run)
+            scores[left] += weight
+            scores[right] += weight
+            groups.append({"run": run, "left": left, "right": right, "age": age})
+    ranked = sorted(scores, key=lambda number: (-scores[number], number))
+    return {"name": "連號延續", "key": "consecutive_extension", "candidate_numbers": ranked[:20],
+            "groups": groups[:30], "scores": {str(n): scores[n] for n in ranked[:20]}, "circular": True,
+            "confidence": min(100, len(groups) * 5), "shadow_only": True}
+
+
+def _tail_trend_strength(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    counts = Counter()
+    for item in prior:
+        counts.update(number % 10 for number in _as_int_list(item.get("numbers")))
+    ranked_tails = sorted(range(10), key=lambda tail: (-counts[tail], tail))
+    hot_tails = ranked_tails[:3]
+    cold_tails = sorted(range(10), key=lambda tail: (counts[tail], tail))[:3]
+    candidates = [number for number in range(1, 81) if number % 10 in hot_tails]
+    return {"name": "尾數走勢強化", "key": "tail_trend_strength", "hot_tails": hot_tails, "cold_tails": cold_tails,
+            "tail_counts": {str(tail): counts[tail] for tail in range(10)}, "candidate_numbers": candidates[:20],
+            "confidence": min(100, round(len(prior) / max(1, lookback) * 100, 2)), "shadow_only": True}
+
+
+def _omission_strength(draw: dict, recent: list[dict], *, lookback: int = 100) -> dict:
+    """Measure current, average, and maximum omission gaps without leaking the current draw."""
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue][:lookback]
+    appearances: dict[int, list[int]] = {number: [] for number in range(1, 81)}
+    for index, item in enumerate(prior):
+        for number in set(_as_int_list(item.get("numbers"))):
+            appearances[number].append(index)
+
+    metrics: list[dict] = []
+    for number in range(1, 81):
+        positions = appearances[number]
+        current_omission = positions[0] if positions else len(prior)
+        completed_gaps = [positions[i + 1] - positions[i] - 1 for i in range(len(positions) - 1)]
+        if positions:
+            completed_gaps.append(max(0, len(prior) - positions[-1] - 1))
+        else:
+            completed_gaps.append(len(prior))
+        average_omission = round(sum(completed_gaps) / len(completed_gaps), 2) if completed_gaps else 0.0
+        max_omission = max(completed_gaps + [current_omission], default=current_omission)
+        ratio = round(current_omission / max(1.0, average_omission), 3)
+        metrics.append({
+            "number": number,
+            "current_omission": current_omission,
+            "average_omission": average_omission,
+            "max_omission": max_omission,
+            "omission_ratio": ratio,
+            "appearance_count": len(positions),
+        })
+
+    ranked = sorted(metrics, key=lambda item: (-item["omission_ratio"], -item["current_omission"], item["number"]))
+    overdue = [item for item in ranked if item["current_omission"] > item["average_omission"] and item["current_omission"] > 0][:20]
+    current_numbers = set(_as_int_list(draw.get("numbers")))
+    recovery = [item for item in metrics if item["number"] in current_numbers and item["current_omission"] > 0]
+    recovery.sort(key=lambda item: (-item["omission_ratio"], -item["current_omission"], item["number"]))
+    candidate_numbers = [item["number"] for item in overdue]
+    confidence = min(100, round(len(prior) / max(1, lookback) * 100, 2))
+    return {
+        "name": "遺漏強度",
+        "key": "omission_strength",
+        "lookback": lookback,
+        "available_draws": len(prior),
+        "candidate_numbers": candidate_numbers,
+        "overdue_numbers": overdue,
+        "recovery_numbers": recovery[:20],
+        "metrics": metrics,
+        "confidence": confidence,
+        "reference_issues": [str(item.get("issue")) for item in prior if item.get("issue")],
+        "shadow_only": True,
+    }
+
+
+def _multi_window_hot_cold(draw: dict, recent: list[dict], *, windows: tuple[int, ...] = (10, 20, 50, 100)) -> dict:
+    """Build comparable hot/cold rankings across short, medium, and long windows."""
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue]
+    window_data: dict[str, dict] = {}
+    for window in windows:
+        sample = prior[:window]
+        counts = Counter()
+        for item in sample:
+            counts.update(set(_as_int_list(item.get("numbers"))))
+        ranked_hot = sorted(range(1, 81), key=lambda number: (-counts[number], number))
+        ranked_cold = sorted(range(1, 81), key=lambda number: (counts[number], number))
+        window_data[str(window)] = {
+            "requested_draws": window,
+            "available_draws": len(sample),
+            "hot_numbers": ranked_hot[:10],
+            "cold_numbers": ranked_cold[:10],
+            "counts": {str(number): counts[number] for number in range(1, 81)},
+        }
+
+    available_windows = [window for window in windows if window_data[str(window)]["available_draws"]]
+    short_window = available_windows[0] if available_windows else None
+    long_window = available_windows[-1] if available_windows else None
+    rising: list[dict] = []
+    cooling: list[dict] = []
+    if short_window and long_window and short_window != long_window:
+        short = window_data[str(short_window)]
+        long = window_data[str(long_window)]
+        short_draws = max(1, short["available_draws"])
+        long_draws = max(1, long["available_draws"])
+        for number in range(1, 81):
+            short_rate = short["counts"][str(number)] / short_draws
+            long_rate = long["counts"][str(number)] / long_draws
+            delta = round(short_rate - long_rate, 4)
+            item = {"number": number, "short_rate": round(short_rate, 4), "long_rate": round(long_rate, 4), "delta": delta}
+            if delta > 0:
+                rising.append(item)
+            elif delta < 0:
+                cooling.append(item)
+        rising.sort(key=lambda item: (-item["delta"], item["number"]))
+        cooling.sort(key=lambda item: (item["delta"], item["number"]))
+
+    candidate_numbers = [item["number"] for item in rising[:20]]
+    coverage = max((window_data[str(window)]["available_draws"] for window in windows), default=0)
+    confidence = min(100, round(coverage / max(windows) * 100, 2))
+    return {
+        "name": "多週期冷熱門",
+        "key": "multi_window_hot_cold",
+        "windows": window_data,
+        "candidate_numbers": candidate_numbers,
+        "rising_numbers": rising[:20],
+        "cooling_numbers": cooling[:20],
+        "short_window": short_window,
+        "long_window": long_window,
+        "confidence": confidence,
+        "reference_issues": [str(item.get("issue")) for item in prior[: max(windows)] if item.get("issue")],
+        "shadow_only": True,
+    }
+
+
+def _long_dragon_tracking(draw: dict, recent: list[dict], *, lookback: int = 20) -> dict:
+    """Measure consecutive appearance streaks without changing recommendation weights."""
+    current_numbers = set(_as_int_list(draw.get("numbers")))
+    current_issue = str(draw.get("issue") or "")
+    prior = [item for item in recent if not current_issue or str(item.get("issue") or "") != current_issue]
+    history = [set(_as_int_list(item.get("numbers"))) for item in prior[:lookback]]
+    streaks: list[dict] = []
+    for number in sorted(current_numbers):
+        streak = 1
+        for previous_numbers in history:
+            if number not in previous_numbers:
+                break
+            streak += 1
+        if streak >= 2:
+            streaks.append({"number": number, "streak": streak})
+
+    streaks.sort(key=lambda item: (-item["streak"], item["number"]))
+    candidates = [item["number"] for item in streaks]
+    max_streak = max((item["streak"] for item in streaks), default=0)
+    strength = min(100, sum(item["streak"] - 1 for item in streaks) * 8 + max(0, max_streak - 2) * 6)
+    return {
+        "name": "長龍追號",
+        "key": "long_dragon",
+        "lookback": min(lookback, len(history)),
+        "streaks": streaks,
+        "candidate_numbers": candidates[:20],
+        "max_streak": max_streak,
+        "active_count": len(streaks),
+        "confidence": round(strength, 2),
+        "reference_issues": [str(item.get("issue")) for item in prior[:lookback] if item.get("issue")],
+        "triggered_rules": ["consecutive_appearance"] if streaks else [],
+        "warning_level": "high" if max_streak >= 4 else "medium" if max_streak >= 3 else "low",
+        "shadow_only": True,
     }
 
 
@@ -634,7 +1005,7 @@ def get_cached_analysis_history(limit: int = 100, *, based_on_issue: str | None 
     if cache_complete and cache_current:
         return cached, {"source": "memory", "records": len(cached), "based_on_issue": expected_issue or None}
 
-    records = get_analysis_history(limit)
+    records = get_analysis_history(limit, use_prediction_pool=True)
     with _ANALYSIS_HISTORY_CACHE_LOCK:
         _ANALYSIS_HISTORY_CACHE[:] = [dict(item) for item in records[:_ANALYSIS_HISTORY_CACHE_MAX]]
     return records, {
@@ -645,18 +1016,21 @@ def get_cached_analysis_history(limit: int = 100, *, based_on_issue: str | None 
     }
 
 
-def save_analysis_history(draw: dict) -> dict:
+def save_analysis_history(draw: dict, recent_draws: list[dict] | None = None) -> dict:
     if not draw.get("issue"):
         return {"status": "error", "storage": None, "error": "missing issue"}
 
-    record = build_analysis_record(draw)
+    if recent_draws is None:
+        record = build_analysis_record(draw)
+    else:
+        record = build_analysis_record(draw, recent_draws=recent_draws)
     if not record.get("numbers"):
         return {"status": "error", "storage": None, "issue": record.get("issue"), "error": "missing numbers"}
 
     try:
         _save_cloud(record)
         _update_analysis_history_cache(record)
-        return {"status": "ok", "storage": "cloud", "issue": record.get("issue")}
+        return {"status": "ok", "storage": "cloud", "issue": record.get("issue"), "record": record}
     except Exception as exc:
         logger.exception("cloud analysis_history upsert failed")
         cloud_error = str(exc)
@@ -669,6 +1043,7 @@ def save_analysis_history(draw: dict) -> dict:
             "status": "ok",
             "storage": "sqlite",
             "issue": record.get("issue"),
+            "record": record,
             "cloud_error": cloud_error,
         }
     except Exception as exc:
@@ -798,9 +1173,20 @@ def _query_sqlite(sql: str, params: tuple = ()) -> list[Any]:
         return conn.execute(sql, params).fetchall()
 
 
-def _query_with_fallback(sql: str, params: tuple = (), sqlite_sql: str | None = None) -> list[Any]:
+def _query_with_fallback(
+    sql: str,
+    params: tuple = (),
+    sqlite_sql: str | None = None,
+    *,
+    cloud_connection_factory=None,
+    use_shared_connection: bool = True,
+) -> list[Any]:
     try:
-        return _query_cloud(sql, params)
+        connection_factory = cloud_connection_factory or _cloud_connection
+        with connection_factory() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchall()
     except Exception:
         logger.exception("cloud analysis_history query failed")
 
@@ -925,6 +1311,12 @@ def _dashboard_read_connection():
     return dashboard_read_connection()
 
 
+def _prediction_read_connection():
+    from database.postgres import prediction_lock_connection
+
+    return prediction_lock_connection()
+
+
 def get_analysis_history_by_issue_with_timing(
     issue: str,
     *,
@@ -1017,7 +1409,7 @@ def get_analysis_history_with_timing(
     timing["query_tag"] = "analysis_history.recent"
     return records, timing
 
-def get_analysis_history(limit: int = 100) -> list[dict]:
+def get_analysis_history(limit: int = 100, *, use_prediction_pool: bool = False) -> list[dict]:
     rows = _query_with_fallback(
         """
         select issue, draw_time, numbers, super_number, big_small, odd_even,
@@ -1050,6 +1442,8 @@ def get_analysis_history(limit: int = 100) -> list[dict]:
         order by issue desc
         limit ?
         """,
+        cloud_connection_factory=_prediction_read_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
     )
     return [_row_to_record(row) for row in rows]
 

@@ -1,4 +1,14 @@
+import pytest
+
 from services import learning_engine
+
+
+@pytest.fixture(autouse=True)
+def _disable_distributed_prediction_lock(monkeypatch):
+    from services import prediction_service
+
+    monkeypatch.setattr(prediction_service, "_distributed_prediction_lock", lambda *args, **kwargs: ("unit-test-lock", None))
+    monkeypatch.setattr(prediction_service, "_release_distributed_prediction_lock", lambda *args, **kwargs: None)
 
 
 def _model_scores():
@@ -204,7 +214,12 @@ def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
         "build_prediction_history_record",
-        lambda rec: {"recommend_numbers": list(range(1, 21)), "model_scores": {}},
+        lambda rec: {
+            "issue": rec.get("issue"),
+            "prediction_issue": rec.get("target_issue"),
+            "recommend_numbers": list(range(1, 21)),
+            "model_scores": {},
+        },
     )
     monkeypatch.setattr(
         prediction_service,
@@ -215,8 +230,8 @@ def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
     calls = []
     monkeypatch.setattr(
         learning_engine,
-        "save_live_prediction_snapshot",
-        lambda rec: calls.append(dict(rec)) or {"status": "ok", "records": 18},
+        "ensure_live_prediction_snapshot_async",
+        lambda target, rec: calls.append((target, dict(rec))) or {"status": "queued", "records": 0},
     )
 
     result = prediction_service.create_for_official_draw(
@@ -230,8 +245,9 @@ def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
     assert result["learning_snapshot_complete"] is True
     assert result["learning_snapshot_warning"] is None
     assert len(calls) == 1
-    assert calls[0]["issue"] == "115000001"
-    assert calls[0]["target_issue"] == "115000002"
+    assert calls[0][0] == "115000002"
+    assert calls[0][1]["issue"] == "115000001"
+    assert calls[0][1]["prediction_issue"] == "115000002"
 
 
 def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
@@ -262,7 +278,12 @@ def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
     monkeypatch.setattr(
         prediction_service,
         "build_prediction_history_record",
-        lambda rec: {"recommend_numbers": list(range(1, 21)), "model_scores": {}},
+        lambda rec: {
+            "issue": rec.get("issue"),
+            "prediction_issue": rec.get("target_issue"),
+            "recommend_numbers": list(range(1, 21)),
+            "model_scores": {},
+        },
     )
     monkeypatch.setattr(
         prediction_service,
@@ -271,8 +292,8 @@ def test_prediction_service_exposes_incomplete_learning_snapshot(monkeypatch):
     )
     monkeypatch.setattr(
         learning_engine,
-        "save_live_prediction_snapshot",
-        lambda rec: {"status": "ok", "records": 3},
+        "ensure_live_prediction_snapshot_async",
+        lambda target, rec: {"status": "error", "records": 0, "message": "queue failed"},
     )
 
     result = prediction_service.create_for_official_draw(

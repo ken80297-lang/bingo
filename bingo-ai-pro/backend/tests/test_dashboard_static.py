@@ -70,6 +70,7 @@ function payload(targetIssue) {{
     playerSummary: {{
       status: 'ok',
       latest_official_draw: {{ issue: String(targetIssue - 1), draw_time: '2026-07-30T12:00:00+08:00', numbers: officialNumbers, super_number: 5, verification_status: 'verified' }},
+      sync: {{ detected_latest_issue: String(targetIssue - 1), official_latest_issue: String(targetIssue - 1), is_synced: true }},
       next_prediction: {{
         prediction_issue: String(targetIssue), based_on_issue: String(targetIssue - 1), based_on_draw_time: '2026-07-30T12:00:00+08:00',
         candidates: predictionNumbers, high_probability_numbers: predictionNumbers.slice(0, 5), super_candidates: predictionNumbers.slice(0, 3),
@@ -96,6 +97,16 @@ if (mode === 'source_issue_mismatch') next.playerSummary.next_prediction.based_o
 if (mode === 'missing_official_time') delete next.playerSummary.latest_official_draw.draw_time;
 if (mode === 'missing_official_numbers') next.playerSummary.latest_official_draw.numbers = [1, 2, 3];
 if (mode === 'missing_prediction_numbers') next.playerSummary.next_prediction.candidates = [21, 22, 23];
+if (mode === 'latest_issue_not_synced') next.playerSummary.sync.is_synced = false;
+if (mode === 'latest_issue_unverified') next.playerSummary.latest_official_draw.verification_status = 'pending';
+if (mode === 'official_time_from_same_issue_current') {{
+  delete next.playerSummary.latest_official_draw.draw_time;
+  next.playerSummary.current_draw = {{
+    issue: String(targetIssue - 1),
+    draw_time: '2026-07-30T12:34:00+08:00',
+    collected_at: '2026-07-30T12:35:00+08:00'
+  }};
+}}
 if (mode === 'fast_path_pending_empty') {{
   next.playerSummary.partial = true;
   next.playerSummary.stale = true;
@@ -121,6 +132,9 @@ console.log(JSON.stringify({{
   updated: second !== first,
   has102: second.includes('102'),
   hasVerified: second.includes('🟢 官方已驗證'),
+  hasInlineOfficialTime: second.includes('第 101 期</span>') && second.includes('<span>12:00</span>') && !second.includes('開獎時間：'),
+  hasSameIssueFallbackTime: second.includes('第 101 期</span>') && second.includes('<span>12:34</span>'),
+  hasGreenLatestIssue: second.includes('class="status-ok">第 101 期</span>'),
   hasPendingStatus: second.includes('尚未確認'),
   hasBasedOnIssue: second.includes('依據期號'),
   hasOfficialTime: second.includes('開獎時間：12:00') && !second.includes('開獎時間：2026/07/30'),
@@ -507,17 +521,38 @@ def test_card_one_updates_when_odd_even_prediction_is_missing():
     assert result["hasOddEven"] is True
 
 
-def test_card_one_uses_verified_status_and_official_time_only():
+def test_card_one_shows_latest_issue_green_with_time_inline():
     result = json.loads(_run_card1_vm_scenario("complete"))
     assert result["updated"] is True
     assert result["has102"] is True
-    assert result["hasVerified"] is True
+    assert result["hasVerified"] is False
     assert result["hasPendingStatus"] is False
     assert result["hasBasedOnIssue"] is False
-    assert result["hasOfficialTime"] is True
+    assert result["hasInlineOfficialTime"] is True
+    assert result["hasGreenLatestIssue"] is True
     assert result["hasBasedOnTime"] is False
     assert result["hasGeneratedAt"] is False
     assert result["hasRuleSnapshotHidden"] is True
+
+
+def test_card_one_latest_verified_issue_stays_green_while_other_data_syncs():
+    result = json.loads(_run_card1_vm_scenario("latest_issue_not_synced"))
+    assert result["updated"] is True
+    assert result["hasGreenLatestIssue"] is True
+    assert result["hasInlineOfficialTime"] is True
+
+
+def test_card_one_latest_unverified_issue_stays_white():
+    result = json.loads(_run_card1_vm_scenario("latest_issue_unverified"))
+    assert result["updated"] is True
+    assert result["hasGreenLatestIssue"] is False
+    assert result["hasInlineOfficialTime"] is True
+
+
+def test_card_one_falls_back_to_same_issue_current_draw_time():
+    result = json.loads(_run_card1_vm_scenario("official_time_from_same_issue_current"))
+    assert result["updated"] is True
+    assert result["hasSameIssueFallbackTime"] is True
 
 
 def test_card_one_omits_recommendation_created_time_when_missing():

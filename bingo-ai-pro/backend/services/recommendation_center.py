@@ -4,6 +4,7 @@ import logging
 import json
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 
 from database.adaptive_weight_store import get_active_adaptive_weights
@@ -14,7 +15,7 @@ from database.collector_store import (
     get_latest_kuaishou_snapshot,
 )
 from database.data_quality_store import get_data_quality_status
-from database.prediction_history_store import get_latest_prediction_history
+from database.prediction_history_store import get_latest_prediction_history, get_prediction_history_statistics
 from database.recommendation_center_store import save_recommendation_run
 from database.simulation_store import get_latest_simulation_run, get_simulation_run_by_issue
 from database.strategy_ranking_store import get_latest_strategy_rankings
@@ -55,7 +56,7 @@ FEATURE_LABELS = {
 }
 
 RECOMMENDATION_NUMBER_COUNT = 20
-FAST_PATH_STRATEGY_VERSION = "29.0-adaptive-v1"
+FAST_PATH_STRATEGY_VERSION = "29.1-shadow-adaptive-v1"
 
 
 def _safe_float(value, default: float = 0) -> float:
@@ -280,6 +281,8 @@ def _build_fast_path_numbers(
     previous_numbers: list[int],
     trace: list[dict],
     adaptive_number_scores: dict[int, float] | None = None,
+    constraint_overrides: dict | None = None,
+    source_weight_overrides: dict | None = None,
 ) -> tuple[list[int], dict]:
     source_weights = {
         "patch_numbers": 9.0,
@@ -290,6 +293,8 @@ def _build_fast_path_numbers(
         "repeated_numbers": 3.5,
         "latest_draw_numbers": 1.0,
     }
+    if source_weight_overrides:
+        source_weights.update({key: float(value) for key, value in source_weight_overrides.items() if key in source_weights})
     source_values = {
         "patch_numbers": _recommendation_numbers(analysis.get("patch_numbers")),
         "missing_numbers": _recommendation_numbers(analysis.get("missing_numbers")),
@@ -334,9 +339,11 @@ def _build_fast_path_numbers(
     zone_counts = {zone: 0 for zone in range(4)}
     tail_counts = {tail: 0 for tail in range(10)}
     previous_count = 0
-    zone_quota = {zone: 5 for zone in range(4)}
-    tail_limit = 3
-    previous_limit = 10
+    overrides = constraint_overrides or {}
+    zone_limit = int(overrides.get("zone_limit", 7))
+    zone_quota = {zone: zone_limit for zone in range(4)}
+    tail_limit = int(overrides.get("tail_limit", 3))
+    previous_limit = int(overrides.get("previous_limit", 10))
 
     def can_select(number: int, *, relaxed: bool = False) -> bool:
         if number in selected:
@@ -359,9 +366,13 @@ def _build_fast_path_numbers(
         if number in previous_set:
             previous_count += 1
 
+    # Keep geographic diversity without forcing an exact 5/5/5/5 split.
+    # The old exact quota mathematically forced 10 small + 10 big every issue,
+    # so the dashboard could never express a genuine big/small lean.
+    zone_floor = int(overrides.get("zone_floor", 3))
     for zone in range(4):
         for number in [candidate for candidate in ranked if _number_zone(candidate) == zone]:
-            if zone_counts[zone] >= zone_quota[zone]:
+            if zone_counts[zone] >= zone_floor:
                 break
             if can_select(number):
                 add_number(number)
@@ -434,9 +445,15 @@ def calculate_fast_recommendation(
             }
 
         mark = time.perf_counter()
-        analysis = get_latest_analysis_history() or {}
+        analysis = context.get("analysis_record") if isinstance(context.get("analysis_record"), dict) else None
+        analysis_source = "context" if analysis else "database"
+        if not analysis:
+            analysis = get_latest_analysis_history() or {}
         analysis_issue = str(analysis.get("issue") or "")
-        timings = {"analysis_ms": round((time.perf_counter() - mark) * 1000, 2)}
+        timings = {
+            "analysis_ms": round((time.perf_counter() - mark) * 1000, 2),
+            "analysis_source": analysis_source,
+        }
         if analysis_issue != source_issue:
             return {
                 "status": "skipped",
@@ -452,11 +469,32 @@ def calculate_fast_recommendation(
         # Production Fast Path before its final 20-number diversity selection.
         from services.model_engine import run_all_models
 
+        # Independent production reads are intentionally overlapped. Render may
+        # route consecutive draws to different instances, so process-local caches
+        # are only an optimization; correctness/performance must also hold cold.
+        io_started = time.perf_counter()
+        io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fast-path-io")
+        adaptive_future = None
+        promotion_future = None
+        previous_future = None
+        stats_future = None
+        if "active_adaptive_weights" not in context:
+            adaptive_future = io_executor.submit(get_active_adaptive_weights)
+        if not isinstance(context.get("shadow_rule_promotion_snapshot"), dict):
+            from services.learning_engine import get_shadow_rule_promotion_snapshot
+            promotion_future = io_executor.submit(get_shadow_rule_promotion_snapshot)
+        if context.get("previous_recommend_numbers") is None:
+            previous_future = io_executor.submit(get_latest_prediction_history)
+        stats_future = io_executor.submit(get_prediction_history_statistics, 30)
+
         learning_models_started = time.perf_counter()
         learning_models_payload = run_all_models(100, draws=context.get("learning_analysis_history"))
         learning_models_compute_ms = round((time.perf_counter() - learning_models_started) * 1000.0, 2)
         learning_models = learning_models_payload.get("models") or []
-        adaptive = get_active_adaptive_weights()
+
+        adaptive_started = time.perf_counter()
+        adaptive = context.get("active_adaptive_weights") if "active_adaptive_weights" in context else adaptive_future.result()
+        adaptive_lookup_ms = round((time.perf_counter() - adaptive_started) * 1000.0, 2)
         adaptive_keys = {
             "laowanjia": "laowanjia_weight",
             "hotcold": "hot_cold_weight",
@@ -480,7 +518,54 @@ def calculate_fast_recommendation(
             for rank, number in enumerate(_recommendation_numbers(model.get("candidate_numbers"))):
                 adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + base_weight + max(0, RECOMMENDATION_NUMBER_COUNT - rank) * 0.15
 
-        previous_numbers = _previous_fast_path_numbers(context)
+        promotion_started = time.perf_counter()
+        promotion_snapshot = context.get("shadow_rule_promotion_snapshot")
+        if not isinstance(promotion_snapshot, dict):
+            promotion_snapshot = promotion_future.result()
+        promotion_lookup_ms = round((time.perf_counter() - promotion_started) * 1000.0, 2)
+        promotion_rules = promotion_snapshot.get("rules") or {}
+        mature_rule_scores: dict[int, float] = {}
+        applied_mature_rules: list[str] = []
+        applied_shadow_rules: list[str] = []
+        shadow_rule_weights: dict[str, float] = {}
+        ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
+        for rule_key, promotion in promotion_rules.items():
+            if not isinstance(promotion, dict) or not promotion.get("retained", True):
+                continue
+
+            # Promotion is the production gate: learning/observing/candidate
+            # rules remain visible for research but must not affect formal
+            # recommendation scoring until they are explicitly eligible.
+            if not promotion.get("eligible_for_recommendation"):
+                shadow_rule_weights[rule_key] = 0.0
+                continue
+
+            rule_data = ai_score.get(rule_key) if isinstance(ai_score, dict) else {}
+            candidates = _recommendation_numbers((rule_data or {}).get("candidate_numbers"))[:20]
+            if not candidates:
+                shadow_rule_weights[rule_key] = 0.0
+                continue
+
+            long_lift = float(promotion.get("average_lift_vs_random") or 0)
+            recent_lift = float(promotion.get("recent_20_lift_vs_random") or 0)
+            evidence = max(0.0, long_lift + recent_lift * 0.25)
+            rule_weight = max(0.75, min(1.0, evidence / 0.25))
+            shadow_rule_weights[rule_key] = round(rule_weight, 6)
+            applied_mature_rules.append(rule_key)
+            applied_shadow_rules.append(rule_key)
+            for rank, number in enumerate(candidates):
+                bonus = 2.0 * rule_weight * max(0.25, 1.0 - rank * 0.035)
+                mature_rule_scores[number] = mature_rule_scores.get(number, 0.0) + bonus
+                adaptive_number_scores[number] = adaptive_number_scores.get(number, 0.0) + bonus
+
+        previous_started = time.perf_counter()
+        if context.get("previous_recommend_numbers") is not None:
+            previous_numbers = _recommendation_numbers(context.get("previous_recommend_numbers"))
+        else:
+            previous_record = previous_future.result() or {}
+            previous_numbers = _recommendation_numbers(previous_record.get("recommend_numbers"))
+        previous_prediction_lookup_ms = round((time.perf_counter() - previous_started) * 1000.0, 2)
+        selection_started = time.perf_counter()
         numbers, diversity = _build_fast_path_numbers(
             analysis,
             source_issue=source_issue,
@@ -489,6 +574,7 @@ def calculate_fast_recommendation(
             trace=trace,
             adaptive_number_scores=adaptive_number_scores,
         )
+        final_selection_ms = round((time.perf_counter() - selection_started) * 1000.0, 2)
 
         learning_model_scores = {
             str(model.get("model")): {
@@ -526,8 +612,52 @@ def calculate_fast_recommendation(
             reason="analysis_diversified_lightweight_merge",
         )
         output = _recommendation_output_status(numbers, trace, {"models": [{"model_name": "Production Fast Path"}]})
+        timings["learning_models_compute_ms"] = learning_models_compute_ms
+        timings["adaptive_lookup_ms"] = adaptive_lookup_ms
+        timings["promotion_lookup_ms"] = promotion_lookup_ms
+        timings["previous_prediction_lookup_ms"] = previous_prediction_lookup_ms
+        timings["final_selection_ms"] = final_selection_ms
         timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-        confidence = 62 if output.get("is_valid") else 0
+        # Calibrate the displayed confidence against verified production
+        # performance. A 20-number pick has a random expectation of 5 hits, so
+        # recent results near 5/20 should read as neutral rather than 80%+.
+        # Current model evidence may move the score, but cannot dominate the
+        # observed production record.
+        supported_numbers = sum(1 for number in numbers if adaptive_number_scores.get(number, 0.0) > 0)
+        support_ratio = supported_numbers / max(1, len(numbers))
+        mature_bonus = min(6.0, len(applied_mature_rules) * 1.5)
+        evidence_score = max(
+            0.0,
+            min(
+                100.0,
+                learning_confidence * 0.65
+                + support_ratio * 100.0 * 0.25
+                + mature_bonus,
+            ),
+        )
+        confidence_stats_started = time.perf_counter()
+        try:
+            verified_stats = stats_future.result()
+        except Exception:
+            logger.exception("failed to load verified history for confidence calibration")
+            verified_stats = {}
+        confidence_stats_ms = round((time.perf_counter() - confidence_stats_started) * 1000.0, 2)
+        timings["confidence_stats_ms"] = confidence_stats_ms
+        timings["parallel_io_total_ms"] = round((time.perf_counter() - io_started) * 1000.0, 2)
+        io_executor.shutdown(wait=False)
+        verified_samples = int((verified_stats or {}).get("sample_size") or 0)
+        recent_average_hits = float((verified_stats or {}).get("average_hit_last_30") or 5.0)
+        performance_score = max(20.0, min(80.0, 50.0 + (recent_average_hits - 5.0) * 12.0))
+        history_weight = min(0.80, 0.35 + min(30, verified_samples) / 30.0 * 0.45)
+        calibrated_confidence = (
+            performance_score * history_weight
+            + evidence_score * (1.0 - history_weight)
+        )
+        confidence = (
+            int(round(max(25.0, min(85.0, calibrated_confidence))))
+            if output.get("is_valid")
+            else 0
+        )
         recommendation = {
             "issue": source_issue,
             "target_issue": target_issue,
@@ -555,12 +685,20 @@ def calculate_fast_recommendation(
                     "version": adaptive.get("version") if adaptive else None,
                     "source_evaluation_id": adaptive.get("source_evaluation_id") if adaptive else None,
                     "multipliers": applied_multipliers,
+                    "shadow_promotion": {
+                        "source_issue": promotion_snapshot.get("source_issue"),
+                        "mature_rules": applied_mature_rules,
+                        "applied_rules": applied_shadow_rules,
+                        "rule_weights": shadow_rule_weights,
+                        "number_scores": {str(number): round(score, 4) for number, score in mature_rule_scores.items()},
+                        "enabled": bool(applied_shadow_rules),
+                    },
                 },
             },
             "winning_model": "production_fast_path",
             "model_voting": {
                 "status": learning_models_payload.get("status", "ok"),
-                "reason": "learning_snapshot_only_fast_path_output_unchanged",
+                "reason": "learning_models_feed_adaptive_fast_path_final_selection",
                 "final_candidates": learning_final_candidates,
                 "confidence": learning_confidence,
                 "model_scores": learning_model_scores,

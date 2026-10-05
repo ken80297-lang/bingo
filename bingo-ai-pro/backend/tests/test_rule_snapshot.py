@@ -48,6 +48,38 @@ def _analysis() -> dict:
                 "confidence": 66,
                 "candidate_numbers": [15, 16],
             },
+            "long_dragon": {
+                "confidence": 74,
+                "candidate_numbers": [5, 6],
+                "streaks": [{"number": 5, "streak": 4}, {"number": 6, "streak": 3}],
+                "max_streak": 4,
+                "active_count": 2,
+                "shadow_only": True,
+            },
+            "multi_window_hot_cold": {
+                "confidence": 100,
+                "candidate_numbers": [5, 7],
+                "windows": {
+                    "10": {"available_draws": 10, "hot_numbers": [5, 7], "cold_numbers": [70, 71]},
+                    "20": {"available_draws": 20, "hot_numbers": [5, 8], "cold_numbers": [72, 73]},
+                    "50": {"available_draws": 50, "hot_numbers": [6, 8], "cold_numbers": [74, 75]},
+                    "100": {"available_draws": 100, "hot_numbers": [6, 9], "cold_numbers": [76, 77]},
+                },
+                "rising_numbers": [{"number": 5, "delta": 0.2}],
+                "cooling_numbers": [{"number": 6, "delta": -0.1}],
+                "shadow_only": True,
+            },
+            "omission_strength": {
+                "confidence": 100,
+                "candidate_numbers": [12, 34],
+                "overdue_numbers": [
+                    {"number": 12, "current_omission": 9, "average_omission": 3.0, "max_omission": 10, "omission_ratio": 3.0},
+                    {"number": 34, "current_omission": 7, "average_omission": 3.5, "max_omission": 9, "omission_ratio": 2.0},
+                ],
+                "recovery_numbers": [{"number": 12, "current_omission": 9}],
+                "available_draws": 100,
+                "shadow_only": True,
+            },
         },
     }
 
@@ -83,6 +115,23 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
         80,
     ]
     assert snapshot["fast_path_sources"]["latest_draw_numbers"] == [3, 4, 5, 6, 7, 8]
+    assert snapshot["dashboard_analysis_summary"] == {
+        "laowanjia_score": 72.5,
+        "hot_zone": ["01-10"],
+        "cold_zone": ["71-80"],
+        "three_star": [[1, 2, 3]],
+        "four_star": [[1, 2, 3, 4]],
+        "five_star": None,
+        "six_star": None,
+        "super_number_trajectory_recovery": {
+            "confidence": 70,
+            "candidate_numbers": [40, 41],
+        },
+        "cluster_aftershock_recovery": {
+            "confidence": 66,
+            "candidate_numbers": [15, 16],
+        },
+    }
 
     rules = {item["key"]: item for item in snapshot["rules"]}
     assert rules["diagonal"]["score"] == 24
@@ -91,6 +140,17 @@ def test_build_rule_snapshot_normalizes_analysis_rules():
     assert rules["hot_zone"]["candidate_numbers"] == [1, 4, 8]
     assert rules["cold_zone"]["candidate_numbers"] == [72, 79]
     assert rules["three_star"]["candidate_numbers"] == [1, 2, 3]
+    assert rules["long_dragon"]["status"] == "ready"
+    assert rules["long_dragon"]["candidate_numbers"] == [5, 6]
+    assert rules["long_dragon"]["confidence"] == 74
+    assert rules["long_dragon"]["candidate_groups"][-1]["shadow_only"] is True
+    assert rules["multi_window_hot_cold"]["status"] == "ready"
+    assert rules["multi_window_hot_cold"]["candidate_numbers"] == [5, 7]
+    assert rules["multi_window_hot_cold"]["candidate_groups"][0]["window"] == "10"
+    assert rules["multi_window_hot_cold"]["candidate_groups"][-1]["shadow_only"] is True
+    assert rules["omission_strength"]["status"] == "ready"
+    assert rules["omission_strength"]["candidate_numbers"] == [12, 34]
+    assert rules["omission_strength"]["candidate_groups"][-1]["shadow_only"] is True
     assert rules["super"]["warnings"]
 
 

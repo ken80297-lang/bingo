@@ -753,6 +753,69 @@ def get_learning_records(
 
 
 
+def get_complete_live_learning_targets(window: int = 100) -> list[dict]:
+    """Return one representative snapshot for each newest complete live target."""
+    window = max(1, min(int(window or 100), 500))
+    if not _cloud_enabled():
+        rows = get_complete_live_learning_records(window)
+        seen = set()
+        compact = []
+        for row in rows:
+            issue = str(row.get("issue") or "")
+            if issue and issue not in seen:
+                seen.add(issue)
+                compact.append(row)
+        return compact[:window]
+    with _cloud_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                with complete as (
+                    select issue, max(id) as representative_id
+                    from learning_history
+                    where production_generation = %s
+                      and prediction_type = 'live_prediction'
+                      and verification_status = 'verified'
+                      and learned_status = 'learned'
+                    group by issue
+                    having count(*) = 18
+                       and count(distinct (model_name, top_n)) = 18
+                    order by issue desc
+                    limit %s
+                )
+                select
+                    lh.issue,
+                    lh.official_numbers,
+                    case
+                        when lh.analysis_snapshot is not null
+                         and lh.analysis_snapshot <> '{}'::jsonb
+                        then lh.analysis_snapshot
+                        else coalesce(ah.ai_score_payload, '{}'::jsonb)
+                    end as analysis_snapshot
+                from learning_history lh
+                join complete c on c.representative_id = lh.id
+                left join lateral (
+                    select jsonb_build_object('ai_score', a.ai_score) as ai_score_payload
+                    from analysis_history a
+                    where a.issue = lh.issue
+                    limit 1
+                ) ah on true
+                order by lh.issue desc
+                """,
+                (get_production_generation(), window),
+                prepare=False,
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "issue": str(row[0] or ""),
+            "official_numbers": _json_loads(row[1]) or [],
+            "analysis_snapshot": _json_loads(row[2]) or {},
+        }
+        for row in rows
+    ]
+
+
 def get_complete_live_learning_records(
     window: int = 100,
     *,
@@ -1079,3 +1142,75 @@ def get_learning_model_performance(
             }
         )
     return sorted(output, key=lambda item: item["rank_score"], reverse=True)
+
+
+def save_shadow_rule_promotions(payload: dict) -> dict:
+    source_issue = str(payload.get("source_issue") or "")
+    rules = payload.get("rules") or {}
+    if not isinstance(rules, dict):
+        return {"status": "error", "reason": "invalid_rules"}
+    if _cloud_enabled():
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                for key, rule in rules.items():
+                    cur.execute(
+                        """
+                        insert into shadow_rule_promotions
+                        (rule_key, source_issue, state, sample_size, average_hits,
+                         average_lift_vs_random, recent_20_lift_vs_random,
+                         eligible_for_recommendation, retained, updated_at)
+                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                        on conflict (rule_key) do update set
+                          source_issue=excluded.source_issue, state=excluded.state,
+                          sample_size=excluded.sample_size, average_hits=excluded.average_hits,
+                          average_lift_vs_random=excluded.average_lift_vs_random,
+                          recent_20_lift_vs_random=excluded.recent_20_lift_vs_random,
+                          eligible_for_recommendation=excluded.eligible_for_recommendation,
+                          retained=excluded.retained, updated_at=now()
+                        """,
+                        (str(key), source_issue, str(rule.get("state") or "learning"),
+                         int(rule.get("sample_size") or 0), float(rule.get("average_hits") or 0),
+                         float(rule.get("average_lift_vs_random") or 0),
+                         float(rule.get("recent_20_lift_vs_random") or 0),
+                         bool(rule.get("eligible_for_recommendation")), bool(rule.get("retained", True))),
+                        prepare=False,
+                    )
+            conn.commit()
+        return {"status": "ok", "backend": "cloud", "rule_count": len(rules)}
+    return {"status": "skipped", "backend": "sqlite"}
+
+
+def get_shadow_rule_promotions() -> dict:
+    if not _cloud_enabled():
+        return {"source_issue": None, "rules": {}}
+    try:
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select rule_key, source_issue, state, sample_size, average_hits,
+                           average_lift_vs_random, recent_20_lift_vs_random,
+                           eligible_for_recommendation, retained
+                    from shadow_rule_promotions
+                    """,
+                    prepare=False,
+                )
+                rows = cur.fetchall()
+    except Exception:
+        logger.exception("failed to load shadow rule promotions")
+        return {"source_issue": None, "rules": {}}
+    rules = {}
+    source_issue = None
+    for row in rows:
+        key, issue, state, sample_size, avg_hits, avg_lift, recent_lift, eligible, retained = row
+        source_issue = str(issue or source_issue or "")
+        rules[str(key)] = {
+            "state": str(state or "learning"),
+            "sample_size": int(sample_size or 0),
+            "average_hits": float(avg_hits or 0),
+            "average_lift_vs_random": float(avg_lift or 0),
+            "recent_20_lift_vs_random": float(recent_lift or 0),
+            "eligible_for_recommendation": bool(eligible),
+            "retained": bool(retained),
+        }
+    return {"source_issue": source_issue, "rules": rules}

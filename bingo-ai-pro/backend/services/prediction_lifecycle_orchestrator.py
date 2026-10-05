@@ -2,17 +2,57 @@ from __future__ import annotations
 
 import json
 import logging
+import atexit
+import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from services.prediction_lifecycle import verify_prediction
 from services.prediction_refresh import refresh_next_prediction_for_draw
 
 logger = logging.getLogger(__name__)
+_LEARNING_EXECUTOR: ThreadPoolExecutor | None = None
+_LEARNING_EXECUTOR_LOCK = threading.Lock()
+_LEARNING_BACKGROUND_ACCEPTING = True
 
 
 def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
+
+
+def _get_learning_executor() -> ThreadPoolExecutor | None:
+    global _LEARNING_EXECUTOR
+    if not _LEARNING_BACKGROUND_ACCEPTING or sys.is_finalizing():
+        return None
+    with _LEARNING_EXECUTOR_LOCK:
+        if not _LEARNING_BACKGROUND_ACCEPTING or sys.is_finalizing():
+            return None
+        if _LEARNING_EXECUTOR is None:
+            _LEARNING_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prediction-learning")
+        return _LEARNING_EXECUTOR
+
+
+def shutdown_lifecycle_background_tasks(*, wait: bool = False) -> dict:
+    global _LEARNING_EXECUTOR
+    global _LEARNING_BACKGROUND_ACCEPTING
+    _LEARNING_BACKGROUND_ACCEPTING = False
+    with _LEARNING_EXECUTOR_LOCK:
+        executor = _LEARNING_EXECUTOR
+        _LEARNING_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    return {"status": "stopped", "executor_shutdown": executor is not None}
+
+
+def reset_lifecycle_background_tasks_for_tests() -> dict:
+    global _LEARNING_BACKGROUND_ACCEPTING
+    _LEARNING_BACKGROUND_ACCEPTING = True
+    return {"status": "running", "accepting": True}
+
+
+atexit.register(shutdown_lifecycle_background_tasks)
 
 
 def _valid_issue(value: Any) -> str | None:
@@ -69,6 +109,55 @@ def _record_event(
         logger.exception("failed to record prediction lifecycle event")
 
 
+def _run_learning_evaluation(issue: str) -> dict:
+    from services.learning_engine import evaluate_verified_issue
+
+    return evaluate_verified_issue(issue)
+
+
+def _submit_learning_evaluation(issue: str) -> dict:
+    executor = _get_learning_executor()
+    if executor is None:
+        return {"status": "skipped", "reason": "background_stopped", "issue": issue, "async": True}
+    start = time.perf_counter()
+    try:
+        future = executor.submit(_run_learning_evaluation, issue)
+    except RuntimeError as exc:
+        if "shutdown" not in str(exc).lower():
+            raise
+        return {"status": "skipped", "reason": "background_stopped", "issue": issue, "async": True}
+
+    def _done(completed) -> None:
+        try:
+            result = completed.result()
+            status = "ok" if result.get("status") in {"ok", "pending_official", "missing_snapshot"} else "warning"
+            _record_event(
+                "learning_evaluation_background_completed",
+                status=status,
+                issue=issue,
+                source="learning",
+                trigger="background",
+                caller="prediction_lifecycle",
+                start=start,
+                reason=result.get("status"),
+            )
+        except Exception as exc:
+            logger.exception("background learning evaluation failed issue=%s", issue)
+            _record_event(
+                "learning_evaluation_background_failed",
+                status="error",
+                issue=issue,
+                source="learning",
+                trigger="background",
+                caller="prediction_lifecycle",
+                start=start,
+                reason=str(exc),
+            )
+
+    future.add_done_callback(_done)
+    return {"status": "queued", "issue": issue, "async": True}
+
+
 def process_official_draw_lifecycle(
     official_draw: dict | None,
     *,
@@ -76,8 +165,11 @@ def process_official_draw_lifecycle(
     trigger: str = "official_draw_saved",
     caller: str = "official_draw_lifecycle",
     create_next_prediction: bool = True,
+    analysis_result: dict | None = None,
+    learning_synchronous: bool = False,
 ) -> dict:
     start = time.perf_counter()
+    timings: dict[str, float] = {}
     issue = _valid_issue((official_draw or {}).get("issue")) if official_draw else None
     numbers = _numbers(official_draw or {})
     if not issue or len(numbers) != 20:
@@ -112,6 +204,7 @@ def process_official_draw_lifecycle(
         start=start,
     )
 
+    mark = time.perf_counter()
     verification = verify_prediction(
         {
             "issue": issue,
@@ -119,33 +212,61 @@ def process_official_draw_lifecycle(
             "super_number": official_draw.get("super_number"),
         }
     )
-
+    timings["verification_ms"] = _duration_ms(mark)
     try:
-        from database.analysis_store import save_analysis_history
+        from services.shadow_dynamic_observer import verify_for_official_draw
 
-        analysis = save_analysis_history({**official_draw, "issue": issue, "numbers": numbers})
+        mark = time.perf_counter()
+        shadow_dynamic = verify_for_official_draw({**official_draw, "issue": issue, "numbers": numbers})
+        timings["shadow_dynamic_ms"] = _duration_ms(mark)
     except Exception as exc:
-        logger.exception("lifecycle analysis save failed")
-        analysis = {"status": "error", "message": str(exc)}
+        logger.exception("shadow dynamic observer verification failed")
+        shadow_dynamic = {"status": "error", "message": str(exc)}
+        timings["shadow_dynamic_ms"] = _duration_ms(mark)
 
-    try:
-        from services.learning_engine import evaluate_verified_issue
+    mark = time.perf_counter()
+    if analysis_result and analysis_result.get("status") == "ok":
+        analysis = {**analysis_result, "reused": True}
+    else:
+        try:
+            from database.analysis_store import save_analysis_history
 
-        learning = evaluate_verified_issue(issue)
-    except Exception as exc:
-        logger.exception("lifecycle learning evaluation failed")
-        learning = {"status": "error", "message": str(exc)}
+            analysis = save_analysis_history({**official_draw, "issue": issue, "numbers": numbers})
+        except Exception as exc:
+            logger.exception("lifecycle analysis save failed")
+            analysis = {"status": "error", "message": str(exc)}
+    timings["analysis_ms"] = _duration_ms(mark)
 
+    # Create the next prediction before learning. The official collector can run
+    # close to the next five-minute draw boundary, and learning is not required
+    # to build the prediction for this already-saved official issue. Keeping
+    # learning ahead of prediction can therefore turn an otherwise valid
+    # pre-draw prediction into a post-draw one.
+    mark = time.perf_counter()
     if create_next_prediction:
-        prediction = refresh_next_prediction_for_draw({**official_draw, "issue": issue, "numbers": numbers})
+        prediction_draw = {**official_draw, "issue": issue, "numbers": numbers}
+        if analysis.get("record"):
+            prediction_draw["analysis_record"] = analysis.get("record")
+        prediction = refresh_next_prediction_for_draw(prediction_draw)
     else:
         prediction = {"status": "skipped", "reason": "create_next_prediction_disabled"}
+    timings["prediction_ms"] = _duration_ms(mark)
+
+    mark = time.perf_counter()
+    if learning_synchronous:
+        try:
+            learning = _run_learning_evaluation(issue)
+        except Exception as exc:
+            logger.exception("lifecycle learning evaluation failed")
+            learning = {"status": "error", "message": str(exc)}
+    else:
+        learning = _submit_learning_evaluation(issue)
+    timings["learning_ms"] = _duration_ms(mark)
 
     status = "ok"
     if (
         verification.get("status") == "failed"
         or analysis.get("status") == "error"
-        or learning.get("status") == "error"
         or prediction.get("status") == "failed"
     ):
         status = "error"
@@ -162,8 +283,10 @@ def process_official_draw_lifecycle(
         "status": status,
         "issue": issue,
         "verification": verification,
+        "shadow_dynamic": shadow_dynamic,
         "analysis": analysis,
         "learning": learning,
         "prediction": prediction,
+        "timings_ms": {**timings, "total_ms": _duration_ms(start)},
         "elapsed_ms": _duration_ms(start),
     }

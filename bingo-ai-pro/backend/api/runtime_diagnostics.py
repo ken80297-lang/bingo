@@ -309,3 +309,25 @@ def api_player_dashboard_summary_readonly() -> dict:
         "aggregate_component": aggregate,
         "dashboard_meta": meta,
     }
+
+
+@router.get("/runtime-diagnostics/fastpath-adaptive-walk-forward-ab")
+def api_fastpath_adaptive_walk_forward_ab(limit: int = 600, warmup: int = 100) -> dict:
+    """Bounded read-only OFF/ON walk-forward comparison for the formal Production Fast Path."""
+    from database.collector_store import get_draw_history
+    from scripts.walk_forward_fastpath_adaptive_ab import run
+
+    bounded_limit = max(121, min(int(limit or 600), 2000))
+    bounded_warmup = max(100, min(int(warmup or 100), bounded_limit - 1))
+    result = run(get_draw_history(bounded_limit), warmup=bounded_warmup)
+    summary = result.get("summary") or {}
+    print(
+        "FASTPATH_ADAPTIVE_WALK_FORWARD_AB "
+        + __import__("json").dumps(
+            {"read_only": True, "limit": bounded_limit, "warmup": bounded_warmup, "summary": summary},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    return {"status": "ok", "read_only": True, "limit": bounded_limit, "summary": summary}

@@ -4,6 +4,7 @@ import logging
 import copy
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
@@ -15,10 +16,13 @@ from database.adaptive_weight_store import (
 )
 from database.learning_store import (
     get_complete_live_learning_records,
+    get_complete_live_learning_targets,
     get_learning_model_performance,
     get_learning_records,
     get_learning_summary_records,
     get_learning_status_counts,
+    get_shadow_rule_promotions,
+    save_shadow_rule_promotions,
     mark_learning_weight_changed,
     upsert_learning_record,
     upsert_learning_records,
@@ -39,6 +43,9 @@ ENGINE_VERSION = "22.1"  # learning closed-loop CI
 OBSERVATION_VERSION = "22.1.5"
 OBSERVATION_CACHE_TTL_SECONDS = 30
 LEARNING_STATUS_CACHE_TTL_SECONDS = 60
+_LEARNING_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="learning-snapshot")
+_LEARNING_SNAPSHOT_PENDING: set[str] = set()
+_LEARNING_SNAPSHOT_PENDING_LOCK = threading.Lock()
 DEFAULT_MODEL_VERSION = "v7"
 TOP_N_VALUES = (5, 10, 20)
 EXPECTED_LIVE_MODELS = {"laowanjia", "hotcold", "missing", "pattern", "balance", "ensemble"}
@@ -57,6 +64,125 @@ _OBSERVATION_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _OBSERVATION_CACHE_LOCK = threading.Lock()
 _LEARNING_STATUS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _LEARNING_STATUS_CACHE_LOCK = threading.Lock()
+_SHADOW_PROMOTION_LOCK = threading.Lock()
+_SHADOW_PROMOTION_CACHE: dict[str, Any] = {"source_issue": None, "rules": {}, "expires_at": 0.0}
+SHADOW_PROMOTION_CACHE_TTL_SECONDS = 30
+SHADOW_RULE_KEYS = (
+    "long_dragon",
+    "multi_window_hot_cold",
+    "omission_strength",
+    "neighbor_extension",
+    "parity_size_trend",
+    "zone_cluster_strength",
+    "consecutive_extension",
+    "tail_trend_strength",
+    "composite_market_regime",
+)
+
+
+def _shadow_rule_candidates(analysis: dict, rule_key: str) -> list[int]:
+    ai_score = analysis.get("ai_score") if isinstance(analysis, dict) else {}
+    data = (ai_score or {}).get(rule_key) if isinstance(ai_score, dict) else {}
+    return _as_int_list((data or {}).get("candidate_numbers"))[:20]
+
+
+def evaluate_shadow_rule_promotions(records: list[dict], source_issue: str | None = None) -> dict:
+    """Re-evaluate every shadow rule; weak rules are retained and downgraded, never deleted."""
+    targets: dict[str, dict] = {}
+    for row in records or []:
+        issue = str(row.get("issue") or row.get("target_issue") or "")
+        if not issue or issue in targets:
+            continue
+        official = _as_int_list(row.get("official_numbers"))
+        analysis = row.get("analysis_snapshot") or {}
+        if len(official) == 20 and isinstance(analysis, dict):
+            targets[issue] = {"official": set(official), "analysis": analysis}
+
+    ordered = list(targets.values())[:100]
+    rules: dict[str, dict] = {}
+    for key in SHADOW_RULE_KEYS:
+        samples = []
+        for target in ordered:
+            candidates = _shadow_rule_candidates(target["analysis"], key)
+            if not candidates:
+                continue
+            hits = len(set(candidates) & target["official"])
+            expected_hits = len(candidates) * 0.25
+            samples.append({"hits": hits, "count": len(candidates), "lift": hits - expected_hits})
+        sample_size = len(samples)
+        avg_hits = round(sum(item["hits"] for item in samples) / sample_size, 4) if sample_size else 0.0
+        avg_lift = round(sum(item["lift"] for item in samples) / sample_size, 4) if sample_size else 0.0
+        recent = samples[:20]
+        recent_lift = round(sum(item["lift"] for item in recent) / len(recent), 4) if recent else 0.0
+        if sample_size < 20:
+            state = "learning"
+        elif sample_size < 50:
+            state = "observing"
+        elif sample_size < 100:
+            state = "candidate"
+        elif avg_lift >= 0.25 and recent_lift >= -0.05:
+            state = "mature"
+        else:
+            state = "observing"
+        rules[key] = {
+            "state": state,
+            "sample_size": sample_size,
+            "average_hits": avg_hits,
+            "average_lift_vs_random": avg_lift,
+            "recent_20_lift_vs_random": recent_lift,
+            "eligible_for_recommendation": state == "mature",
+            "retained": True,
+        }
+    return {"source_issue": str(source_issue or ""), "target_count": len(ordered), "rules": rules}
+
+
+def refresh_shadow_rule_promotions(source_issue: str | None = None) -> dict:
+    # Promotion only needs one official/analysis snapshot per complete target.
+    # Let Postgres identify complete 18-row targets and return at most 100 rows.
+    records = get_complete_live_learning_targets(100)
+    payload = evaluate_shadow_rule_promotions(records, source_issue)
+    with _SHADOW_PROMOTION_LOCK:
+        _SHADOW_PROMOTION_CACHE["source_issue"] = payload.get("source_issue")
+        _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(payload.get("rules") or {})
+        _SHADOW_PROMOTION_CACHE["expires_at"] = time.monotonic() + SHADOW_PROMOTION_CACHE_TTL_SECONDS
+    payload["promotion_persistence"] = save_shadow_rule_promotions(payload)
+    return payload
+
+
+def get_shadow_rule_promotion_snapshot() -> dict:
+    now = time.monotonic()
+    with _SHADOW_PROMOTION_LOCK:
+        cached = copy.deepcopy(_SHADOW_PROMOTION_CACHE)
+    if cached.get("rules") and float(cached.get("expires_at") or 0.0) > now:
+        return {"source_issue": cached.get("source_issue"), "rules": cached.get("rules") or {}}
+
+    persisted = get_shadow_rule_promotions()
+    persisted_rules = persisted.get("rules") or {}
+
+    if not persisted_rules:
+        return {"source_issue": cached.get("source_issue"), "rules": cached.get("rules") or {}}
+
+    # Persisted promotion is the production gate. Fresh shadow evaluation may
+    # keep learning in memory, but it must not erase a previously qualified
+    # Mature rule before a promotion decision is durably saved.
+    merged_rules = copy.deepcopy(cached.get("rules") or {})
+    for key, rule in persisted_rules.items():
+        if rule.get("eligible_for_recommendation"):
+            merged_rules[key] = copy.deepcopy(rule)
+        elif key not in merged_rules:
+            merged_rules[key] = copy.deepcopy(rule)
+
+    result = {
+        "source_issue": persisted.get("source_issue") or cached.get("source_issue"),
+        "rules": merged_rules,
+    }
+    with _SHADOW_PROMOTION_LOCK:
+        _SHADOW_PROMOTION_CACHE["source_issue"] = result["source_issue"]
+        _SHADOW_PROMOTION_CACHE["rules"] = copy.deepcopy(result["rules"])
+        _SHADOW_PROMOTION_CACHE["expires_at"] = time.monotonic() + SHADOW_PROMOTION_CACHE_TTL_SECONDS
+    return result
+
+
 
 
 def _duration_ms(start: float) -> float:
@@ -549,6 +675,7 @@ def save_live_prediction_snapshot(recommendation: dict) -> dict:
         "best_strategy": recommendation.get("best_strategy"),
         "confidence": recommendation.get("confidence"),
         "model_voting": voting,
+        "production_fast_path": recommendation.get("production_fast_path") or {},
         "results": results,
         "super_recommendation": recommendation.get("super_recommendation"),
         "sync": recommendation.get("sync"),
@@ -985,7 +1112,9 @@ def evaluate_verified_issue(issue: str) -> dict:
             )
         learning_queue = {"status": "skipped"}
         adaptive_weights = {"status": "skipped"}
+        shadow_promotions = {"status": "skipped"}
         if status == "ok":
+            shadow_promotions = refresh_shadow_rule_promotions(str(issue))
             adaptive_weights = update_v7_adaptive_weights(str(issue))
             if adaptive_weights.get("status") == "error":
                 return {
@@ -996,6 +1125,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "saved": saved,
                     "learning_queue": {"status": "skipped"},
                     "adaptive_weights": adaptive_weights,
+                    "shadow_promotions": shadow_promotions,
                 }
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
@@ -1026,6 +1156,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "saved": saved,
             "learning_queue": learning_queue,
             "adaptive_weights": adaptive_weights,
+            "shadow_promotions": shadow_promotions,
         }
     except Exception as exc:
         logger.exception("learning evaluation failed")
@@ -1065,6 +1196,83 @@ def backfill_learning_records(limit: int = 50) -> dict:
     )
     return {"status": "ok", "processed": len(processed), "results": processed}
 
+
+
+
+def ensure_live_prediction_snapshot_async(target_issue: str, prediction: dict | None = None) -> dict:
+    """Queue snapshot recovery on one bounded worker without delaying Production."""
+    target = str(target_issue or "").strip()
+    if not target:
+        return {"status": "skipped", "reason": "missing_target_issue"}
+
+    with _LEARNING_SNAPSHOT_PENDING_LOCK:
+        if target in _LEARNING_SNAPSHOT_PENDING:
+            return {"status": "skipped", "reason": "already_queued", "target_issue": target}
+        _LEARNING_SNAPSHOT_PENDING.add(target)
+
+    def worker() -> None:
+        started = time.perf_counter()
+        try:
+            result = ensure_live_prediction_snapshot(target, prediction)
+            logger.info(
+                "live_learning_snapshot_async_complete target_issue=%s duration_ms=%.2f status=%s records=%s",
+                target,
+                _duration_ms(started),
+                result.get("status"),
+                result.get("records"),
+            )
+            if result.get("status") != "ok":
+                logger.warning("live learning snapshot async recovery incomplete target_issue=%s result=%s", target, result)
+        except Exception:
+            logger.exception("live learning snapshot async recovery failed target_issue=%s", target)
+        finally:
+            with _LEARNING_SNAPSHOT_PENDING_LOCK:
+                _LEARNING_SNAPSHOT_PENDING.discard(target)
+
+    try:
+        _LEARNING_SNAPSHOT_EXECUTOR.submit(worker)
+    except Exception:
+        with _LEARNING_SNAPSHOT_PENDING_LOCK:
+            _LEARNING_SNAPSHOT_PENDING.discard(target)
+        logger.exception("live learning snapshot async queue failed target_issue=%s", target)
+        return {"status": "error", "reason": "queue_failed", "target_issue": target}
+    return {"status": "queued", "target_issue": target, "worker_limit": 1}
+
+
+def ensure_live_prediction_snapshot(target_issue: str, prediction: dict | None = None) -> dict:
+    """Ensure the canonical live-learning snapshot exists for a Production target."""
+    target = str(target_issue or "").strip()
+    if not target:
+        return {"status": "skipped", "reason": "missing_target_issue", "records": 0}
+
+    existing = _learning_snapshots_for_issue(target)
+    if _is_complete_learning_record_set(existing):
+        return {"status": "ok", "skipped": True, "reason": "already_complete", "records": EXPECTED_RECORDS_PER_TARGET}
+
+    prediction = prediction or _latest_prediction_for_issue(target)
+    if not prediction:
+        return {"status": "missing_prediction", "target_issue": target, "records": 0}
+
+    records = _learning_records_from_prediction(prediction, None, {})
+    if len(records) != EXPECTED_RECORDS_PER_TARGET:
+        return {
+            "status": "incomplete_prediction",
+            "target_issue": target,
+            "records": len(records),
+            "expected_records": EXPECTED_RECORDS_PER_TARGET,
+        }
+
+    saved = upsert_learning_records(records)
+    refreshed = _learning_snapshots_for_issue(target)
+    complete = _is_complete_learning_record_set(refreshed)
+    return {
+        "status": "ok" if complete else "error",
+        "target_issue": target,
+        "records": len(refreshed),
+        "expected_records": EXPECTED_RECORDS_PER_TARGET,
+        "complete": complete,
+        "saved": saved,
+    }
 
 def evaluate_historical_backtest_issue(issue: str, prediction: dict | None = None) -> dict:
     try:

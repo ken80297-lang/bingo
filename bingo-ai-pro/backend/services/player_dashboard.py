@@ -167,7 +167,6 @@ _PLAYER_SUMMARY_BUILD_LOCK = threading.Lock()
 _PLAYER_COMPONENT_CACHE_UPDATED_AT: dict[str, float] = {}
 _PLAYER_COMPONENT_CACHE: dict[str, Any] = {
     "official_draw": None,
-    "latest_prediction": None,
     "next_prediction_snapshot": None,
     "prediction_history": [],
     "card_two_history": [],
@@ -295,8 +294,6 @@ def reload_latest_production_snapshot(official_draw: dict | None = None, reason:
     next_prediction["rule_library"] = _load_component_cache("rule_library", _empty_rule_library()) or _empty_rule_library()
     next_prediction = _enrich_dashboard_card_v1(next_prediction, current)
     _store_component_cache("official_draw", official)
-    if prediction:
-        _store_component_cache("latest_prediction", prediction)
     _store_component_cache("next_prediction_snapshot", next_prediction)
     logger.info(
         "player dashboard latest production snapshot reloaded reason=%s issue=%s target_issue=%s",
@@ -314,8 +311,6 @@ def reload_latest_production_snapshot(official_draw: dict | None = None, reason:
 
 
 def _store_component_cache(name: str, payload: Any) -> bool:
-    if name == "latest_prediction" and payload and not is_production_prediction(payload):
-        return False
     if name == "prediction_history" and isinstance(payload, list):
         payload = [item for item in payload if is_production_prediction(item)]
     existing = _PLAYER_COMPONENT_CACHE.get(name)
@@ -344,8 +339,6 @@ def _load_fresh_component_cache(name: str, ttl_seconds: float, fallback=None):
 def _load_component_cache(name: str, fallback=None):
     cached = _PLAYER_COMPONENT_CACHE.get(name)
     if cached is None:
-        return fallback
-    if name == "latest_prediction" and cached and not is_production_prediction(cached):
         return fallback
     if name == "prediction_history" and isinstance(cached, list):
         cached = [item for item in cached if is_production_prediction(item)]
@@ -752,6 +745,13 @@ def _complete_component(
                 late_diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
             )
     updated = _store_component_cache(name, result)
+    if updated and name in {"card_two_history", "next_prediction_snapshot", "official_draw"}:
+        # A late background completion can make a previously built whole-summary
+        # cache obsolete. Keep component caches, but force the next HTTP request
+        # to rebuild the composed cards from the newly completed snapshot.
+        with _PLAYER_SUMMARY_CACHE_LOCK:
+            _PLAYER_SUMMARY_CACHE["payload"] = None
+            _PLAYER_SUMMARY_CACHE["expires_at"] = 0.0
     logger.warning(
         "dashboard_late_component_completion component=%s generation_id=%s issue=%s elapsed_ms=%s cache_updated=%s cache_update_reason=%s",
         name,
@@ -3047,35 +3047,29 @@ def _card_three_payload(
     active_release = active_release if isinstance(active_release, dict) else {}
     sections = {
         "latest_processing": {
-            "label": "最新處理資訊",
             "current_issue": (current_draw or {}).get("issue"),
             "last_successful_collection": sync.get("last_successful_collection"),
         },
         "ai_flow": {
-            "label": "AI 流程",
             "next_prediction_status": next_prediction.get("status") or "unknown",
         },
         "system_health": {
-            "label": "系統健康",
             "status": "partial" if partial else "ok",
             "is_synced": sync.get("is_synced"),
             "lag_count": sync.get("lag_count", 0),
             "warnings": warnings,
         },
         "learning_status": {
-            "label": "AI 學習狀態",
             "status": "ready" if (prediction_stats or {}).get("sample_size") else "waiting_data",
             "sample_size": (prediction_stats or {}).get("sample_size", 0),
             "average_hits": (prediction_stats or {}).get("average_hits", 0),
             "pending_learning": (prediction_stats or {}).get("pending_learning", 0),
         },
         "version_info": {
-            "label": "版本資訊",
             "release_version": next_prediction.get("release_version") or active_release.get("release_version"),
         },
     }
     return {
-        "title": "🤖 AI 運作中心",
         "status": "partial" if partial else "ok",
         "sections": sections,
         "system": {
@@ -3111,48 +3105,40 @@ def get_player_card_one_snapshot(
     dashboard_generation_id: str | None = None,
 ) -> dict:
     started = time.perf_counter()
+    # The collector keeps this cache current. First paint should not wait on
+    # the same latest-row DB query again; refresh it asynchronously instead.
+    official = _load_component_cache("official_draw")
     official_future, official_state = _submit_component(
         "official_draw",
         get_latest_official_draw,
     )
-    official = _component_result(
-        "official_draw",
-        official_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    )
+    if official:
+        timings.append(_timed_default("official_draw", time.perf_counter(), "ok", "last_good_cache"))
+    else:
+        official = _component_result(
+            "official_draw",
+            official_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        )
     current = _current_draw(official)
 
-    kuaishou_future, _ = _submit_component(
-        "kuaishou",
-        get_latest_kuaishou_snapshot,
-    )
-    kuaishou = _component_result(
-        "kuaishou",
-        kuaishou_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    # Kuaishou is advisory only. Never block Card One on a secondary source:
+    # use its last-good cache immediately and refresh it in the background.
+    kuaishou = _load_component_cache("kuaishou", {}) or {}
+    _submit_component("kuaishou", get_latest_kuaishou_snapshot)
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
 
-    next_prediction = None
+    # Prefer the completed prediction snapshot already held in memory. A DB
+    # context lookup is refresh work, not a first-paint dependency.
+    next_prediction = _load_component_cache("next_prediction_snapshot")
     if current:
         def build_next_snapshot():
-            diagnostic_started = time.perf_counter()
-            diagnostics: dict[str, Any] = {
-                "stages": [],
-                "query_count": 0,
-            }
-            context_started = time.perf_counter()
+            diagnostics: dict[str, Any] = {"stages": [], "query_count": 0}
             context = _timed_component_stage(
                 "next_prediction_snapshot",
                 "latest_prediction_context_lookup",
@@ -3162,67 +3148,43 @@ def get_player_card_one_snapshot(
                     use_dashboard_read_pool=True,
                 ),
             )
-            context_db_timing = (context or {}).get("db_timing") if isinstance(context, dict) else None
-            if context_db_timing:
-                diagnostics["query_count"] += int((context or {}).get("query_count") or 1)
-            diagnostics["stages"].append(
-                {
-                    "stage": "latest_prediction_context_lookup",
-                    "duration_ms": round((time.perf_counter() - context_started) * 1000, 2),
-                    "db_timing": deepcopy(context_db_timing),
-                    "query_count": (context or {}).get("query_count") if isinstance(context, dict) else None,
-                }
-            )
             context_draw = (context or {}).get("draw") or current
-            if str((context_draw or {}).get("issue") or "") != str((current or {}).get("issue") or ""):
-                record = None
-                context_draw = current
-            else:
-                record = (context or {}).get("prediction")
-            if record:
-                _store_component_cache("latest_prediction", record)
-            transform_started = time.perf_counter()
-            return _timed_component_stage(
-                "next_prediction_snapshot",
-                "prediction_from_history",
-                lambda: _attach_next_prediction_diagnostics(
-                    _prediction_from_history(
-                        record,
-                        context_draw,
-                        detected_latest_issue,
-                        allow_slow_lookups=False,
-                        transform_diagnostics=diagnostics,
-                    ),
-                    diagnostics,
-                    transform_started,
-                    diagnostic_started,
-                ),
+            record = (context or {}).get("prediction") if str((context_draw or {}).get("issue") or "") == str((current or {}).get("issue") or "") else None
+            return _prediction_from_history(
+                record,
+                context_draw if record else current,
+                detected_latest_issue,
+                allow_slow_lookups=False,
+                transform_diagnostics=diagnostics,
             )
-
-        prediction_future, _ = _submit_component(
-            "next_prediction_snapshot",
-            build_next_snapshot,
-        )
-        next_prediction = _component_result(
-            "next_prediction_snapshot",
-            prediction_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        )
-    else:
-        next_prediction = _load_component_cache("next_prediction_snapshot")
+        _submit_component("next_prediction_snapshot", build_next_snapshot)
         if next_prediction:
-            _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
-            warnings.append("next_prediction_snapshot stale cache")
-            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
+            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "ok", "last_good_cache"))
+    elif next_prediction:
+        _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
+        warnings.append("next_prediction_snapshot stale cache")
+        timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
 
+    cached_prediction = _load_component_cache("next_prediction_snapshot")
+    if not next_prediction and cached_prediction:
+        # During the draw -> prediction handoff, keep the last complete 20-number
+        # recommendation visible instead of flashing an empty "prediction pending"
+        # card. The cache guard prevents an older/empty result from replacing a
+        # newer valid snapshot; the next completed prediction swaps in normally.
+        cached_numbers = _as_int_list(
+            cached_prediction.get("recommend_numbers")
+            or cached_prediction.get("main_numbers")
+        )
+        if len(cached_numbers) == 20:
+            next_prediction = dict(cached_prediction)
+            next_prediction["handoff_pending"] = True
+            next_prediction["stale"] = True
+            next_prediction["is_stale"] = True
+            next_prediction["latest_official_issue"] = detected_latest_issue or (current or {}).get("issue")
+            next_prediction["recommendation_warning"] = "新一期 AI 推薦產生中，暫時保留上一筆完整推薦。"
     next_prediction = (
         next_prediction
-        or _load_component_cache("next_prediction_snapshot")
+        or cached_prediction
         or _pending_next_prediction(current, detected_latest_issue)
     )
     next_prediction["history"] = _load_component_cache("prediction_history_stats", {}) or {}
@@ -3571,30 +3533,9 @@ def _build_player_dashboard_summary_payload(
         "prediction_aggregates",
         PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
     )
-    if cached_aggregates:
-        aggregates_future = None
-    else:
-        aggregates_future, _ = _submit_component(
-            "prediction_aggregates",
-            lambda: _timed_component_stage(
-                "prediction_aggregates",
-                "prediction_lifecycle_aggregates",
-                lambda: get_prediction_lifecycle_aggregates(
-                    diagnostic_component="prediction_aggregates",
-                    use_dashboard_read_pool=True,
-                ),
-            ),
-        )
-
-    card_two_history_future, _ = _submit_component(
-        "card_two_history",
-        lambda: _timed_component_stage(
-            "card_two_history",
-            "prediction_history_summary_records",
-            lambda: get_prediction_history_records(PLAYER_DASHBOARD_HISTORY_LIMIT, diagnostic_component="card_two_history", include_event_metadata=False),
-        ),
-    )
-
+    # Aggregates are operational enrichment and can take multiple seconds on a
+    # cold query. Never hold first paint for them: refresh asynchronously and
+    # serve the last-good snapshot (fresh or stale) immediately.
     if detected_latest_issue and (current or {}).get("issue") and str(detected_latest_issue) != str((current or {}).get("issue")):
         next_prediction["sync_status"] = "database_behind"
         next_prediction["recommendation_warning"] = (
@@ -3722,71 +3663,40 @@ def _build_player_dashboard_summary_payload(
             },
         }
 
-    analysis_future, _ = _submit_component("analysis", get_latest_analysis_history)
-
-    if cached_aggregates:
-        aggregate_cache_updated_at = _PLAYER_COMPONENT_CACHE_UPDATED_AT.get("prediction_aggregates")
-        logger.warning(
-            "dashboard_component_cache_hit component=prediction_aggregates age_ms=%s ttl_seconds=%s",
-            round(max(0.0, time.monotonic() - aggregate_cache_updated_at) * 1000, 2)
-            if aggregate_cache_updated_at is not None
-            else None,
-            PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
-        )
-        aggregates = dict(cached_aggregates)
+    # Analysis is enrichment, not a Card One dependency. Serve the last-good
+    # snapshot immediately and refresh asynchronously so it never extends TTFB.
+    analysis = _load_component_cache("analysis", {}) or {}
+    aggregates = dict(cached_aggregates or _load_component_cache("prediction_aggregates", {}) or {})
+    aggregate_source = "fresh_cache" if cached_aggregates else "last_good_cache"
+    if aggregates:
         component_metadata["prediction_aggregates"] = _component_metadata(
             "prediction_aggregates",
             aggregates,
-            source="live",
+            source="cache",
             timed_out=False,
-            result="fresh_cache",
+            result=aggregate_source,
             dashboard_generation_id=dashboard_generation_id,
         )
         aggregates["_component_metadata"] = component_metadata["prediction_aggregates"]
-        aggregates["source"] = "live"
-        aggregates["stale"] = False
-        timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", "fresh_cache"))
-    else:
-        aggregates = _component_result(
-            "prediction_aggregates",
-            aggregates_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_AGGREGATE_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            fallback={},
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        ) or {}
+        aggregates["source"] = "cache"
+        aggregates["stale"] = not bool(cached_aggregates)
+    timings.append(_timed_default("prediction_aggregates", time.perf_counter(), "ok", aggregate_source))
     previous_verification = _unavailable_previous_result(previous_target_issue)
     previous_verification["previous_result_mode"] = "stale_unavailable"
     previous_verification.setdefault("requested_target_issue", previous_target_issue)
     previous_verification.setdefault("displayed_target_issue", None)
 
-    card_two_history = _component_result(
-        "card_two_history",
-        card_two_history_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback=_load_component_cache("card_two_history", []),
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or []
+    # History feeds Card Two/learning diagnostics only. Do not hold Card One
+    # first paint for a cold history query. Always refresh it in the background
+    # so a long-lived Render worker cannot keep serving an old finalized report.
+    card_two_history = _load_component_cache("card_two_history", []) or []
+    _submit_component("card_two_history", _card_two_history_component)
+    if card_two_history:
+        timings.append(_timed_default("card_two_history", time.perf_counter(), "ok", "last_good_cache"))
     history_records = card_two_history[:PLAYER_DASHBOARD_HISTORY_LIMIT]
     _store_component_cache("prediction_history", history_records)
-    analysis = _component_result(
-        "analysis",
-        analysis_future,
-        deadline=deadline,
-        timeout_seconds=PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS,
-        timings=timings,
-        warnings=warnings,
-        fallback={},
-        component_metadata=component_metadata,
-        dashboard_generation_id=dashboard_generation_id,
-    ) or {}
+    if analysis:
+        timings.append(_timed_default("analysis", time.perf_counter(), "ok", "last_good_cache"))
     active_release = {
         key: next_prediction.get(key)
         for key in (
@@ -3832,19 +3742,28 @@ def _build_player_dashboard_summary_payload(
             "current_issue": (current or {}).get("issue"),
             "previous_target_issue": previous_target_issue,
         }}
-        return _card_two_from_record(
-            _timed_component_stage(
-                "card_two",
-                "finalized_analysis_report",
-                lambda: get_latest_finalized_analysis_report(
-                    card_two_history,
-                    current,
-                    previous_target_issue,
-                    diagnostics=diagnostics,
-                ),
+        # Card Two is a report of the newest completed prediction lifecycle.
+        # Do not pin it to Card One's source issue: during normal draw handoff
+        # Card One may be cached while verification/learning has already moved
+        # forward. Select the newest finalized record available in history.
+        finalized = _timed_component_stage(
+            "card_two",
+            "finalized_analysis_report",
+            lambda: get_latest_finalized_analysis_report(
+                card_two_history,
+                current,
+                diagnostics=diagnostics,
             ),
+        )
+        finalized_issue = (
+            (finalized or {}).get("prediction_issue")
+            or (finalized or {}).get("target_issue")
+            or previous_target_issue
+        )
+        return _card_two_from_record(
+            finalized,
             current,
-            previous_target_issue,
+            finalized_issue,
             diagnostics=diagnostics,
             use_dashboard_read_pool=True,
             include_rules=False,
@@ -3859,6 +3778,35 @@ def _build_player_dashboard_summary_payload(
         fallback=_card_two_empty(previous_target_issue),
         cache_name="card_two",
     ) or _card_two_empty(previous_target_issue)
+
+    # The history refresh is intentionally non-blocking. If this request used an
+    # older Card Two snapshot, its late completion updates card_two_history and
+    # the next summary build must be allowed to consume it immediately instead
+    # of serving the old 60-second whole-summary cache.
+    latest_card_two_history = _load_component_cache("card_two_history", []) or []
+    latest_finalized = get_latest_finalized_analysis_report(
+        latest_card_two_history,
+        current,
+    )
+    latest_finalized_issue = _valid_production_issue(
+        (latest_finalized or {}).get("prediction_issue")
+        or (latest_finalized or {}).get("target_issue")
+    )
+    displayed_card_two_issue = _valid_production_issue((card_two or {}).get("issue"))
+    if (
+        latest_finalized_issue
+        and (
+            displayed_card_two_issue is None
+            or (_as_int(latest_finalized_issue) or 0) > (_as_int(displayed_card_two_issue) or 0)
+        )
+    ):
+        card_two = _card_two_from_record(
+            latest_finalized,
+            current,
+            latest_finalized_issue,
+            use_dashboard_read_pool=True,
+            include_rules=False,
+        )
 
     database_issue = (current or {}).get("issue")
     official_issue = detected_latest_issue or (current or {}).get("issue")
@@ -3933,19 +3881,9 @@ def _build_player_dashboard_summary_payload(
         "production_filtered": True,
         "production_scope": production_scope,
         "active_release": active_release,
-        "current_draw": current,
-        "latest_official_draw": latest_official_draw,
-        "sync": sync,
         "card_one": card_one_payload,
-        "next_prediction": next_prediction,
         "card_two": card_two,
         "card_three": card_three_payload,
-        "previous_verification": previous_verification,
-        "prediction_history": production_history,
-        "data_counts": data_counts,
-        "history": prediction_stats,
-        "aggregates": aggregates if isinstance(aggregates, dict) else {},
-        "rule_library": rule_library,
         "warnings": warnings,
         "partial": partial,
         "stale": partial,

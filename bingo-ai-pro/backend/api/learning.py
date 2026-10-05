@@ -4,6 +4,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from database.learning_store import get_learning_records
+from services.date_shadow_learning import evaluate_shadow_rules_for_date
+from services.learning_evidence import get_learning_evidence
 from services.learning_engine import (
     ENGINE_VERSION,
     backfill_learning_records,
@@ -30,6 +32,11 @@ def api_learning_status():
 @router.get("/models")
 def api_learning_models():
     return get_learning_models_summary()
+
+
+@router.get("/evidence")
+def api_learning_evidence(limit: int = 20):
+    return get_learning_evidence(limit)
 
 
 @router.get("/observation")
@@ -85,6 +92,11 @@ def api_learning_performance(
         top_n=top_n,
         prediction_type=prediction_type,
     )
+
+
+@router.get("/shadow-date/{draw_date}")
+def api_shadow_date_evaluation(draw_date: str):
+    return evaluate_shadow_rules_for_date(draw_date)
 
 
 @router.post("/recalculate")

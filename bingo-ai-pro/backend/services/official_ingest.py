@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import threading
@@ -295,6 +296,9 @@ def collect_latest_official_lightweight() -> dict[str, Any]:
             result.get("rss_mb_peak"),
             result.get("rss_mb_after"),
         )
+        # Uvicorn does not configure the root INFO logger. Keep the acceptance
+        # record visible in Render stdout without enabling noisy global logs.
+        print("LIGHTWEIGHT_OFFICIAL_INGEST " + json.dumps(result, ensure_ascii=False, sort_keys=True, default=str), flush=True)
         return result
 
 

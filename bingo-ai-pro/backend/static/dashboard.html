@@ -751,6 +751,10 @@
   <script>
     const API_TIMEOUT_MS = 10000;
     const CARD_TWO_STORAGE_KEY = "bingo-ai-card-two-cache";
+    const CARD_TWO_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+    const CARD_ONE_PREDICTION_STORAGE_KEY = "bingo-ai-card-one-prediction-cache";
+    const CARD_ONE_SNAPSHOT_STORAGE_KEY = "bingo-ai-card-one-snapshot-v1";
+    const CARD_ONE_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
     let cardOneCommittedHtml = "";
     const DASHBOARD_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const DASHBOARD_LEADER_KEY = "bingo-ai-dashboard-leader";
@@ -914,11 +918,6 @@
       return !Number.isNaN(new Date(normalized).getTime());
     };
 
-    const sortPairs = (pairs) => asList(pairs)
-      .map((pair) => normalizeNumbers(pair).slice(0, 2))
-      .filter((pair) => pair.length === 2)
-      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-
     const formatDateTime = (value) => {
       if (!value) return "尚無資料";
       const rawText = String(value).trim();
@@ -1026,14 +1025,16 @@
         if (!raw) return null;
         const cached = JSON.parse(raw);
         if (!cached || !cached.payload || cached.payload.available !== true) return null;
-        return { ...cached.payload, update_hint: "資料更新中" };
+        const savedAt = Number(cached.saved_at);
+        if (!Number.isFinite(savedAt) || Date.now() - savedAt > CARD_TWO_CACHE_MAX_AGE_MS) return null;
+        return { ...cached.payload, _browser_cache_saved_at: savedAt, update_hint: "資料更新中" };
       } catch (error) {
         console.warn("[dashboard] card two browser cache load failed", error);
         return null;
       }
     }
 
-    function normalizeCardTwo(data) {
+    function normalizeCardTwo(data, officialDraw) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const raw = player && player.card_two ? player.card_two : null;
       const componentMeta = raw && raw._component_metadata
@@ -1043,6 +1044,16 @@
         raw.component_metadata = componentMeta;
         saveCardTwoBrowserCache(raw);
         return raw;
+      }
+      const cached = loadCardTwoBrowserCache();
+      const officialIssue = issueNumber((officialDraw || {}).issue);
+      const cachedIssue = issueNumber(cached && (cached.issue || cached.target_issue || cached.prediction_issue));
+      const cachedFreshEnough = Boolean(cached) && officialIssue !== null && (
+        cachedIssue !== null && cachedIssue >= officialIssue - 1 && cachedIssue <= officialIssue
+      );
+      if (cachedFreshEnough) {
+        cached.component_metadata = componentMeta;
+        return cached;
       }
       if (raw) raw.component_metadata = componentMeta;
       if (raw) return raw;
@@ -1057,8 +1068,6 @@
           rules: []
         };
       }
-      const cached = loadCardTwoBrowserCache();
-      if (cached) return cached;
       return raw || {
         title: "📖 AI 驗證與分析報告",
         available: false,
@@ -1074,7 +1083,6 @@
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const raw = player && player.card_three ? player.card_three : {};
       return {
-        title: "🤖 AI 運作中心",
         status: raw.status || (player && player.partial ? "partial" : "ok"),
         sections: raw.sections || {},
         system: raw.system || {}
@@ -1350,7 +1358,7 @@
       pollState.leaderHeartbeatTimer = null;
     }
 
-    function startVisiblePolling({ initial = false } = {}) {
+    function startVisiblePolling() {
       stopPolling();
       if (!ensurePollingLeader()) return;
       startLeaderHeartbeat();
@@ -1365,7 +1373,7 @@
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        startVisiblePolling({ initial: false });
+        startVisiblePolling();
       } else {
         startHiddenPolling();
       }
@@ -1387,7 +1395,7 @@
         }
         if (event.key === DASHBOARD_LEADER_KEY && document.visibilityState === "visible" && !pollState.isLeader) {
           const lease = safeReadLeaderLease();
-          if (!lease || Number(lease.expiresAt || 0) <= Date.now()) startVisiblePolling({ initial: false });
+          if (!lease || Number(lease.expiresAt || 0) <= Date.now()) startVisiblePolling();
         }
       });
     }
@@ -1400,104 +1408,159 @@
       return "";
     }
 
-    function normalizeNext(data) {
+    function saveCardOnePredictionBrowserCache(raw) {
+      const numbers = raw && (raw.candidates || raw.main_numbers || raw.recommend_numbers || []);
+      if (!raw || !hasValidNumberSet(numbers, 20)) return;
+      try {
+        const existing = loadCardOnePredictionBrowserCache();
+        const incomingTarget = issueNumber(raw.prediction_issue || raw.target_issue);
+        const existingTarget = issueNumber(existing && (existing.prediction_issue || existing.target_issue));
+        if (existingTarget && incomingTarget && existingTarget > incomingTarget) return;
+        localStorage.setItem(CARD_ONE_PREDICTION_STORAGE_KEY, JSON.stringify({ saved_at: Date.now(), payload: raw }));
+      } catch (error) {
+        console.warn("[dashboard] card one prediction cache save failed", error);
+      }
+    }
+
+    function loadCardOnePredictionBrowserCache() {
+      try {
+        const value = localStorage.getItem(CARD_ONE_PREDICTION_STORAGE_KEY);
+        if (!value) return null;
+        const cached = JSON.parse(value);
+        const raw = cached && cached.payload;
+        const numbers = raw && (raw.candidates || raw.main_numbers || raw.recommend_numbers || []);
+        return raw && hasValidNumberSet(numbers, 20) ? raw : null;
+      } catch (error) {
+        console.warn("[dashboard] card one prediction cache load failed", error);
+        return null;
+      }
+    }
+
+    function saveCardOneSnapshot(officialDraw, next) {
+      const officialIssue = issueNumber(officialDraw && officialDraw.issue);
+      const targetIssue = issueNumber(next && next.prediction_issue);
+      if (!officialIssue || targetIssue !== officialIssue + 1) return;
+      if (!hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)) return;
+      if (!hasValidNumberSet(next && next.raw_candidates, 20)) return;
+      try {
+        const existing = loadCardOneSnapshot();
+        const existingIssue = issueNumber(existing && existing.officialDraw && existing.officialDraw.issue);
+        if (existingIssue && existingIssue > officialIssue) return;
+        localStorage.setItem(CARD_ONE_SNAPSHOT_STORAGE_KEY, JSON.stringify({
+          saved_at: Date.now(),
+          official_draw: officialDraw,
+          prediction: next
+        }));
+      } catch (error) {
+        console.warn("[dashboard] card one snapshot save failed", error);
+      }
+    }
+
+    function loadCardOneSnapshot() {
+      try {
+        const value = localStorage.getItem(CARD_ONE_SNAPSHOT_STORAGE_KEY);
+        if (!value) return null;
+        const cached = JSON.parse(value);
+        const savedAt = Number(cached && cached.saved_at);
+        const officialDraw = cached && cached.official_draw;
+        const next = cached && cached.prediction;
+        const officialIssue = issueNumber(officialDraw && officialDraw.issue);
+        const targetIssue = issueNumber(next && next.prediction_issue);
+        const valid = Number.isFinite(savedAt)
+          && Date.now() - savedAt <= CARD_ONE_SNAPSHOT_MAX_AGE_MS
+          && officialIssue
+          && targetIssue === officialIssue + 1
+          && hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)
+          && hasValidNumberSet(next && next.raw_candidates, 20);
+        if (!valid) return null;
+        return { officialDraw, next };
+      } catch (error) {
+        console.warn("[dashboard] card one snapshot load failed", error);
+        return null;
+      }
+    }
+
+    function normalizeNext(data, officialDraw) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
-      const raw = cardOne.next_prediction || (player && player.next_prediction) || {};
-      const componentMeta = raw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
-      const release = (player && player.active_release) || {};
-      const scope = (player && player.production_scope) || {};
-      const gitCommit = raw.git_commit_hash || release.git_commit_hash || "";
+      const incomingRaw = cardOne.next_prediction || {};
+      const incomingCandidates = incomingRaw.candidates || incomingRaw.main_numbers || incomingRaw.recommend_numbers || [];
+      const officialIssue = issueNumber((officialDraw || {}).issue);
+      const incomingSourceIssue = issueNumber(incomingRaw.based_on_issue || incomingRaw.source_issue || cardOne.source_issue);
+      const incomingTargetIssue = issueNumber(incomingRaw.prediction_issue || incomingRaw.target_issue || cardOne.target_issue);
+      const incomingAligned = !officialIssue || (
+        incomingSourceIssue === officialIssue
+        && incomingTargetIssue === officialIssue + 1
+      );
+      const incomingComplete = hasValidNumberSet(incomingCandidates, 20) && incomingAligned;
+      if (incomingComplete) saveCardOnePredictionBrowserCache(incomingRaw);
+      const cachedRaw = loadCardOnePredictionBrowserCache();
+      const cachedSourceIssue = issueNumber(cachedRaw && (cachedRaw.based_on_issue || cachedRaw.source_issue));
+      const cachedTargetIssue = issueNumber(cachedRaw && (cachedRaw.prediction_issue || cachedRaw.target_issue));
+      const cachedAligned = Boolean(cachedRaw) && (!officialIssue || (
+        cachedSourceIssue === officialIssue
+        && cachedTargetIssue === officialIssue + 1
+      ));
+      const raw = incomingComplete ? incomingRaw : (cachedAligned ? cachedRaw : incomingRaw);
+      const componentMeta = incomingRaw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
-      const rawHighProbability = raw.high_probability_numbers || [];
-      const rawSuperCandidates = raw.super_candidates || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
-        target_issue_source: raw.target_issue_source,
-        based_on_issue: raw.based_on_issue || raw.source_issue,
-        based_on_draw_time: raw.based_on_draw_time || raw.source_draw_time,
-        based_on_time_source: raw.based_on_time_source,
-        based_on_draw_exists: raw.based_on_draw_exists,
-        latest_official_issue: raw.latest_official_issue,
-        expected_target_issue: raw.expected_target_issue,
-        status: raw.status || (raw.prediction_issue || raw.target_issue ? "ready" : "unknown"),
-        stale_status: raw.stale_status,
-        lag_issues: raw.lag_issues,
-        expected_draw_time: raw.expected_draw_time,
-        target_draw_time: raw.target_draw_time || raw.expected_draw_time,
-        generated_at: raw.generated_at || raw.created_at,
-        confidence: raw.confidence,
         confidence_available: Number.isFinite(Number(rawConfidence)),
         confidence_percent: confidencePercentValue(rawConfidence),
         raw_candidates: rawCandidates,
         candidates: normalizeNumbers(rawCandidates),
-        raw_high_probability_numbers: rawHighProbability,
-        high_probability_numbers: normalizeNumbers(rawHighProbability),
-        high_probability_details: asList(raw.high_probability_details),
-        high_probability_source: raw.high_probability_source,
-        high_probability_fallback_used: Boolean(raw.high_probability_fallback_used),
-        high_probability_fallback_reason: raw.high_probability_fallback_reason,
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
-        raw_super_candidates: rawSuperCandidates,
-        super_candidates: normalizeNumbers(rawSuperCandidates),
-        super_number: raw.super_number,
-        three_star: normalizeNumbers(raw.three_star || asList(raw.main_numbers).slice(0, 3)),
-        four_star: normalizeNumbers(raw.four_star || asList(raw.main_numbers).slice(0, 4)),
-        five_star: normalizeNumbers(raw.five_star || []),
-        six_star: normalizeNumbers(raw.six_star || []),
-        twins: normalizeNumbers(raw.twins || []),
-        consecutive: sortPairs(raw.consecutive || []),
-        patch_numbers: normalizeNumbers(raw.patch_numbers || []),
-        tails: normalizeNumbers(raw.tails || []),
-        tail_groups: asList(raw.tail_groups),
-        big_small: raw.big_small,
-        odd_even: raw.odd_even,
-        model_scores: raw.model_scores || {},
-        winning_model: raw.winning_model,
-        source: raw.source,
-        trigger: raw.trigger,
-        phase: raw.phase || release.phase || "28",
-        release_version: raw.release_version || release.release_version,
-        git_commit_hash: gitCommit,
-        git_commit_short: raw.git_commit_short || release.git_commit_short || (gitCommit ? String(gitCommit).slice(0, 7) : ""),
-        production_generation: raw.production_generation || scope.production_generation || release.production_generation,
-        production_start_issue: raw.production_start_issue || scope.production_start_issue || release.production_start_issue,
-        production_start_at: raw.production_start_at || scope.production_start_at || release.production_start_at,
-        model_version: raw.model_version || release.model_version,
-        feature_version: raw.feature_version || release.feature_version,
-        production_valid: raw.production_valid !== false,
-        is_stale: raw.is_stale,
         component_metadata: componentMeta,
-        reasons: raw.reasons || [],
-        recommendation_warning: raw.recommendation_warning,
-        rule_library: raw.rule_library || cardOne.rule_library || (player && player.rule_library) || {}
+        rule_library: raw.rule_library || cardOne.rule_library || {}
       };
     }
 
     function normalizeOfficialDraw(data) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
       const cardOne = player && player.card_one ? player.card_one : {};
-      const raw = cardOne.latest_official_draw || cardOne.current_draw || (player && (player.latest_official_draw || player.current_draw)) || {};
+      const raw = cardOne.latest_official_draw || cardOne.current_draw || {};
+      const currentDraw = cardOne.current_draw || (player && player.current_draw) || {};
+      const sync = (player && player.sync) || {};
       const verificationStatus = normalizeOfficialStatus(raw.verification_status || raw.status);
       const rawNumbers = raw.numbers || [];
+      const issue = issueNumber(raw.issue);
+      const currentIssue = issueNumber(currentDraw.issue);
+      const sameIssueCurrent = Boolean(issue) && Boolean(currentIssue) && issue === currentIssue ? currentDraw : {};
+      const latestIssue = issueNumber(sync.detected_latest_issue || sync.official_latest_issue);
       return {
         issue: raw.issue,
-        draw_time: raw.draw_time || raw.collected_at,
+        draw_time: raw.draw_time || sameIssueCurrent.draw_time || raw.collected_at || sameIssueCurrent.collected_at,
         raw_numbers: rawNumbers,
         numbers: normalizeNumbers(rawNumbers),
         super_number: raw.super_number,
         verification_status: verificationStatus,
+        is_latest_issue: Boolean(issue) && Boolean(latestIssue) && issue === latestIssue && verificationStatus === "verified",
         source_scope: raw.source_scope || "unknown"
       };
     }
 
     function render(data, errors) {
       const player = data.playerSummary && data.playerSummary.status === "ok" ? data.playerSummary : null;
-      const next = normalizeNext(data);
-      const officialDraw = normalizeOfficialDraw(data);
-      const cardTwo = normalizeCardTwo(data);
+      let officialDraw = normalizeOfficialDraw(data);
+      let next = normalizeNext(data, officialDraw);
+      const officialComplete = hasValidNumberSet(officialDraw.raw_numbers, 20);
+      const predictionComplete = hasValidNumberSet(next.raw_candidates, 20);
+      const officialIssue = issueNumber(officialDraw.issue);
+      const targetIssue = issueNumber(next.prediction_issue);
+      const cardOneAligned = officialComplete && predictionComplete && officialIssue && targetIssue === officialIssue + 1;
+      if (cardOneAligned) {
+        saveCardOneSnapshot(officialDraw, next);
+      } else {
+        const snapshot = loadCardOneSnapshot();
+        if (snapshot) {
+          officialDraw = snapshot.officialDraw;
+          next = snapshot.next;
+        }
+      }
+      const cardTwo = normalizeCardTwo(data, officialDraw);
       const cardThree = normalizeCardThree(data);
 
       const errorBox = document.getElementById("errorBox");
@@ -1546,10 +1609,9 @@
             <h3>最新一期</h3>
           </div>
           <div class="card1-info-line">
-            <span>第 ${safe((officialDraw || {}).issue)} 期</span>
-            <span class="status-pill ${statusClass(officialStatus)}">${officialStatusText(officialStatus)}</span>
+            <span class="${(officialDraw || {}).is_latest_issue ? "status-ok" : ""}">第 ${safe((officialDraw || {}).issue)} 期</span>
+            <span>${formatTimeOnly((officialDraw || {}).draw_time)}</span>
           </div>
-          <div class="summary-line">開獎時間：${formatTimeOnly((officialDraw || {}).draw_time)}</div>
         </div>
 
         <div class="card1-section">
@@ -1595,12 +1657,10 @@
       const cardOneComplete = isCompleteOfficialDraw(officialDraw)
         && isCompletePrediction(next)
         && isCardOneIssueAligned(officialDraw, next);
-      if (!cardOneComplete && cardOneCommittedHtml) {
-        // Card One is atomic: keep the last complete official + prediction
-        // snapshot until the next complete aligned snapshot is ready.
-        card.innerHTML = cardOneCommittedHtml;
-        return;
-      }
+      // Keep the official draw live even while the background prediction for
+      // the new issue is still reconciling. Holding the entire Card One here
+      // makes a successfully persisted official issue look stale to the user.
+      // Prediction readiness is already rendered independently above.
       if (cardOneComplete) {
         cardOneCommittedHtml = cardHtml;
       }
@@ -1747,16 +1807,30 @@
 
     function renderCardTwoConsecutiveGroups(groups) {
       const source = groups || {};
-      const rows = [
-        ["三星", source.three_star],
-        ["四星", source.four_star],
+      const levels = [
+        ["六星", source.six_star],
         ["五星", source.five_star],
-        ["六星", source.six_star]
+        ["四星", source.four_star],
+        ["三星", source.three_star]
       ];
-      const html = rows.map(([label, values]) => {
+      const claimed = [];
+      const rendered = new Map();
+
+      levels.forEach(([label, values]) => {
         const combos = asList(values)
           .map((combo) => normalizeNumbers(combo))
           .filter((combo) => combo.length);
+        const unique = combos.filter((combo) => {
+          const containedByHigher = claimed.some((higher) => combo.every((number) => higher.includes(number)));
+          if (containedByHigher) return false;
+          claimed.push(combo);
+          return true;
+        });
+        rendered.set(label, unique);
+      });
+
+      const html = ["三星", "四星", "五星", "六星"].map((label) => {
+        const combos = rendered.get(label) || [];
         const body = combos.length
           ? combos.map((combo) => combo.map(numberLabel).join("、")).join("　")
           : "無";
@@ -1814,7 +1888,7 @@
       loadApiGroup(["playerSummary"]);
     });
     if (document.visibilityState === "visible") {
-      startVisiblePolling({ initial: true });
+      startVisiblePolling();
     } else {
       startHiddenPolling();
     }

@@ -333,12 +333,58 @@ def _record_event(
 
 
 def _existing_prediction(based_on_issue: str, target_issue: str) -> dict | None:
-    return get_prediction_for_source_target(based_on_issue, target_issue)
+    return get_prediction_for_source_target(based_on_issue, target_issue, use_prediction_pool=True)
+
+
+def _distributed_prediction_lock(based_on_issue: str, target_issue: str):
+    if not (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
+        return None
+    from database.postgres import prediction_lock_connection
+
+    manager = prediction_lock_connection()
+    key = f"bingo-prediction:{based_on_issue}:{target_issue}"
+    try:
+        conn = manager.__enter__()
+        with conn.cursor() as cur:
+            cur.execute("select pg_try_advisory_lock(hashtext(%s))", (key,), prepare=False)
+            row = cur.fetchone()
+        if row and bool(row[0]):
+            return manager, conn
+    except Exception:
+        logger.exception("distributed prediction lock acquire failed based_on=%s target=%s", based_on_issue, target_issue)
+    try:
+        manager.__exit__(None, None, None)
+    except Exception:
+        pass
+    return None
+
+
+def _release_distributed_prediction_lock(lock_handle, based_on_issue: str, target_issue: str) -> None:
+    if lock_handle is None:
+        return
+    manager, conn = lock_handle
+    key = f"bingo-prediction:{based_on_issue}:{target_issue}"
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select pg_advisory_unlock(hashtext(%s))", (key,), prepare=False)
+    except Exception:
+        logger.exception("distributed prediction lock release failed based_on=%s target=%s", based_on_issue, target_issue)
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 def _existing_fast_path_status(existing: dict | None) -> dict:
     previous_version = fast_path_strategy_version_from_prediction(existing)
-    is_current = previous_version == FAST_PATH_STRATEGY_VERSION
+    legacy_current_fast_path = bool(
+        existing
+        and previous_version is None
+        and str(existing.get("strategy") or "") == "ProductionFastPath"
+        and len(_numbers(existing.get("recommend_numbers"))) == 20
+    )
+    is_current = previous_version == FAST_PATH_STRATEGY_VERSION or legacy_current_fast_path
     return {
         "is_current": is_current,
         "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
@@ -355,6 +401,8 @@ def create_for_official_draw(
     target_issue: str | None = None,
     collector_metadata: dict | None = None,
     force: bool = False,
+    existing_prediction: dict | None = None,
+    existing_prediction_lookup_performed: bool = False,
 ) -> dict:
     start = time.perf_counter()
     started_at = _now()
@@ -449,7 +497,19 @@ def create_for_official_draw(
             return skipped("target_unconfirmed")
 
         mark = time.perf_counter()
-        existing = _existing_prediction(based_on, target)
+        distributed_lock_handle = _distributed_prediction_lock(based_on, target)
+        if distributed_lock_handle is None and (os.getenv("DATABASE_URL") or os.getenv("DATABASE_TYPE") == "postgres"):
+            _stage_done(stages, "distributed_lock", mark, status="busy")
+            return skipped("distributed_lock_busy")
+        _stage_done(stages, "distributed_lock", mark, status="locked" if distributed_lock_handle is not None else "local_only")
+
+        mark = time.perf_counter()
+        if existing_prediction_lookup_performed:
+            existing = existing_prediction
+            lookup_source = "caller"
+        else:
+            existing = _existing_prediction(based_on, target)
+            lookup_source = "service"
         existing_strategy = _existing_fast_path_status(existing)
         should_regenerate_existing = bool(existing and not existing_strategy["is_current"])
         _stage_done(
@@ -457,6 +517,7 @@ def create_for_official_draw(
             "existing_prediction_lookup",
             mark,
             found=bool(existing),
+            lookup_source=lookup_source,
             fast_path_strategy_version=FAST_PATH_STRATEGY_VERSION,
             previous_strategy_version=existing_strategy["previous_strategy_version"],
             regenerated_reason=existing_strategy["regenerated_reason"] if should_regenerate_existing else None,
@@ -522,18 +583,34 @@ def create_for_official_draw(
             "previous_strategy_version": previous_strategy_version,
             "learning_analysis_history": learning_analysis_history,
         }
+        # Reuse collector-provided analysis in the fast path. This avoids a
+        # second latest-analysis DB lookup for the same immutable source issue.
+        collector_analysis = (collector_metadata or {}).get("analysis_record")
+        if isinstance(collector_analysis, dict):
+            recommendation_context["analysis_record"] = collector_analysis
+        analysis_record = (collector_metadata or {}).get("analysis_record")
+        if isinstance(analysis_record, dict):
+            recommendation_context["analysis_record"] = analysis_record
         mark = time.perf_counter()
         recommendation_result = calculate_fast_recommendation(
             based_on,
             target,
             context={**recommendation_context, "path": "prediction_service_fast_path"},
         )
+        fast_timings = (recommendation_result or {}).get("timings_ms") or {}
         _stage_done(
             stages,
             "fast_recommendation_build",
             mark,
             status=(recommendation_result or {}).get("status"),
             reason=(recommendation_result or {}).get("reason") or (recommendation_result or {}).get("message"),
+            analysis_ms=fast_timings.get("analysis_ms"),
+            analysis_source=fast_timings.get("analysis_source"),
+            learning_models_compute_ms=fast_timings.get("learning_models_compute_ms"),
+            adaptive_lookup_ms=fast_timings.get("adaptive_lookup_ms"),
+            promotion_lookup_ms=fast_timings.get("promotion_lookup_ms"),
+            final_selection_ms=fast_timings.get("final_selection_ms"),
+            result_build_ms=fast_timings.get("result_build_ms"),
         )
         if recommendation_result.get("status") == "ok":
             recommendation_result.setdefault("recommendation_status", "production_fast_path")
@@ -706,30 +783,54 @@ def create_for_official_draw(
         _stage_done(stages, "prediction_history_save", mark, status=saved.get("status"), storage=saved.get("storage"))
         snapshot_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         if saved.get("status") == "ok":
-            snapshot_mark = time.perf_counter()
+            shadow_mark = time.perf_counter()
             try:
-                from services.learning_engine import save_live_prediction_snapshot
+                from services.shadow_dynamic_observer import generate_for_prediction_async
 
-                snapshot_result = save_live_prediction_snapshot(recommendation)
+                shadow_result = generate_for_prediction_async(recommendation, record)
             except Exception as exc:
-                logger.exception("live prediction snapshot save failed")
-                snapshot_result = {"status": "error", "message": str(exc)}
+                logger.exception("shadow dynamic observer generation queue failed")
+                shadow_result = {"status": "error", "message": str(exc)}
+            _stage_done(
+                stages,
+                "shadow_dynamic_observer_queue",
+                shadow_mark,
+                status=shadow_result.get("status"),
+                count=shadow_result.get("count"),
+                message=shadow_result.get("message"),
+            )
+            # The canonical Production row is the durable source for learning
+            # recovery. Do not block the pre-draw critical path on the 18-row
+            # learning snapshot write; latest_sync's background lifecycle
+            # verifies/rebuilds the complete snapshot from this immutable row.
+            try:
+                from services.learning_engine import ensure_live_prediction_snapshot_async
+
+                snapshot_result = ensure_live_prediction_snapshot_async(target, record)
+            except Exception as exc:
+                logger.exception("live prediction snapshot recovery queue failed")
+                snapshot_result = {"status": "error", "message": str(exc), "records": 0}
             _stage_done(
                 stages,
                 "learning_snapshot_save",
-                snapshot_mark,
+                time.perf_counter(),
                 status=snapshot_result.get("status"),
-                records=snapshot_result.get("records"),
-                message=snapshot_result.get("message"),
+                records=snapshot_result.get("records", 0),
+                message=snapshot_result.get("reason") or snapshot_result.get("message"),
             )
+        else:
+            shadow_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         completed_at = _now()
         duration = _duration_ms(start)
+        print(
+            "prediction_service_stage_timings "
+            f"based_on_issue={based_on} target_issue={target} duration_ms={duration} "
+            f"stages={stages}",
+            flush=True,
+        )
         if saved.get("status") == "ok":
             prediction_id = saved.get("id")
-            snapshot_ok = (
-                snapshot_result.get("status") == "ok"
-                and int(snapshot_result.get("records") or 0) == 18
-            )
+            snapshot_ok = snapshot_result.get("status") in {"ok", "queued", "deferred"}
             _record_event(
                 event_type="prediction_created",
                 status="ok" if snapshot_ok else "warning",
@@ -752,12 +853,14 @@ def create_for_official_draw(
                 "duration_ms": duration,
                 "persisted": True,
                 "storage": saved.get("storage"),
+                "predict_time": record.get("predict_time"),
                 "fast_path_strategy_version": FAST_PATH_STRATEGY_VERSION,
                 "regenerated_reason": regenerated_reason,
                 "previous_strategy_version": previous_strategy_version,
                 "learning_snapshot": snapshot_result,
                 "learning_snapshot_complete": snapshot_ok,
                 "learning_snapshot_warning": None if snapshot_ok else "learning_snapshot_incomplete",
+                "shadow_dynamic_observer": shadow_result,
                 "timings": stages,
             }
         status = "failed" if saved.get("status") in ("error", "rejected") else "skipped"
@@ -793,6 +896,11 @@ def create_for_official_draw(
         _LOCK_STATE["prediction_last_error"] = str(exc)
         raise
     finally:
+        _release_distributed_prediction_lock(
+            locals().get("distributed_lock_handle"),
+            based_on or "",
+            target or "",
+        )
         _release_prediction_lock(
             lock_owner,
             lock_token=lock_token,

@@ -247,7 +247,11 @@ def build_prediction_history_record(recommendation: dict) -> dict | None:
         "big_small": _big_small(numbers),
         "odd_even": _odd_even(numbers),
         "reasons": reasons,
-        "model_scores": recommendation.get("model_scores") or {},
+        "model_scores": {
+            **(recommendation.get("model_scores") or {}),
+            "fast_path_strategy_version": recommendation.get("fast_path_strategy_version"),
+            "production_fast_path": recommendation.get("production_fast_path") or {},
+        },
         "winning_model": recommendation.get("winning_model"),
     }
 

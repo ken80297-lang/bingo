@@ -319,8 +319,10 @@ def mark_scheduler_event(event_type: str, job_id: str | None = None, error: Exce
 def official_collection_lock(owner: str) -> Iterator[tuple[bool, dict]]:
     acquired = _OFFICIAL_LOCK.acquire(blocking=False)
     start = time.perf_counter()
-    if not acquired and _release_stale_official_lock():
-        acquired = _OFFICIAL_LOCK.acquire(blocking=False)
+    # Never force-release a threading.Lock held by another live collector
+    # thread. A slow job still exits through this context manager's finally;
+    # releasing it from a later scheduler tick can create overlapping
+    # collectors and make the original owner raise "release unlocked lock".
     if not acquired:
         with _STATE_LOCK:
             _STATE["scheduler_skipped_count"] = int(_STATE.get("scheduler_skipped_count") or 0) + 1
@@ -354,7 +356,10 @@ def official_collection_lock(owner: str) -> Iterator[tuple[bool, dict]]:
                 _STATE["collector_running"] = False
                 _STATE["last_collector_duration_ms"] = duration_ms
             _STATE["official_lock_owner"] = None
-        _OFFICIAL_LOCK.release()
+        try:
+            _OFFICIAL_LOCK.release()
+        except RuntimeError:
+            logger.warning("official collection lock already released owner=%s", owner)
 
 
 def _sqlite_status() -> str:

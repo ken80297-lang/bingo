@@ -34,6 +34,7 @@ from api.backtest import router as backtest_router
 from api.collector import router as collector_router
 from api.data_quality import router as data_quality_router
 from api.draws import router as draws_router
+from api.distribution import router as distribution_router
 from api.laowanjia import router as laowanjia_router
 from api.laowanjia_features import router as laowanjia_features_router
 from api.laowanjia_v2 import router as laowanjia_v2_router
@@ -61,6 +62,7 @@ from api.today import router as today_router
 from analysis.engine import analyze_all
 from analysis.recommend import build_recommendation
 from collectors import collect_kuaishou_snapshot, collect_pilio_today
+import services.date_shadow_learning  # one-time date replay bootstrap when explicitly enabled
 from database.adaptive_weight_store import init_adaptive_weight_tables
 from database.analysis_store import init_analysis_tables
 from database.collector_store import init_collector_tables
@@ -118,6 +120,10 @@ STATIC_DIR = ROOT / "static"
 CATCH_UP_SCHEDULER_ENABLED = scheduler_flag_enabled("CATCH_UP_SCHEDULER_ENABLED")
 COLLECTOR_SCHEDULER_ENABLED = scheduler_flag_enabled("COLLECTOR_SCHEDULER_ENABLED")
 LATEST_OFFICIAL_SCHEDULER_ENABLED = scheduler_flag_enabled("LATEST_OFFICIAL_SCHEDULER_ENABLED")
+LATEST_OFFICIAL_POLL_OFFSETS_SECONDS = (60, 120)
+LATEST_OFFICIAL_DRAW_START_MINUTE = 7 * 60 + 5
+LATEST_OFFICIAL_DRAW_END_MINUTE = 23 * 60 + 55
+_LATEST_OFFICIAL_COMPLETED_DRAW_KEY: str | None = None
 LEGACY_REFRESH_SCHEDULER_ENABLED = scheduler_flag_enabled("LEGACY_REFRESH_SCHEDULER_ENABLED")
 STARTUP_DB_INIT_ENABLED = _env_bool("STARTUP_DB_INIT_ENABLED", False)
 OPERATIONS_DB_INIT_ENABLED = _env_bool("OPERATIONS_DB_INIT_ENABLED", False)
@@ -131,6 +137,7 @@ print("startup_import_completed host=0.0.0.0 port_env=PORT")
 app.include_router(adaptive_weight_router)
 app.include_router(admin_router)
 app.include_router(draws_router)
+app.include_router(distribution_router)
 app.include_router(analysis_router)
 app.include_router(analysis_history_router)
 app.include_router(collector_router)
@@ -310,7 +317,7 @@ def _schedule_production_catch_up_jobs() -> None:
     scheduler.add_job(
         catch_up_missing_issues,
         "date",
-        run_date=datetime.utcnow() + timedelta(seconds=8),
+        run_date=datetime.utcnow() + timedelta(seconds=20),
         id="collector_official_catch_up_startup",
         replace_existing=True,
         max_instances=1,
@@ -332,6 +339,68 @@ def _schedule_production_catch_up_jobs() -> None:
         catch_up_startup_job_registered=True,
         catch_up_interval_job_registered=True,
     )
+    print(
+        "catch_up_scheduler_registered "
+        "startup_job_id=collector_official_catch_up_startup "
+        "interval_job_id=collector_official_catch_up "
+        "startup_delay_seconds=20 interval_minutes=5",
+        flush=True,
+    )
+
+
+def _latest_official_poll_window(now: datetime | None = None) -> tuple[str | None, int | None]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8)))
+    total_minutes = current.hour * 60 + current.minute
+    seconds_today = total_minutes * 60 + current.second
+    first_draw_seconds = LATEST_OFFICIAL_DRAW_START_MINUTE * 60
+    last_draw_seconds = LATEST_OFFICIAL_DRAW_END_MINUTE * 60
+    if seconds_today < first_draw_seconds + 60 or seconds_today > last_draw_seconds + 160:
+        return None, None
+    draw_index = min((seconds_today - first_draw_seconds) // 300, (last_draw_seconds - first_draw_seconds) // 300)
+    draw_seconds = first_draw_seconds + draw_index * 300
+    offset = seconds_today - draw_seconds
+    if offset not in LATEST_OFFICIAL_POLL_OFFSETS_SECONDS:
+        return None, None
+    draw_hour, draw_minute = divmod(draw_seconds // 60, 60)
+    draw_key = f"{current.date().isoformat()}T{draw_hour:02d}:{draw_minute:02d}"
+    return draw_key, offset
+
+
+def _collect_latest_official_in_window() -> dict:
+    global _LATEST_OFFICIAL_COMPLETED_DRAW_KEY
+    draw_key, offset = _latest_official_poll_window()
+    if draw_key is None:
+        return {"status": "skipped", "reason": "outside_poll_window"}
+    if _LATEST_OFFICIAL_COMPLETED_DRAW_KEY == draw_key:
+        return {"status": "skipped", "reason": "draw_already_collected", "draw_key": draw_key, "offset_seconds": offset}
+
+    result = collect_official_today()
+    latest_sync = result.get("latest_sync") or {}
+    draw_time = str(latest_sync.get("draw_time") or "")
+    expected_hhmm = draw_key[-5:]
+    detected_hhmm = None
+    if draw_time:
+        try:
+            parsed_draw_time = datetime.fromisoformat(draw_time.replace("Z", "+00:00"))
+            if parsed_draw_time.tzinfo is None:
+                parsed_draw_time = parsed_draw_time.replace(tzinfo=timezone.utc)
+            detected_hhmm = parsed_draw_time.astimezone(timezone(timedelta(hours=8))).strftime("%H:%M")
+        except ValueError:
+            detected_hhmm = None
+    if result.get("status") == "ok" and detected_hhmm == expected_hhmm:
+        _LATEST_OFFICIAL_COMPLETED_DRAW_KEY = draw_key
+        print(
+            f"latest_official_poll_completed draw_key={draw_key} offset_seconds={offset} "
+            f"issue={latest_sync.get('official_detected_issue') or latest_sync.get('source_issue')}",
+            flush=True,
+        )
+    else:
+        print(
+            f"latest_official_poll_retry draw_key={draw_key} offset_seconds={offset} "
+            f"status={result.get('status')} detected_draw_time={draw_time or None} detected_hhmm={detected_hhmm}",
+            flush=True,
+        )
+    return result
 
 
 def _schedule_latest_official_job() -> None:
@@ -629,6 +698,13 @@ def startup_event() -> None:
     _ensure_scheduler_listener()
 
     try:
+        from database.postgres import wait_for_dashboard_read_pool
+        wait_for_dashboard_read_pool(timeout=8.0)
+        print("dashboard_read_pool_ready startup=true")
+    except Exception as exc:
+        print(f"dashboard_read_pool_warmup_failed error_type={type(exc).__name__}")
+
+    try:
         if STARTUP_DB_INIT_ENABLED:
             _run_startup_db_init()
             try:
@@ -663,6 +739,15 @@ def startup_event() -> None:
 
     if not scheduler.running and _scheduler_has_jobs():
         scheduler.start()
+    if LATEST_OFFICIAL_SCHEDULER_ENABLED and scheduler.running:
+        for job_id in ("collector_official_latest",):
+            job = scheduler.get_job(job_id)
+            print(
+                "latest_official_scheduler_active "
+                f"job_id={job_id} registered={job is not None} "
+                f"next_run_time={getattr(job, 'next_run_time', None)}",
+                flush=True,
+            )
     duration_ms = round((datetime.utcnow() - startup_started).total_seconds() * 1000, 2)
     print(
         f"startup_application_ready duration_ms={duration_ms} "
@@ -773,40 +858,19 @@ def startup_event() -> None:
         def _run_player_dashboard_summary_probe() -> None:
             try:
                 import time
-                from database.postgres import dashboard_read_connection
+                from database.postgres import dashboard_read_connection, wait_for_dashboard_read_pool
                 from services.player_dashboard import build_player_dashboard_summary
 
                 ready = False
                 for attempt in range(1, 7):
                     try:
-                        warmup_started = threading.Event()
-                        warmup_error: list[Exception] = []
-
-                        def _warm_dashboard_connection() -> None:
-                            try:
-                                with dashboard_read_connection() as conn:
-                                    warmup_started.set()
-                                    with conn.cursor() as cur:
-                                        cur.execute("select 1")
-                                        cur.fetchone()
-                            except Exception as exc:
-                                warmup_error.append(exc)
-                                warmup_started.set()
-
-                        warmup_thread = threading.Thread(target=_warm_dashboard_connection)
-                        warmup_thread.start()
-                        warmup_started.wait(timeout=2.0)
+                        wait_for_dashboard_read_pool(timeout=4.0)
                         with dashboard_read_connection() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("select 1")
                                 cur.fetchone()
-                        warmup_thread.join(timeout=2.0)
-                        if warmup_thread.is_alive():
-                            raise RuntimeError("dashboard read pool warm-up timed out")
-                        if warmup_error:
-                            raise warmup_error[0]
                         ready = True
-                        print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_READY attempt={attempt} warmed_connections=2", flush=True)
+                        print(f"PLAYER_DASHBOARD_SUMMARY_PROBE_DB_READY attempt={attempt} pool_ready=true", flush=True)
                         break
                     except Exception as exc:
                         print(
@@ -892,14 +956,76 @@ def startup_event() -> None:
             print(f"ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
 
 
+    if os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from database.analysis_store import get_analysis_history
+            from scripts.walk_forward_fastpath_adaptive_ab import run as run_fastpath_adaptive_ab
+
+            history_limit = int(os.getenv("FASTPATH_ADAPTIVE_WALK_FORWARD_HISTORY_LIMIT", "1000"))
+            history_limit = max(120, min(history_limit, 5000))
+            history = get_analysis_history(history_limit)
+            if len(history) < 120:
+                print(
+                    "FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR "
+                    + json.dumps({"reason": "insufficient_history", "records": len(history), "required_minimum": 120}, ensure_ascii=False, sort_keys=True),
+                    flush=True,
+                )
+            else:
+                result = run_fastpath_adaptive_ab(history, warmup=100)
+                print(
+                    "FASTPATH_ADAPTIVE_WALK_FORWARD_AB "
+                    + json.dumps(
+                        {"read_only": True, "source": "analysis_history", "records": len(history), "warmup": 100, "summary": result.get("summary") or {}},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                conditional_summary = (result.get("summary") or {}).get("conditional") or {}
+                regime_summary = {}
+                for regime_name, regime_data in (conditional_summary.get("regimes") or {}).items():
+                    regime_summary[regime_name] = {
+                        "issues": (regime_data or {}).get("issues"),
+                        "conditional20": (regime_data or {}).get("conditional20"),
+                        "neutral20": (regime_data or {}).get("neutral20"),
+                        "vs_neutral": (regime_data or {}).get("vs_neutral"),
+                    }
+                print("FASTPATH_REGIME_SUMMARY " + json.dumps(regime_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                source_ablation_summary = (result.get("summary") or {}).get("source_weight_ablations") or {}
+                print("FASTPATH_SOURCE_WEIGHT_ABLATION " + json.dumps(source_ablation_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                constraint_summary = (result.get("summary") or {}).get("constraint_shadow_arms") or {}
+                print("FASTPATH_CONSTRAINT_SHADOW_SUMMARY " + json.dumps(constraint_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                dilution_summary = (result.get("summary") or {}).get("adaptive_rank_dilution") or {}
+                print("FASTPATH_ADAPTIVE_RANK_DILUTION " + json.dumps(dilution_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                selective_summary = (result.get("summary") or {}).get("selective_confidence_gate") or {}
+                print("FASTPATH_SELECTIVE_GATE_SUMMARY " + json.dumps(selective_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                gate_summary = (result.get("summary") or {}).get("normal_hotcold_ge4_gate") or {}
+                print("FASTPATH_NORMAL_HOTCOLD_GATE_SUMMARY " + json.dumps(gate_summary, ensure_ascii=False, sort_keys=True), flush=True)
+                conditional = (result.get("summary") or {}).get("conditional") or {}
+                regimes = conditional.get("regimes") or {}
+                print(
+                    "FASTPATH_HOTCOLD_DEVIATION_SUMMARY "
+                    + json.dumps(
+                        {name: (data or {}).get("hotcold_deviation_buckets") or {} for name, data in regimes.items()},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"FASTPATH_ADAPTIVE_WALK_FORWARD_AB_ERROR {type(exc).__name__}: {exc}", flush=True)
+
+
 @app.on_event("shutdown")
 def shutdown_event() -> None:
     try:
         from services.latest_sync import shutdown_latest_sync_background_tasks
+        from services.prediction_lifecycle_orchestrator import shutdown_lifecycle_background_tasks
         from services.prediction_service import shutdown_prediction_background_tasks
         from database.postgres import close_dashboard_read_pool
 
         shutdown_latest_sync_background_tasks()
+        shutdown_lifecycle_background_tasks()
         shutdown_prediction_background_tasks()
         close_dashboard_read_pool()
     except Exception as exc:
@@ -1020,6 +1146,16 @@ def api_health_wake_status() -> dict[str, str | int | None]:
         "wake_source": app.state.wake_source,
         "wake_status": _wake_status(seconds),
     }
+
+
+@app.get("/distribution")
+def distribution_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "distribution.html")
+
+
+@app.head("/distribution")
+def distribution_head() -> FileResponse:
+    return FileResponse(STATIC_DIR / "distribution.html")
 
 
 @app.get("/dashboard")

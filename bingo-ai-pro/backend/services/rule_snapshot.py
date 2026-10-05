@@ -28,6 +28,15 @@ RULE_REGISTRY: tuple[RuleDefinition, ...] = (
     RuleDefinition("cold", "冷門", "trend", ("cold_numbers",)),
     RuleDefinition("missing", "缺號", "trend", ("missing_numbers",)),
     RuleDefinition("repeat", "重號", "trend", ("repeated_numbers",)),
+    RuleDefinition("long_dragon", "長龍追號", "trend", ("ai_score",)),
+    RuleDefinition("multi_window_hot_cold", "多週期冷熱門", "trend", ("ai_score",)),
+    RuleDefinition("omission_strength", "遺漏強度", "trend", ("ai_score",)),
+    RuleDefinition("neighbor_extension", "鄰號延伸", "gap", ("ai_score",)),
+    RuleDefinition("parity_size_trend", "大小單雙走勢", "trend", ("ai_score",)),
+    RuleDefinition("zone_cluster_strength", "分區群聚強度", "zone", ("ai_score",)),
+    RuleDefinition("consecutive_extension", "連號延續", "shape", ("ai_score",)),
+    RuleDefinition("tail_trend_strength", "尾數走勢強化", "shape", ("ai_score",)),
+    RuleDefinition("composite_market_regime", "綜合盤勢型態", "ensemble", ("ai_score",)),
     RuleDefinition("tail", "尾數", "shape", ("tail_distribution",)),
     RuleDefinition("gap", "間距", "gap", ("difference_values", "gap_score")),
     RuleDefinition("cluster", "群聚", "zone", ("cluster_level", "cluster_score")),
@@ -275,12 +284,28 @@ def build_rule_snapshot(
             "history_cutoff_issue": resolved_source_issue,
         },
         "fast_path_sources": _build_fast_path_sources(analysis),
+        "dashboard_analysis_summary": _build_dashboard_analysis_summary(analysis),
         "rules": rules,
         "aggregate": {
             "completed_count": len(ready_rules),
             "total_count": len(rules),
             "primary_rules": [item["key"] for item in primary],
         },
+    }
+
+
+def _build_dashboard_analysis_summary(analysis: dict) -> dict:
+    ai_score = analysis.get("ai_score") if isinstance(analysis.get("ai_score"), dict) else {}
+    return {
+        "laowanjia_score": analysis.get("laowanjia_score"),
+        "hot_zone": analysis.get("hot_zone") or [],
+        "cold_zone": analysis.get("cold_zone"),
+        "three_star": analysis.get("three_star"),
+        "four_star": analysis.get("four_star"),
+        "five_star": analysis.get("five_star"),
+        "six_star": analysis.get("six_star"),
+        "super_number_trajectory_recovery": ai_score.get("super_number_trajectory_recovery") or {},
+        "cluster_aftershock_recovery": ai_score.get("cluster_aftershock_recovery") or {},
     }
 
 
@@ -318,6 +343,50 @@ def _build_rule_item(rule: RuleDefinition, analysis: dict, prediction: dict) -> 
         candidates = _numbers(analysis.get("missing_numbers"))[:12]
     elif rule.key == "repeat":
         candidates = _numbers(analysis.get("repeated_numbers"))[:10]
+    elif rule.key == "long_dragon":
+        data = _nested_rule(analysis, "long_dragon")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = list(data.get("streaks") or [])
+        if data:
+            candidate_groups.append({"shadow_only": True, "max_streak": data.get("max_streak"), "active_count": data.get("active_count")})
+    elif rule.key == "multi_window_hot_cold":
+        data = _nested_rule(analysis, "multi_window_hot_cold")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        windows = data.get("windows") if isinstance(data.get("windows"), dict) else {}
+        candidate_groups = [
+            {
+                "window": window,
+                "available_draws": details.get("available_draws"),
+                "hot_numbers": details.get("hot_numbers") or [],
+                "cold_numbers": details.get("cold_numbers") or [],
+            }
+            for window, details in windows.items()
+            if isinstance(details, dict)
+        ]
+        if data:
+            candidate_groups.append({"shadow_only": True, "rising_numbers": data.get("rising_numbers") or [], "cooling_numbers": data.get("cooling_numbers") or []})
+    elif rule.key == "omission_strength":
+        data = _nested_rule(analysis, "omission_strength")
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = list(data.get("overdue_numbers") or [])
+        if data:
+            candidate_groups.append({
+                "shadow_only": True,
+                "available_draws": data.get("available_draws"),
+                "recovery_numbers": data.get("recovery_numbers") or [],
+            })
+    elif rule.key in {"neighbor_extension", "parity_size_trend", "zone_cluster_strength", "consecutive_extension", "tail_trend_strength", "composite_market_regime"}:
+        data = _nested_rule(analysis, rule.key)
+        score = data.get("confidence")
+        confidence = data.get("confidence")
+        candidates = _numbers(data.get("candidate_numbers"))[:20]
+        candidate_groups = [data] if data else []
     elif rule.key == "tail":
         candidate_groups = _tail_groups(analysis.get("tail_distribution"), prediction)
     elif rule.key == "gap":

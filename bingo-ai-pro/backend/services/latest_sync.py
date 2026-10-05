@@ -416,6 +416,8 @@ def _prediction_exists_for_latest(issue: str) -> bool:
     prediction = _latest_prediction_for_issue(issue)
     if not is_production_prediction(prediction):
         return False
+    if not fast_path_prediction_is_current(prediction):
+        return False
     numbers = _valid_numbers((prediction or {}).get("recommend_numbers"))
     return len(numbers) == 20
 
@@ -971,16 +973,104 @@ def _failure(source_issue: str | None, stage: str, reason: str, detected_at: str
     )
 
 
+def _run_full_official_lifecycle_background(saved_draw: dict, source_issue: str, target_issue: str) -> None:
+    try:
+        from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
+
+        lifecycle = process_official_draw_lifecycle(
+            saved_draw,
+            source="official_collector",
+            trigger="official_draw_saved",
+            caller="process_latest_official_draw_background",
+            create_next_prediction=True,
+        )
+        try:
+            from services.learning_engine import ensure_live_prediction_snapshot
+
+            learning_snapshot_recovery = ensure_live_prediction_snapshot(target_issue)
+        except Exception as exc:
+            logger.exception("latest sync learning snapshot recovery failed target_issue=%s", target_issue)
+            learning_snapshot_recovery = {"status": "error", "message": str(exc)}
+        analysis_created = _analysis_exists(source_issue)
+        prediction_created = _prediction_exists_for_latest(source_issue)
+        completed = analysis_created and prediction_created
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            analysis_created=analysis_created,
+            prediction_created=prediction_created,
+            dashboard_ready=completed,
+            failure_stage=None if completed else "downstream",
+            failure_reason=None if completed else str(lifecycle.get("message") or "analysis_or_prediction_pending"),
+            next_retry_expected_at=None if completed else (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+            analysis_reconcile={"status": "completed" if analysis_created else "pending", "issue": source_issue},
+            prediction_reconcile={
+                "status": "completed" if prediction_created else "pending",
+                "refresh_status": "ready" if prediction_created else "pending",
+                "based_on_issue": source_issue,
+                "target_issue": target_issue,
+            },
+        )
+        _invalidate_downstream_caches("official_draw_lifecycle_background_completed")
+    except Exception as exc:
+        logger.exception("latest sync full lifecycle background failed source_issue=%s", source_issue)
+        _update_state(
+            source_issue=source_issue,
+            target_issue=target_issue,
+            failure_stage="downstream",
+            failure_reason=str(exc),
+            next_retry_expected_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        )
+    finally:
+        with _RECONCILE_LOCK:
+            _RECONCILE_IN_FLIGHT.discard(source_issue)
+
+
+def _queue_full_official_lifecycle(saved_draw: dict, source_issue: str, target_issue: str) -> dict[str, Any]:
+    with _RECONCILE_LOCK:
+        if source_issue in _RECONCILE_IN_FLIGHT:
+            return {"status": "queued", "reason": "lifecycle_already_running"}
+        _RECONCILE_IN_FLIGHT.add(source_issue)
+    future = _submit_reconcile_background(
+        _run_full_official_lifecycle_background,
+        dict(saved_draw),
+        source_issue,
+        target_issue,
+    )
+    if future is None:
+        with _RECONCILE_LOCK:
+            _RECONCILE_IN_FLIGHT.discard(source_issue)
+        return {"status": "unavailable", "reason": "background_stopped"}
+    return {"status": "queued", "reason": "full_lifecycle_background", "target_issue": target_issue}
+
+
 def process_latest_official_draw() -> dict[str, Any]:
     start = time.perf_counter()
     detected_at = _now()
     with _STATE_LOCK:
         attempt_count = int(_LATEST_SYNC_STATE.get("attempt_count") or 0) + 1
 
+    stage_started = time.perf_counter()
     existing_latest = get_latest_official_draw()
+    latest_db_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     database_issue = (existing_latest or {}).get("issue")
-    source_draws = _source_draws_today(page_size=100)
+    # Latest-only polling only needs the newest handful of official rows.
+    # Keep the wider page for catch-up semantics, where older missing issues
+    # may legitimately need to be selected from the same response.
+    source_page_size = 10 if LATEST_ISSUE_PRIORITY and not HISTORICAL_CATCHUP_ENABLED else 100
+    stage_started = time.perf_counter()
+    source_draws = _source_draws_today(page_size=source_page_size)
+    source_fetch_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     source_draw, detected_source_issue, target_select_reason = _select_collector_target_draw(database_issue, source_draws)
+    if source_draw and str(source_draw.get("issue") or "") != str(database_issue or ""):
+        logger.info(
+            "latest sync new official issue detected source_issue=%s database_issue=%s detected_at=%s source_fetch_ms=%.2f latest_db_ms=%.2f",
+            source_draw.get("issue"),
+            database_issue,
+            detected_at if isinstance(detected_at, str) else detected_at.isoformat(),
+            source_fetch_ms,
+            latest_db_ms,
+        )
     if not source_draw:
         snapshot = _failure(database_issue, "detect", target_select_reason or "official_latest_issue_unavailable", detected_at, attempt_count)
         if detected_source_issue:
@@ -1009,55 +1099,210 @@ def process_latest_official_draw() -> dict[str, Any]:
 
     source_issue = str(source_draw.get("issue"))
     prediction_target_issue = _next_issue(source_issue)
-    existing = get_official_draw_by_issue(source_issue)
+    # get_latest_official_draw() already returned the complete row for the
+    # common no-op case. Reuse it when the source confirms the same issue
+    # instead of making a second remote lookup for identical data.
+    if str((existing_latest or {}).get("issue") or "") == source_issue:
+        existing = existing_latest
+        existing_lookup_ms = 0.0
+    else:
+        stage_started = time.perf_counter()
+        existing = get_official_draw_by_issue(source_issue)
+        existing_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
     existing_complete = is_complete_official_draw(existing)
+
+    # Polling the already-complete latest issue must stay cheap.  Do not rerun
+    # verification/analysis/prediction/snapshot reload every time the official
+    # source has not advanced.  If either downstream artifact is missing, fall
+    # through to the existing reconciliation path so an incomplete issue still
+    # self-heals.
+    if (
+        target_select_reason == "database_already_at_source_latest"
+        and existing_complete
+    ):
+        # Once this process has already proven the same issue complete, avoid
+        # repeating two remote downstream existence queries every 30 seconds.
+        # A restart, issue change, or incomplete state still falls back to the
+        # database checks below, preserving reconciliation/self-heal behavior.
+        with _STATE_LOCK:
+            state_proves_downstream_complete = (
+                str(_LATEST_SYNC_STATE.get("source_issue") or "") == source_issue
+                and bool(_LATEST_SYNC_STATE.get("database_saved"))
+                and bool(_LATEST_SYNC_STATE.get("analysis_created"))
+                and bool(_LATEST_SYNC_STATE.get("prediction_created"))
+            )
+        if state_proves_downstream_complete:
+            analysis_created = True
+            prediction_created = True
+            analysis_lookup_ms = 0.0
+            prediction_lookup_ms = 0.0
+        else:
+            stage_started = time.perf_counter()
+            analysis_created = _analysis_exists(source_issue)
+            analysis_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+            stage_started = time.perf_counter()
+            prediction_created = _prediction_exists_for_latest(source_issue)
+            prediction_lookup_ms = round((time.perf_counter() - stage_started) * 1000, 2)
+        if analysis_created and prediction_created:
+            logger.info(
+                "latest sync noop timing issue=%s latest_db_ms=%.2f source_fetch_ms=%.2f existing_lookup_ms=%.2f analysis_lookup_ms=%.2f prediction_lookup_ms=%.2f total_ms=%.2f",
+                source_issue,
+                latest_db_ms,
+                source_fetch_ms,
+                existing_lookup_ms,
+                analysis_lookup_ms,
+                prediction_lookup_ms,
+                (time.perf_counter() - start) * 1000,
+            )
+            stages = _snapshot_stages(
+                database_saved=True,
+                analysis_created=True,
+                prediction_created=True,
+                dashboard_ready=True,
+            )
+            snapshot = _update_state(
+                official_detected_issue=source_issue,
+                source_issue=source_issue,
+                database_latest_issue=source_issue,
+                dashboard_latest_issue=source_issue,
+                latest_saved_at=(existing or {}).get("updated_at") or (existing or {}).get("created_at") or _now(),
+                draw_time=(existing or {}).get("draw_time"),
+                numbers_count=len(_valid_numbers((existing or {}).get("numbers"))),
+                database_saved=True,
+                analysis_created=True,
+                prediction_created=True,
+                dashboard_ready=True,
+                target_issue=prediction_target_issue,
+                detected_at=detected_at,
+                last_attempt_at=_now(),
+                attempt_count=attempt_count,
+                failure_stage=None,
+                failure_reason=None,
+                next_retry_expected_at=None,
+                stages=stages,
+            )
+            snapshot.update(
+                {
+                    "status": "ok",
+                    "saved": {"status": "ok", "saved": 0, "storage": "existing"},
+                    "analysis": {"status": "existing", "issue": source_issue},
+                    "priority_verification": {"status": "skipped", "reason": "latest_already_complete"},
+                    "priority_shadow_verification": {"status": "skipped", "reason": "latest_already_complete"},
+                    "lifecycle": {"status": "existing", "reason": "downstream_already_complete"},
+                    "target_select_reason": target_select_reason,
+                    "snapshot_reload": {"status": "skipped", "reason": "latest_already_complete"},
+                    "elapsed_seconds": round(time.perf_counter() - start, 3),
+                    "timing": {
+                        "latest_db_ms": latest_db_ms,
+                        "source_fetch_ms": source_fetch_ms,
+                        "existing_lookup_ms": existing_lookup_ms,
+                        "analysis_lookup_ms": analysis_lookup_ms,
+                        "prediction_lookup_ms": prediction_lookup_ms,
+                        "total_ms": round((time.perf_counter() - start) * 1000, 2),
+                    },
+                    "exit_reason": "latest_already_complete",
+                }
+            )
+            return snapshot
+
+    save_ms = 0.0
+    invalidate_ms = 0.0
+    confirm_ms = 0.0
+    verification_ms = 0.0
+    analysis_ms = 0.0
+    prediction_ms = 0.0
+
     if existing_complete:
         saved_draw = existing
         save_result = {"status": "ok", "saved": 0, "storage": "existing"}
     elif is_complete_official_draw(source_draw):
         source_draw["verification_status"] = "validated"
         source_draw["fetched_at"] = detected_at
+        save_started = time.perf_counter()
         save_result = save_official_draws([source_draw])
+        save_ms = round((time.perf_counter() - save_started) * 1000, 2)
+        logger.info("latest sync official latency issue=%s draw_time=%s detected_at=%s source_fetch_ms=%.2f save_ms=%.2f status=%s saved=%s", source_issue, source_draw.get("draw_time"), detected_at.isoformat() if hasattr(detected_at, "isoformat") else str(detected_at), source_fetch_ms, save_ms, save_result.get("status"), save_result.get("saved"))
         if save_result.get("status") != "ok" or int(save_result.get("saved") or 0) < 1:
             return _failure(source_issue, "database_saved", str(save_result.get("error") or save_result), detected_at, attempt_count)
+        invalidate_started = time.perf_counter()
         _invalidate_downstream_caches("official_draw_saved")
+        invalidate_ms = round((time.perf_counter() - invalidate_started) * 1000, 2)
+        logger.info("latest sync cache invalidation timing source_issue=%s duration_ms=%.2f", source_issue, invalidate_ms)
+        confirm_started = time.perf_counter()
         saved_draw = get_official_draw_by_issue(source_issue)
+        confirm_ms = round((time.perf_counter() - confirm_started) * 1000, 2)
+        logger.info("latest sync official confirm timing source_issue=%s duration_ms=%.2f complete=%s", source_issue, confirm_ms, is_complete_official_draw(saved_draw))
         if not is_complete_official_draw(saved_draw):
             return _failure(source_issue, "database_confirmed", "saved_draw_not_confirmed", detected_at, attempt_count)
     else:
         return _failure(source_issue, "validated", "invalid_or_incomplete_official_draw", detected_at, attempt_count)
 
-    analysis_result: dict[str, Any]
-    try:
-        analysis_result = save_analysis_history(saved_draw)
-    except Exception as exc:
-        logger.exception("latest sync analysis failed")
-        analysis_result = {"status": "error", "error": str(exc)}
-
-    lifecycle: dict[str, Any]
-    if existing_complete and _prediction_exists_for_latest(source_issue):
-        lifecycle = {"status": "existing", "prediction": {"status": "already_exists"}}
-    else:
+    # Verification is also latency-sensitive and must not wait behind prior
+    # learning on the single background worker. This path only verifies already
+    # persisted predictions/shadow rows; it never regenerates recommendations.
+    # Keep explicit stage markers here: new-issue work is the only remaining
+    # collector path capable of exhausting the job deadline.
+    logger.info("latest sync new issue persisted source_issue=%s", source_issue)
+    # Verification is durable downstream work and does not need to block the
+    # new-draw critical path. The queued full lifecycle below performs the
+    # canonical prediction/shadow verification after the next recommendation
+    # is persisted. Keep this collector focused on draw -> analysis -> prediction.
+    priority_verification: dict[str, Any] = {"status": "deferred", "reason": "full_lifecycle"}
+    priority_shadow_verification: dict[str, Any] = {"status": "deferred", "reason": "full_lifecycle"}
+    verification_ms = 0.0
+    # Prediction is latency-sensitive: a five-minute Bingo target must not wait
+    # behind the single-worker background lifecycle (especially prior learning).
+    # Persist the current analysis and create the next prediction immediately
+    # after the official draw is confirmed. Verification/learning still run in
+    # the complete background lifecycle below.
+    # A newly persisted official issue cannot already have downstream work from
+    # this collector pass. Avoid two redundant remote existence lookups here:
+    # analysis save is an upsert, and ensure_next_prediction() owns prediction
+    # idempotency/canonical checks. Existing/recovery paths keep the lookups so
+    # restart and self-heal semantics remain unchanged.
+    newly_persisted_official = not existing_complete
+    analysis_created = False if newly_persisted_official else _analysis_exists(source_issue)
+    analysis_result: dict[str, Any] = {"status": "existing", "issue": source_issue}
+    if not analysis_created:
         try:
-            from services.prediction_lifecycle_orchestrator import process_official_draw_lifecycle
-
-            lifecycle = process_official_draw_lifecycle(
-                saved_draw,
-                source="official_collector",
-                trigger="official_draw_saved",
-                caller="process_latest_official_draw",
-                create_next_prediction=True,
-            )
+            analysis_started = time.perf_counter()
+            analysis_result = save_analysis_history(saved_draw, recent_draws=source_draws)
+            analysis_created = _analysis_created_from_result(analysis_result, source_issue)
+            analysis_ms = round((time.perf_counter() - analysis_started) * 1000, 2)
+            logger.info("latest sync priority analysis timing source_issue=%s duration_ms=%.2f created=%s", source_issue, analysis_ms, analysis_created)
         except Exception as exc:
-            logger.exception("latest sync downstream lifecycle failed")
-            lifecycle = {"status": "error", "message": str(exc)}
+            logger.exception("latest sync priority analysis failed source_issue=%s", source_issue)
+            analysis_result = {"status": "error", "message": str(exc)}
 
-    analysis_created = analysis_result.get("status") == "ok" or _analysis_exists(source_issue)
-    prediction_payload = lifecycle.get("prediction") if isinstance(lifecycle, dict) else {}
-    prediction_created = (
-        (prediction_payload or {}).get("status") in {"created", "already_exists", "ok"}
-        or _prediction_exists_for_latest(source_issue)
-    )
+    prediction_created = False if newly_persisted_official else _prediction_exists_for_latest(source_issue)
+    priority_prediction: dict[str, Any] = {"status": "existing" if prediction_created else "deferred"}
+
+    # Keep the polling critical path bounded. Prediction generation can take
+    # tens of seconds and must not hold the scheduler job open. The canonical
+    # lifecycle already owns idempotent next-prediction creation, verification,
+    # learning, and snapshot recovery, so queue it once per source issue.
+    if existing_complete and prediction_created and analysis_created:
+        lifecycle = {"status": "existing", "reason": "downstream_already_complete"}
+    else:
+        lifecycle = _queue_full_official_lifecycle(saved_draw, source_issue, prediction_target_issue)
+        if not prediction_created:
+            priority_prediction = {
+                "status": "deferred",
+                "reason": "full_lifecycle_background",
+                "target_issue": prediction_target_issue,
+            }
+        logger.info(
+            "latest sync downstream deferred source_issue=%s target_issue=%s lifecycle_status=%s",
+            source_issue,
+            prediction_target_issue,
+            lifecycle.get("status"),
+        )
+
+    analysis_result = {
+        **analysis_result,
+        "reason": None if analysis_created else "priority_analysis_failed",
+        "priority_prediction": priority_prediction,
+    }
     completed = analysis_created and prediction_created
     stages = _snapshot_stages(
         database_saved=True,
@@ -1093,10 +1338,30 @@ def process_latest_official_draw() -> dict[str, Any]:
             "status": "ok" if completed else "partial",
             "saved": save_result,
             "analysis": analysis_result,
+            "priority_verification": priority_verification,
+            "priority_shadow_verification": priority_shadow_verification,
             "lifecycle": lifecycle,
             "target_select_reason": target_select_reason,
-            "snapshot_reload": _reload_downstream_snapshot(saved_draw, "official_latest_sync_completed"),
+            # Production is already persisted at this point. Avoid another
+            # synchronous prediction DB lookup on the collector critical path;
+            # the queued full lifecycle/dashboard requests will reconcile the
+            # presentation cache without delaying lock release.
+            "snapshot_reload": {"status": "deferred", "reason": "production_persisted"},
             "elapsed_seconds": round(time.perf_counter() - start, 3),
+            "timing": {
+                "latest_db_ms": latest_db_ms,
+                "source_fetch_ms": source_fetch_ms,
+                "existing_lookup_ms": existing_lookup_ms,
+                "official_save_ms": save_ms,
+                "cache_invalidation_ms": invalidate_ms,
+                "official_confirm_ms": confirm_ms,
+                "verification_ms": verification_ms,
+                "analysis_ms": analysis_ms,
+                "prediction_ms": prediction_ms,
+                "prediction_stage_timings": priority_prediction.get("stage_timings_ms") if isinstance(priority_prediction, dict) else {},
+                "fetched_at_to_prediction_ms": priority_prediction.get("fetched_at_to_prediction_ms") if isinstance(priority_prediction, dict) else None,
+                "total_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
             "exit_reason": "completed" if completed else "partial",
         }
     )
