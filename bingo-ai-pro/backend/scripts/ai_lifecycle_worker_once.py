@@ -64,16 +64,21 @@ def main() -> int:
         learning_synchronous=True,
     )
 
-    # Cron workers are short-lived: make sure the just-created target has a
-    # durable learning snapshot before the process exits. The web path keeps
-    # this asynchronous, but a one-shot worker can safely wait here.
+    # Prediction creation already queues snapshot recovery on a single bounded
+    # worker. Do not synchronously drain it again in this 512 MiB one-shot Cron:
+    # doing the same recovery twice can overlap with the queued worker and push
+    # the process over its memory limit after the durable prediction is saved.
     prediction_target_issue = (result.get("prediction") or {}).get("target_issue")
-    snapshot_drain = None
-    if prediction_target_issue:
-        from services.learning_engine import ensure_live_prediction_snapshot
-        snapshot_drain = ensure_live_prediction_snapshot(str(prediction_target_issue))
+    snapshot_drain = {
+        "status": "deferred",
+        "reason": "prediction_service_bounded_worker",
+        "target_issue": prediction_target_issue,
+    }
 
-    shutdown_lifecycle_background_tasks(wait=True)
+    # Learning is synchronous in this worker, so there is no lifecycle learning
+    # future that must be awaited here. Cancel any incidental pending lifecycle
+    # work and let the short-lived process exit without blocking.
+    shutdown_lifecycle_background_tasks(wait=False)
     gc.collect()
     payload = {
         "status": result.get("status"),
