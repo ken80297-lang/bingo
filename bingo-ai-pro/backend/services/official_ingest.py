@@ -4,9 +4,12 @@ import ctypes
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from collectors.taiwan_lottery_collector import fetch_official_bingo_results
@@ -23,6 +26,47 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_PAGE_SIZE = 10
 MAX_POLL_RETRY_MINUTES_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_MAX_RETRY_MINUTES", "3"))
 POLL_FIRST_RETRY_SECONDS_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_FIRST_RETRY_SECONDS", "60"))
+AI_LIFECYCLE_SUBPROCESS_ENABLED = os.getenv("AI_LIFECYCLE_SUBPROCESS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+ROOT = Path(__file__).resolve().parents[1]
+_AI_WORKER_LOCK = threading.Lock()
+
+def _launch_ai_lifecycle_subprocess(issue: str) -> None:
+    if not AI_LIFECYCLE_SUBPROCESS_ENABLED:
+        return
+    if not _AI_WORKER_LOCK.acquire(blocking=False):
+        print(f"AI_LIFECYCLE_SUBPROCESS_SKIPPED issue={issue} reason=worker_busy", flush=True)
+        return
+
+    def _run() -> None:
+        try:
+            env = os.environ.copy()
+            env["AI_LIFECYCLE_ISSUE"] = issue
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "ai_lifecycle_worker_once.py")],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            print(
+                "AI_LIFECYCLE_SUBPROCESS "
+                f"issue={issue} returncode={completed.returncode} "
+                f"stdout={completed.stdout[-4000:]!r} stderr={completed.stderr[-2000:]!r}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"AI_LIFECYCLE_SUBPROCESS_ERROR issue={issue} "
+                f"error_type={type(exc).__name__} error={exc}",
+                flush=True,
+            )
+        finally:
+            _AI_WORKER_LOCK.release()
+
+    threading.Thread(target=_run, name=f"ai-lifecycle-{issue}", daemon=True).start()
+    print(f"AI_LIFECYCLE_SUBPROCESS_STARTED issue={issue}", flush=True)
 
 _POLL_STATE_LOCK = threading.RLock()
 _POLL_COMPLETED_ISSUES: set[str] = set()
@@ -299,6 +343,8 @@ def collect_latest_official_lightweight() -> dict[str, Any]:
         # Uvicorn does not configure the root INFO logger. Keep the acceptance
         # record visible in Render stdout without enabling noisy global logs.
         print("LIGHTWEIGHT_OFFICIAL_INGEST " + json.dumps(result, ensure_ascii=False, sort_keys=True, default=str), flush=True)
+        if result.get("status") == "ok" and result.get("exit_reason") == "saved" and result.get("source_issue"):
+            _launch_ai_lifecycle_subprocess(str(result["source_issue"]))
         return result
 
 
