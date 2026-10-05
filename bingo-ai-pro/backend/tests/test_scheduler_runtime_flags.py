@@ -147,7 +147,8 @@ def test_latest_official_scheduler_registers_startup_and_interval_jobs(monkeypat
     assert set(by_id) == {"collector_official_latest_startup", "collector_official_latest"}
     assert by_id["collector_official_latest_startup"]["trigger"] == "date"
     assert by_id["collector_official_latest"]["trigger"] == "interval"
-    assert by_id["collector_official_latest"]["minutes"] == 2
+    assert by_id["collector_official_latest"]["minutes"] == 1
+    assert by_id["collector_official_latest"]["func"] is app_module.run_lightweight_official_polling_tick
     assert runtime_updates[-1] == {"official_collector_interval_job_registered": True}
 
 

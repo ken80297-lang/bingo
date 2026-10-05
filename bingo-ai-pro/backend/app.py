@@ -103,6 +103,7 @@ from config.runtime_flags import env_bool as _env_bool, env_raw as _env_raw, sch
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY
 from services.official_verification import collect_official_today
+from services.official_ingest import collect_latest_official_lightweight, run_lightweight_official_polling_tick
 from services.traffic_observability import normalize_traffic_endpoint, record_traffic_request
 from services.daily_recovery import (
     DAILY_RECOVERY_ENABLED,
@@ -407,10 +408,20 @@ def _schedule_latest_official_job() -> None:
         print("latest_official_scheduler_disabled interval_job_registered=false")
         update_collector_runtime(official_collector_interval_job_registered=False)
         return
+    startup_job = scheduler.add_job(
+        run_lightweight_official_polling_tick,
+        "date",
+        run_date=datetime.utcnow() + timedelta(seconds=60),
+        id="collector_official_latest_startup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
     interval_job = scheduler.add_job(
-        _collect_latest_official_in_window,
-        "cron",
-        second="0,30",
+        run_lightweight_official_polling_tick,
+        "interval",
+        minutes=1,
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -419,8 +430,9 @@ def _schedule_latest_official_job() -> None:
     )
     print(
         "latest_official_scheduler_registered "
-        "strategy=draw_window offsets_seconds=60,120 "
+        "strategy=lightweight_draw_window offsets_seconds=60,120 "
         "draw_window=07:05-23:55 "
+        f"startup_job_id={getattr(startup_job, 'id', 'collector_official_latest_startup')} "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
     )
@@ -445,7 +457,7 @@ def _schedule_collector_jobs() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
-        collect_official_today,
+        run_lightweight_official_polling_tick,
         "date",
         run_date=datetime.utcnow() + timedelta(seconds=5),
         id="collector_official_today_startup",
@@ -470,9 +482,9 @@ def _schedule_collector_jobs() -> None:
     )
     if not LATEST_OFFICIAL_SCHEDULER_ENABLED:
         scheduler.add_job(
-            collect_official_today,
+            run_lightweight_official_polling_tick,
             "interval",
-            minutes=2,
+            minutes=1,
             id="collector_official_today",
             replace_existing=True,
             max_instances=1,
@@ -749,9 +761,7 @@ def startup_event() -> None:
 
     if os.getenv("LATEST_OFFICIAL_SYNC_ON_STARTUP_ONCE", "").strip().lower() == "true":
         try:
-            from services.latest_sync import process_latest_official_draw
-
-            latest_sync_once_result = process_latest_official_draw()
+            latest_sync_once_result = collect_latest_official_lightweight()
             print(
                 "LATEST_OFFICIAL_SYNC_STARTUP_ONCE "
                 + json.dumps(latest_sync_once_result, ensure_ascii=False, sort_keys=True, default=str),

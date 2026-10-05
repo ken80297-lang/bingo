@@ -82,7 +82,7 @@ def test_pending_prediction_official_draws_includes_incomplete_verified(monkeypa
     assert [item["issue"] for item in draws] == ["115000104"]
 
 
-def test_collect_official_today_initializes_required_tables(monkeypatch):
+def test_collect_official_today_does_not_initialize_tables_on_poll(monkeypatch):
     called = []
 
     class Lock:
@@ -96,7 +96,7 @@ def test_collect_official_today_initializes_required_tables(monkeypatch):
     monkeypatch.setattr(
         official_verification,
         "_ensure_official_collection_tables",
-        lambda: called.append("schema") or {"official_draw": {"sqlite": "available"}},
+        lambda: (_ for _ in ()).throw(AssertionError("schema init should stay out of poll path")),
     )
     monkeypatch.setattr(
         official_verification,
@@ -106,5 +106,5 @@ def test_collect_official_today_initializes_required_tables(monkeypatch):
 
     result = official_verification.collect_official_today()
 
-    assert called == ["schema"]
-    assert result["schema_init"] == {"official_draw": {"sqlite": "available"}}
+    assert called == []
+    assert "schema_init" not in result
