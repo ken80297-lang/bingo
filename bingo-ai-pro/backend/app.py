@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.adaptive_weight import router as adaptive_weight_router
 from api.admin import router as admin_router
+from api.ai_lifecycle_worker import router as ai_lifecycle_worker_router
 from api.analysis import router as analysis_router
 from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
@@ -136,6 +137,7 @@ print("startup_import_completed host=0.0.0.0 port_env=PORT")
 
 app.include_router(adaptive_weight_router)
 app.include_router(admin_router)
+app.include_router(ai_lifecycle_worker_router)
 app.include_router(draws_router)
 app.include_router(distribution_router)
 app.include_router(analysis_router)
