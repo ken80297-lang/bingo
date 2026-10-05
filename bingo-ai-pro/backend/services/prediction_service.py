@@ -784,13 +784,17 @@ def create_for_official_draw(
         snapshot_result = {"status": "skipped", "reason": "prediction_not_persisted"}
         if saved.get("status") == "ok":
             shadow_mark = time.perf_counter()
-            try:
-                from services.shadow_dynamic_observer import generate_for_prediction_async
+            cron_core_only = os.getenv("AI_LIFECYCLE_CRON_CORE_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+            if cron_core_only:
+                shadow_result = {"status": "deferred", "reason": "cron_core_only"}
+            else:
+                try:
+                    from services.shadow_dynamic_observer import generate_for_prediction_async
 
-                shadow_result = generate_for_prediction_async(recommendation, record)
-            except Exception as exc:
-                logger.exception("shadow dynamic observer generation queue failed")
-                shadow_result = {"status": "error", "message": str(exc)}
+                    shadow_result = generate_for_prediction_async(recommendation, record)
+                except Exception as exc:
+                    logger.exception("shadow dynamic observer generation queue failed")
+                    shadow_result = {"status": "error", "message": str(exc)}
             _stage_done(
                 stages,
                 "shadow_dynamic_observer_queue",
@@ -803,13 +807,16 @@ def create_for_official_draw(
             # recovery. Do not block the pre-draw critical path on the 18-row
             # learning snapshot write; latest_sync's background lifecycle
             # verifies/rebuilds the complete snapshot from this immutable row.
-            try:
-                from services.learning_engine import ensure_live_prediction_snapshot_async
+            if cron_core_only:
+                snapshot_result = {"status": "deferred", "reason": "cron_core_only", "records": 0}
+            else:
+                try:
+                    from services.learning_engine import ensure_live_prediction_snapshot_async
 
-                snapshot_result = ensure_live_prediction_snapshot_async(target, record)
-            except Exception as exc:
-                logger.exception("live prediction snapshot recovery queue failed")
-                snapshot_result = {"status": "error", "message": str(exc), "records": 0}
+                    snapshot_result = ensure_live_prediction_snapshot_async(target, record)
+                except Exception as exc:
+                    logger.exception("live prediction snapshot recovery queue failed")
+                    snapshot_result = {"status": "error", "message": str(exc), "records": 0}
             _stage_done(
                 stages,
                 "learning_snapshot_save",
