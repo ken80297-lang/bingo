@@ -64,6 +64,15 @@ def main() -> int:
         learning_synchronous=True,
     )
 
+    # Cron workers are short-lived: make sure the just-created target has a
+    # durable learning snapshot before the process exits. The web path keeps
+    # this asynchronous, but a one-shot worker can safely wait here.
+    prediction_target_issue = (result.get("prediction") or {}).get("target_issue")
+    snapshot_drain = None
+    if prediction_target_issue:
+        from services.learning_engine import ensure_live_prediction_snapshot
+        snapshot_drain = ensure_live_prediction_snapshot(str(prediction_target_issue))
+
     shutdown_lifecycle_background_tasks(wait=True)
     gc.collect()
     payload = {
@@ -72,7 +81,8 @@ def main() -> int:
         "verification_status": (result.get("verification") or {}).get("status"),
         "learning_status": (result.get("learning") or {}).get("status"),
         "prediction_status": (result.get("prediction") or {}).get("status"),
-        "prediction_target_issue": (result.get("prediction") or {}).get("target_issue"),
+        "prediction_target_issue": prediction_target_issue,
+        "snapshot_drain": snapshot_drain,
         "create_next_prediction": allow_prediction,
         "next_draw_already_exists": next_draw is not None,
         "timings_ms": result.get("timings_ms"),
