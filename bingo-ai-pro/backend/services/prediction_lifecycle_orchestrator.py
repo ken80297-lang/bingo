@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import atexit
 import sys
 import threading
@@ -213,16 +214,21 @@ def process_official_draw_lifecycle(
         }
     )
     timings["verification_ms"] = _duration_ms(mark)
-    try:
-        from services.shadow_dynamic_observer import verify_for_official_draw
+    mark = time.perf_counter()
+    cron_core_only = os.getenv("AI_LIFECYCLE_CRON_CORE_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+    if cron_core_only:
+        shadow_dynamic = {"status": "deferred", "reason": "cron_core_only"}
+        timings["shadow_dynamic_ms"] = _duration_ms(mark)
+    else:
+        try:
+            from services.shadow_dynamic_observer import verify_for_official_draw
 
-        mark = time.perf_counter()
-        shadow_dynamic = verify_for_official_draw({**official_draw, "issue": issue, "numbers": numbers})
-        timings["shadow_dynamic_ms"] = _duration_ms(mark)
-    except Exception as exc:
-        logger.exception("shadow dynamic observer verification failed")
-        shadow_dynamic = {"status": "error", "message": str(exc)}
-        timings["shadow_dynamic_ms"] = _duration_ms(mark)
+            shadow_dynamic = verify_for_official_draw({**official_draw, "issue": issue, "numbers": numbers})
+            timings["shadow_dynamic_ms"] = _duration_ms(mark)
+        except Exception as exc:
+            logger.exception("shadow dynamic observer verification failed")
+            shadow_dynamic = {"status": "error", "message": str(exc)}
+            timings["shadow_dynamic_ms"] = _duration_ms(mark)
 
     mark = time.perf_counter()
     if analysis_result and analysis_result.get("status") == "ok":
