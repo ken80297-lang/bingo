@@ -444,6 +444,15 @@ def test_card_one_raw_fields_preserve_duplicate_and_subset_validation():
     assert "numbers.every((number) => predictionSet.has(number))" in script
 
 
+def test_card_one_prediction_super_number_is_independent_from_recommend_numbers():
+    card1 = _card1_renderer()
+    predicted_super_line = "const predictedSuper = normalizeNumbers([(next || {}).super_number]);"
+
+    assert predicted_super_line in card1
+    assert "超級獎推薦" in card1
+    assert "const predictedSuper = normalizeNumbers([(next || {}).super_number]).filter" not in card1
+
+
 def test_card_one_failure_is_isolated_from_later_cards():
     script = _script()
     render_start = script.index("function render(data, errors)")

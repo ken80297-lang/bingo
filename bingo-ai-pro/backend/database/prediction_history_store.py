@@ -4501,14 +4501,23 @@ def get_latest_prediction_context(
         prediction as (
             select {columns}
             from prediction_history
-            where issue = (select issue from latest)
-              and prediction_issue = ((select issue from latest)::bigint + 1)::text
-              and issue is not null
+            where issue is not null
               and prediction_issue is not null
+              and issue ~ '^[0-9]+$'
+              and prediction_issue ~ '^[0-9]+$'
+              and case
+                    when issue ~ '^[0-9]+$' and prediction_issue ~ '^[0-9]+$'
+                    then prediction_issue::bigint = issue::bigint + 1
+                      and prediction_issue::bigint in (
+                        (select issue from latest)::bigint,
+                        (select issue from latest)::bigint + 1
+                      )
+                    else false
+                  end
               and recommend_numbers is not null
               and jsonb_typeof(recommend_numbers) = 'array'
               and jsonb_array_length(recommend_numbers) > 0
-            order by created_at desc, id desc
+            order by prediction_issue::bigint desc, created_at desc, id desc
             limit 1
         )
         select latest.*, prediction.*
@@ -4531,13 +4540,18 @@ def get_latest_prediction_context(
         prediction as (
             select {columns}
             from prediction_history
-            where issue = (select issue from latest)
-              and prediction_issue = cast(cast((select issue from latest) as integer) + 1 as text)
+            where cast(prediction_issue as integer) in (
+                cast((select issue from latest) as integer),
+                cast((select issue from latest) as integer) + 1
+              )
+              and cast(prediction_issue as integer) = cast(issue as integer) + 1
               and issue is not null
               and prediction_issue is not null
+              and issue not glob '*[^0-9]*'
+              and prediction_issue not glob '*[^0-9]*'
               and recommend_numbers is not null
               and recommend_numbers not in ('', '[]')
-            order by created_at desc, id desc
+            order by cast(prediction_issue as integer) desc, created_at desc, id desc
             limit 1
         )
         select latest.*, prediction.*

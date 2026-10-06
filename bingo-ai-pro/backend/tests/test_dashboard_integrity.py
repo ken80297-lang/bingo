@@ -148,6 +148,113 @@ def test_same_issue_newer_generated_at_can_update_cache():
     assert player_dashboard._PLAYER_COMPONENT_CACHE["next_prediction_snapshot"]["recommend_numbers"] == [2]
 
 
+def test_fresh_card_one_components_win_over_stale_cache(monkeypatch):
+    player_dashboard._PLAYER_COMPONENT_CACHE["official_draw"] = {
+        "issue": "115056513",
+        "numbers": list(range(1, 21)),
+        "super_number": 1,
+        "verification_status": "verified",
+        "source_scope": "production",
+    }
+    player_dashboard._PLAYER_COMPONENT_CACHE["next_prediction_snapshot"] = {
+        "issue": "115056434",
+        "based_on_issue": "115056434",
+        "prediction_issue": "115056435",
+        "recommend_numbers": list(range(1, 21)),
+        "super_number": 12,
+    }
+    fresh_official = {
+        "issue": "115056515",
+        "numbers": list(range(1, 21)),
+        "super_number": 1,
+        "verification_status": "verified",
+        "source_scope": "production",
+    }
+    fresh_prediction = {
+        "issue": "115056514",
+        "based_on_issue": "115056514",
+        "prediction_issue": "115056515",
+        "recommend_numbers": [n for n in range(1, 22) if n != 20][:20],
+        "super_number": 65,
+        "generated_at": "2026-10-06T05:55:00+00:00",
+    }
+
+    def resolved(value):
+        future = Future()
+        future.set_result(value)
+        return future
+
+    def fake_submit(name, fn):
+        if name == "official_draw":
+            return resolved(fresh_official), "submitted"
+        if name == "next_prediction_snapshot":
+            return resolved(fresh_prediction), "submitted"
+        return resolved({}), "submitted"
+
+    monkeypatch.setattr(player_dashboard, "_submit_component", fake_submit)
+
+    result = player_dashboard.get_player_card_one_snapshot(
+        deadline=time.monotonic() + 5,
+        timings=[],
+        warnings=[],
+        component_metadata={},
+        dashboard_generation_id="20261006-135500-000001",
+    )
+
+    assert result["current"]["issue"] == "115056515"
+    assert result["next_prediction"]["prediction_issue"] == "115056515"
+    assert result["next_prediction"]["based_on_issue"] == "115056514"
+    assert result["next_prediction"]["super_number"] == 65
+    assert len(result["next_prediction"]["recommend_numbers"]) == 20
+
+
+def test_summary_cache_is_bypassed_when_component_cache_has_newer_issues():
+    payload = {
+        "cache_filter_version": player_dashboard.PLAYER_CACHE_FILTER_VERSION,
+        "card_one": {
+            "latest_official_draw": {"issue": "115056514"},
+            "next_prediction": {
+                "based_on_issue": "115056514",
+                "prediction_issue": "115056515",
+                "recommend_numbers": list(range(1, 21)),
+            },
+        },
+    }
+    player_dashboard._PLAYER_COMPONENT_CACHE["official_draw"] = {"issue": "115056515"}
+    player_dashboard._PLAYER_COMPONENT_CACHE["next_prediction_snapshot"] = {
+        "based_on_issue": "115056515",
+        "prediction_issue": "115056516",
+        "recommend_numbers": list(range(1, 21)),
+        "super_number": 64,
+    }
+
+    assert player_dashboard._summary_cache_is_older_than_component_cache(payload) is True
+
+
+def test_dashboard_health_accepts_prediction_target_matching_latest_official():
+    health = player_dashboard._dashboard_health(
+        {
+            "official_draw": {"source": "live", "stale": False, "result": "ok"},
+            "next_prediction_snapshot": {"source": "live", "stale": False, "result": "ok"},
+        },
+        official_issue="115056515",
+        next_prediction={"based_on_issue": "115056514", "prediction_issue": "115056515"},
+        aggregates={},
+        card_two_history=[],
+        generation_id="20261006-135500-000002",
+    )
+
+    assert health["issue_consistent"] is True
+    assert health["status"] == "healthy"
+
+
+def test_component_freshness_uses_numeric_issue_comparison():
+    older_lexical = {"prediction_issue": "11505699"}
+    newer_numeric = {"prediction_issue": "115056100"}
+
+    assert player_dashboard._newer_component_payload(older_lexical, newer_numeric) == newer_numeric
+
+
 def test_mixed_issue_health_is_degraded():
     health = player_dashboard._dashboard_health(
         {
@@ -156,8 +263,7 @@ def test_mixed_issue_health_is_degraded():
             "prediction_aggregates": {"source": "live", "stale": False, "result": "ok"},
         },
         official_issue="115051970",
-        next_prediction={"based_on_issue": "115051969", "prediction_issue": "115051970"},
-        previous_verification={"target_issue": "115051968"},
+        next_prediction={"based_on_issue": "115051968", "prediction_issue": "115051969"},
         aggregates={"latest_issue": "115051968"},
         card_two_history=[{"prediction_issue": "115051968"}],
         generation_id="20260914-101100-115051",
@@ -725,3 +831,19 @@ def test_latest_prediction_context_can_use_dashboard_read_pool(monkeypatch):
     assert result["query_count"] == 1
     assert calls[-1]["cloud_connection_factory"] is fake_dashboard_connection
     assert calls[-1]["use_shared_connection"] is False
+
+
+def test_latest_prediction_context_selects_current_or_next_prediction_issue_numerically(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_query(sql, params=(), sqlite_sql=None, **kwargs):
+        captured["sql"] = sql
+        captured["sqlite_sql"] = sqlite_sql
+        return []
+
+    monkeypatch.setattr(prediction_history_store, "_query_with_fallback", fake_query)
+
+    assert prediction_history_store.get_latest_prediction_context(allow_fallback_lookup=False) is None
+    assert "prediction_issue::bigint" in captured["sql"]
+    assert "(select issue from latest)::bigint + 1" in captured["sql"]
+    assert "cast(prediction_issue as integer)" in captured["sqlite_sql"]

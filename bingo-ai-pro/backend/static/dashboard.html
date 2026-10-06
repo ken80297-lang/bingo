@@ -1226,7 +1226,19 @@
     function isCardOneIssueAligned(officialDraw, next) {
       const officialIssue = issueNumber((officialDraw || {}).issue);
       const sourceIssue = issueNumber((next || {}).based_on_issue);
-      return Boolean(officialIssue) && officialIssue === sourceIssue;
+      const targetIssue = issueNumber((next || {}).prediction_issue);
+      return Boolean(officialIssue)
+        && (
+          officialIssue === sourceIssue
+          || officialIssue === targetIssue
+          || targetIssue === officialIssue + 1
+        );
+    }
+
+    function isCardOnePredictionCompatible(officialIssue, sourceIssue, targetIssue) {
+      if (!officialIssue || !targetIssue) return false;
+      if (sourceIssue && sourceIssue >= targetIssue) return false;
+      return targetIssue === officialIssue || targetIssue === officialIssue + 1;
     }
 
     async function loadJson(key, url, timeoutMs = API_TIMEOUT_MS) {
@@ -1439,7 +1451,8 @@
     function saveCardOneSnapshot(officialDraw, next) {
       const officialIssue = issueNumber(officialDraw && officialDraw.issue);
       const targetIssue = issueNumber(next && next.prediction_issue);
-      if (!officialIssue || targetIssue !== officialIssue + 1) return;
+      const sourceIssue = issueNumber(next && next.based_on_issue);
+      if (!isCardOnePredictionCompatible(officialIssue, sourceIssue, targetIssue)) return;
       if (!hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)) return;
       if (!hasValidNumberSet(next && next.raw_candidates, 20)) return;
       try {
@@ -1466,10 +1479,11 @@
         const next = cached && cached.prediction;
         const officialIssue = issueNumber(officialDraw && officialDraw.issue);
         const targetIssue = issueNumber(next && next.prediction_issue);
+        const sourceIssue = issueNumber(next && next.based_on_issue);
         const valid = Number.isFinite(savedAt)
           && Date.now() - savedAt <= CARD_ONE_SNAPSHOT_MAX_AGE_MS
           && officialIssue
-          && targetIssue === officialIssue + 1
+          && isCardOnePredictionCompatible(officialIssue, sourceIssue, targetIssue)
           && hasValidNumberSet(officialDraw && officialDraw.raw_numbers, 20)
           && hasValidNumberSet(next && next.raw_candidates, 20);
         if (!valid) return null;
@@ -1488,25 +1502,21 @@
       const officialIssue = issueNumber((officialDraw || {}).issue);
       const incomingSourceIssue = issueNumber(incomingRaw.based_on_issue || incomingRaw.source_issue || cardOne.source_issue);
       const incomingTargetIssue = issueNumber(incomingRaw.prediction_issue || incomingRaw.target_issue || cardOne.target_issue);
-      const incomingAligned = !officialIssue || (
-        incomingSourceIssue === officialIssue
-        && incomingTargetIssue === officialIssue + 1
-      );
+      const incomingAligned = !officialIssue || isCardOnePredictionCompatible(officialIssue, incomingSourceIssue, incomingTargetIssue);
       const incomingComplete = hasValidNumberSet(incomingCandidates, 20) && incomingAligned;
       if (incomingComplete) saveCardOnePredictionBrowserCache(incomingRaw);
       const cachedRaw = loadCardOnePredictionBrowserCache();
       const cachedSourceIssue = issueNumber(cachedRaw && (cachedRaw.based_on_issue || cachedRaw.source_issue));
       const cachedTargetIssue = issueNumber(cachedRaw && (cachedRaw.prediction_issue || cachedRaw.target_issue));
-      const cachedAligned = Boolean(cachedRaw) && (!officialIssue || (
-        cachedSourceIssue === officialIssue
-        && cachedTargetIssue === officialIssue + 1
-      ));
+      const cachedAligned = Boolean(cachedRaw)
+        && (!officialIssue || isCardOnePredictionCompatible(officialIssue, cachedSourceIssue, cachedTargetIssue));
       const raw = incomingComplete ? incomingRaw : (cachedAligned ? cachedRaw : incomingRaw);
       const componentMeta = incomingRaw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
       return {
         prediction_issue: raw.prediction_issue || raw.target_issue,
+        based_on_issue: raw.based_on_issue || raw.source_issue,
         confidence_available: Number.isFinite(Number(rawConfidence)),
         confidence_percent: confidencePercentValue(rawConfidence),
         raw_candidates: rawCandidates,
@@ -1552,10 +1562,14 @@
       const officialIssue = issueNumber(officialDraw.issue);
       const targetIssue = issueNumber(next.prediction_issue);
       const cardOneAligned = officialComplete && predictionComplete && officialIssue && targetIssue === officialIssue + 1;
-      if (cardOneAligned) {
+      const snapshot = loadCardOneSnapshot();
+      const snapshotIssue = issueNumber(snapshot && snapshot.officialDraw && snapshot.officialDraw.issue);
+      if (snapshot && snapshotIssue && officialIssue && snapshotIssue > officialIssue) {
+        officialDraw = snapshot.officialDraw;
+        next = snapshot.next;
+      } else if (cardOneAligned || (officialComplete && predictionComplete && isCardOnePredictionCompatible(officialIssue, issueNumber(next.based_on_issue), targetIssue))) {
         saveCardOneSnapshot(officialDraw, next);
       } else {
-        const snapshot = loadCardOneSnapshot();
         if (snapshot) {
           officialDraw = snapshot.officialDraw;
           next = snapshot.next;
@@ -1587,7 +1601,7 @@
       const numbers = normalizeNumbers(next.candidates);
       const officialNumbers = normalizeNumbers((officialDraw || {}).numbers);
       const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]).filter((number) => officialNumbers.includes(number));
-      const predictedSuper = normalizeNumbers([(next || {}).super_number]).filter((number) => numbers.includes(number));
+      const predictedSuper = normalizeNumbers([(next || {}).super_number]);
       const ruleLibrary = next.rule_library || {};
       const stateNotice = componentStateNotice(next.component_metadata);
       const officialStatus = (officialDraw || {}).verification_status;

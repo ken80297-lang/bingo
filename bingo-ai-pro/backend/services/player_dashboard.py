@@ -230,6 +230,8 @@ def _cached_summary() -> dict | None:
     if isinstance(payload, dict) and time.monotonic() < expires_at:
         if payload.get("cache_filter_version") != PLAYER_CACHE_FILTER_VERSION:
             return None
+        if _summary_cache_is_older_than_component_cache(payload):
+            return None
         latest = ((payload.get("next_prediction") or {}).get("prediction_issue"))
         based_on = ((payload.get("next_prediction") or {}).get("based_on_issue"))
         if latest and not is_production_prediction({"issue": based_on, "prediction_issue": latest, "recommend_numbers": (payload.get("next_prediction") or {}).get("recommend_numbers")}):
@@ -248,6 +250,33 @@ def _store_summary_cache(payload: dict) -> None:
     with _PLAYER_SUMMARY_CACHE_LOCK:
         _PLAYER_SUMMARY_CACHE["payload"] = deepcopy(payload)
         _PLAYER_SUMMARY_CACHE["expires_at"] = time.monotonic() + PLAYER_SUMMARY_TTL_SECONDS
+
+
+def _summary_cache_is_older_than_component_cache(payload: dict) -> bool:
+    official_payload = (
+        ((payload.get("card_one") or {}).get("latest_official_draw"))
+        or payload.get("latest_official_draw")
+        or payload.get("current_draw")
+    )
+    prediction_payload = (
+        ((payload.get("card_one") or {}).get("next_prediction"))
+        or payload.get("next_prediction")
+    )
+    for name, summary_component in (
+        ("official_draw", official_payload),
+        ("next_prediction_snapshot", prediction_payload),
+    ):
+        component_issue = _component_cache_issue(_PLAYER_COMPONENT_CACHE.get(name))
+        summary_issue = _component_cache_issue(summary_component)
+        if component_issue is not None and summary_issue is not None and component_issue > summary_issue:
+            logger.info(
+                "player dashboard summary cache bypassed component=%s component_issue=%s summary_issue=%s",
+                name,
+                component_issue,
+                summary_issue,
+            )
+            return True
+    return False
 
 
 def invalidate_player_dashboard_cache(reason: str | None = None) -> dict:
@@ -479,6 +508,18 @@ def _component_cache_update_allowed(existing: Any, incoming: Any) -> tuple[bool,
             return False, "older_generated_at"
         return True, "same_issue_newer_or_unversioned_time"
     return True, "newer_or_same_issue"
+
+
+def _newer_component_payload(primary: Any, secondary: Any) -> Any:
+    if primary in (None, [], {}):
+        return secondary
+    if secondary in (None, [], {}):
+        return primary
+    primary_issue = _component_cache_issue(primary)
+    secondary_issue = _component_cache_issue(secondary)
+    if primary_issue is None or secondary_issue is None:
+        return primary
+    return secondary if secondary_issue > primary_issue else primary
 
 
 def _parse_generated_at(payload: Any) -> str | None:
@@ -3105,26 +3146,25 @@ def get_player_card_one_snapshot(
     dashboard_generation_id: str | None = None,
 ) -> dict:
     started = time.perf_counter()
-    # The collector keeps this cache current. First paint should not wait on
-    # the same latest-row DB query again; refresh it asynchronously instead.
-    official = _load_component_cache("official_draw")
+    # Keep Card One current with the database. The last-good cache is still the
+    # fallback, but a fresh component that finishes in this request must win.
+    cached_official = _load_component_cache("official_draw")
     official_future, official_state = _submit_component(
         "official_draw",
         get_latest_official_draw,
     )
-    if official:
-        timings.append(_timed_default("official_draw", time.perf_counter(), "ok", "last_good_cache"))
-    else:
-        official = _component_result(
-            "official_draw",
-            official_future,
-            deadline=deadline,
-            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
-            timings=timings,
-            warnings=warnings,
-            component_metadata=component_metadata,
-            dashboard_generation_id=dashboard_generation_id,
-        )
+    official = _component_result(
+        "official_draw",
+        official_future,
+        deadline=deadline,
+        timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+        timings=timings,
+        warnings=warnings,
+        fallback=cached_official,
+        component_metadata=component_metadata,
+        dashboard_generation_id=dashboard_generation_id,
+    )
+    official = _newer_component_payload(official, _load_component_cache("official_draw"))
     current = _current_draw(official)
 
     # Kuaishou is advisory only. Never block Card One on a secondary source:
@@ -3133,8 +3173,8 @@ def get_player_card_one_snapshot(
     _submit_component("kuaishou", get_latest_kuaishou_snapshot)
     detected_latest_issue = _max_issue((current or {}).get("issue"), (kuaishou or {}).get("issue"))
 
-    # Prefer the completed prediction snapshot already held in memory. A DB
-    # context lookup is refresh work, not a first-paint dependency.
+    # Prefer the newest prediction snapshot that completed in this request.
+    # Older component cache may only fill gaps when the fresh lookup times out.
     next_prediction = _load_component_cache("next_prediction_snapshot")
     if current:
         def build_next_snapshot():
@@ -3157,9 +3197,19 @@ def get_player_card_one_snapshot(
                 allow_slow_lookups=False,
                 transform_diagnostics=diagnostics,
             )
-        _submit_component("next_prediction_snapshot", build_next_snapshot)
-        if next_prediction:
-            timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "ok", "last_good_cache"))
+        prediction_future, _prediction_state = _submit_component("next_prediction_snapshot", build_next_snapshot)
+        next_prediction = _component_result(
+            "next_prediction_snapshot",
+            prediction_future,
+            deadline=deadline,
+            timeout_seconds=PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS,
+            timings=timings,
+            warnings=warnings,
+            fallback=next_prediction,
+            component_metadata=component_metadata,
+            dashboard_generation_id=dashboard_generation_id,
+        )
+        next_prediction = _newer_component_payload(next_prediction, _load_component_cache("next_prediction_snapshot"))
     elif next_prediction:
         _PLAYER_RUNTIME_METRICS["stale_fallback_count"] += 1
         warnings.append("next_prediction_snapshot stale cache")
@@ -3370,8 +3420,17 @@ def _dashboard_health(
     ]
     numeric_checks = [_as_int(item) for item in checks if item]
     issue_consistent = True
-    if official_text and prediction_source_issue and str(official_text) != str(prediction_source_issue):
-        issue_consistent = False
+    official_int = _as_int(official_text)
+    prediction_source_int = _as_int(prediction_source_issue)
+    prediction_target_int = _as_int(prediction_target_issue)
+    if official_int is not None and prediction_source_int is not None:
+        acceptable_prediction_issues = {prediction_source_int}
+        if prediction_target_int is not None:
+            acceptable_prediction_issues.add(prediction_target_int)
+        if prediction_target_int is not None and prediction_target_int == official_int + 1:
+            acceptable_prediction_issues.add(official_int)
+        if official_int not in acceptable_prediction_issues:
+            issue_consistent = False
 
     # Historical verification/aggregate/Card Two may legitimately trail after a
     # latest-only gap jump. They describe the newest completed prediction
@@ -3393,7 +3452,6 @@ def _dashboard_health(
             max(completed_lifecycle_checks) - min(completed_lifecycle_checks) <= 1
         )
     card_two_int = _as_int(card_two_issue)
-    prediction_target_int = _as_int(prediction_target_issue)
     if card_two_int is not None and prediction_target_int is not None and card_two_int != prediction_target_int:
         if completed_lifecycle_checks:
             issue_consistent = issue_consistent and (
