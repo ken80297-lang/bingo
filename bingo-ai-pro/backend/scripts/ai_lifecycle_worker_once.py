@@ -74,7 +74,18 @@ def main() -> int:
     next_issue = str(int(issue) + 1)
     next_draw = get_official_draw_by_issue(next_issue)
     allow_prediction = next_draw is None
-    if not allow_prediction:
+    if os.getenv("AI_LIFECYCLE_CRON_CORE_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}:
+        from datetime import timedelta
+        from scripts.ai_lifecycle_cron_once import draw_datetime, prediction_is_timely
+
+        draw_at = draw_datetime(draw)
+        target_time = draw_at + timedelta(minutes=5) if draw_at else None
+        if not prediction_is_timely(draw):
+            allow_prediction = False
+            print(json.dumps({"guard": "prediction_deadline_passed", "issue": issue,
+                              "target_time": target_time.isoformat() if target_time else None,
+                              "create_next_prediction": False}), flush=True)
+    if next_draw is not None:
         print(json.dumps({
             "guard": "historical_target_already_drawn",
             "issue": issue,
