@@ -1448,6 +1448,84 @@ def get_analysis_history(limit: int = 100, *, use_prediction_pool: bool = False)
     return [_row_to_record(row) for row in rows]
 
 
+
+V7_MODEL_HISTORY_COLUMNS = (
+    "issue",
+    "numbers",
+    "hot_numbers",
+    "missing_numbers",
+    "laowanjia_score",
+    "cluster_score",
+    "twins",
+    "consecutive",
+    "patch_numbers",
+    "pattern",
+    "ai_pattern",
+)
+
+
+def _row_to_v7_model_history_record(row: Any) -> dict:
+    data = dict(zip(V7_MODEL_HISTORY_COLUMNS, row))
+    legacy_laowanjia = _json_loads(data.get("laowanjia_score"))
+    laowanjia_value = legacy_laowanjia
+    if isinstance(legacy_laowanjia, dict):
+        laowanjia_value = legacy_laowanjia.get("score")
+        if laowanjia_value is None:
+            laowanjia_value = min(
+                100,
+                (legacy_laowanjia.get("hot") or 0) * 5
+                + (legacy_laowanjia.get("repeat") or 0) * 8
+                + (legacy_laowanjia.get("diagonal") or 0) * 6
+                + (legacy_laowanjia.get("consecutive") or 0) * 4,
+            )
+    return {
+        "issue": data.get("issue"),
+        "numbers": _json_loads(data.get("numbers")) or [],
+        "hot_numbers": _json_loads(data.get("hot_numbers")) or [],
+        "missing_numbers": _json_loads(data.get("missing_numbers")) or [],
+        "laowanjia_score": laowanjia_value if laowanjia_value is not None else legacy_laowanjia,
+        "cluster_score": data.get("cluster_score"),
+        "twins": _json_loads(data.get("twins")) or [],
+        "consecutive": _json_loads(data.get("consecutive")) or [],
+        "patch_numbers": _json_loads(data.get("patch_numbers")) or [],
+        "pattern": data.get("pattern"),
+        "ai_pattern": data.get("ai_pattern"),
+    }
+
+
+def get_v7_model_history(limit: int = 100, *, use_prediction_pool: bool = True) -> list[dict]:
+    """Load only fields consumed by the five V7 learning models.
+
+    This preserves the same 100-record history window while avoiding transfer
+    and transformation of analysis fields that V7 model_engine never reads.
+    """
+    limit = max(1, min(int(limit or 100), 100))
+    columns = ", ".join(V7_MODEL_HISTORY_COLUMNS)
+    rows = _query_with_fallback(
+        f"""
+        select {columns}
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit %s
+        """,
+        (limit,),
+        sqlite_sql=f"""
+        select {columns}
+        from analysis_history
+        where issue is not null and issue not like '99%%' and upper(issue) not like 'TEST%%'
+          and cluster_level is not null
+        order by issue desc
+        limit ?
+        """,
+        cloud_connection_factory=_prediction_read_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
+    )
+    return [_row_to_v7_model_history_record(row) for row in rows]
+
+
+
 def get_analysis_summary_records(limit: int = 20) -> list[dict]:
     limit = max(1, min(int(limit or 20), 100))
     rows = _query_with_fallback(
