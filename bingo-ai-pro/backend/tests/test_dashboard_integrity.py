@@ -235,7 +235,7 @@ def test_dashboard_health_accepts_prediction_target_matching_latest_official():
     health = player_dashboard._dashboard_health(
         {
             "official_draw": {"source": "live", "stale": False, "result": "ok"},
-            "next_prediction_snapshot": {"source": "live", "stale": False, "result": "ok"},
+            "next_prediction_snapshot": {"source": "live", "stale": True, "result": "ok"},
         },
         official_issue="115056515",
         next_prediction={"based_on_issue": "115056514", "prediction_issue": "115056515"},

@@ -3462,6 +3462,18 @@ def _dashboard_health(
     fallback_component_names = [name for name, item in component_metadata.items() if item.get("source") == "fallback"]
     failed_component_names = [name for name, item in component_metadata.items() if item.get("result") == "error"]
     stale_component_names = [name for name, item in component_metadata.items() if item.get("stale")]
+    if issue_consistent:
+        stale_component_names = [
+            name
+            for name in stale_component_names
+            if not (
+                name == "next_prediction_snapshot"
+                and (component_metadata.get(name) or {}).get("source") == "live"
+                and _as_int(prediction_target_issue) is not None
+                and _as_int(official_text) is not None
+                and _as_int(prediction_target_issue) >= _as_int(official_text)
+            )
+        ]
     live_components = len(live_component_names)
     cached_components = len(cached_component_names)
     fallback_components = len(fallback_component_names)
