@@ -1003,6 +1003,15 @@ def evaluate_verified_issue(issue: str) -> dict:
     try:
         snapshot = capture_prediction_snapshot(issue)
         if snapshot.get("status") != "ok":
+            recovery = ensure_live_prediction_snapshot(str(issue))
+            if recovery.get("status") == "ok":
+                snapshot = capture_prediction_snapshot(issue)
+            else:
+                snapshot = {
+                    **snapshot,
+                    "snapshot_recovery": recovery,
+                }
+        if snapshot.get("status") != "ok":
             record = {
                 "issue": str(issue),
                 "draw_time": None,
@@ -1019,15 +1028,22 @@ def evaluate_verified_issue(issue: str) -> dict:
                 "official_coverage": 0,
                 "rank_score": 0,
                 "top_n": 0,
-                "prediction_snapshot": {},
                 "analysis_snapshot": {},
                 "verification_status": "missing_prediction",
                 "learned_status": "missing_snapshot",
                 "learned_at": None,
                 "error_message": "prediction snapshot not found",
+                "prediction_snapshot": {
+                    "snapshot_recovery": snapshot.get("snapshot_recovery"),
+                },
             }
             saved = upsert_learning_record(record)
-            return {"status": "missing_snapshot", "issue": issue, "saved": [saved]}
+            return {
+                "status": "missing_snapshot",
+                "issue": issue,
+                "snapshot_recovery": snapshot.get("snapshot_recovery"),
+                "saved": [saved],
+            }
 
         official = get_official_draw_by_issue(str(issue), verified_only=False)
         existing_records = snapshot.get("learning_records") or []

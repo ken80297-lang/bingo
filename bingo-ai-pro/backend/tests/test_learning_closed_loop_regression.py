@@ -66,6 +66,69 @@ def test_live_snapshot_writes_exactly_18_model_topn_records(monkeypatch):
     assert all(row["prediction_snapshot"] for row in saved)
 
 
+def test_verified_learning_recovers_missing_snapshot_from_prediction_history(monkeypatch):
+    store: dict[str, list[dict]] = {"115099901": []}
+    learning_used = []
+
+    prediction = {
+        "issue": "115099900",
+        "prediction_issue": "115099901",
+        "predict_time": "2026-09-24T00:00:00",
+        "recommend_numbers": list(range(1, 21)),
+        "model_scores": _model_scores(),
+    }
+
+    def upsert_many(rows):
+        for row in rows:
+            target = str(row["issue"])
+            existing = store.setdefault(target, [])
+            existing[:] = [
+                item
+                for item in existing
+                if not (
+                    item.get("model_name") == row.get("model_name")
+                    and item.get("top_n") == row.get("top_n")
+                    and item.get("prediction_type") == row.get("prediction_type")
+                )
+            ]
+            existing.append(dict(row))
+        return [{"status": "ok", "storage": "cloud"} for _ in rows]
+
+    def upsert_one(row):
+        upsert_many([row])
+        return {"status": "ok", "storage": "cloud"}
+
+    monkeypatch.setattr(learning_engine, "_learning_snapshots_for_issue", lambda issue: list(store.get(str(issue), [])))
+    monkeypatch.setattr(learning_engine, "_latest_prediction_for_issue", lambda issue: dict(prediction))
+    monkeypatch.setattr(
+        learning_engine,
+        "get_official_draw_by_issue",
+        lambda issue, verified_only=False: {"issue": issue, "numbers": list(range(1, 21)), "draw_time": "2026-09-24T00:05:00"},
+    )
+    monkeypatch.setattr(learning_engine, "upsert_learning_records", upsert_many)
+    monkeypatch.setattr(learning_engine, "upsert_learning_record", upsert_one)
+    monkeypatch.setattr(learning_engine, "record_operation_event", lambda **kwargs: None)
+    monkeypatch.setattr(learning_engine, "update_v7_adaptive_weights", lambda issue: {"status": "skipped", "reason": "insufficient_samples"})
+    monkeypatch.setattr(learning_engine, "invalidate_learning_status_cache", lambda: None)
+
+    import database.prediction_history_store as prediction_history_store
+    monkeypatch.setattr(
+        prediction_history_store,
+        "mark_prediction_learning_used",
+        lambda issue, used: learning_used.append((str(issue), used)) or {"status": "ok", "storage": "cloud", "updated": 1},
+    )
+
+    result = learning_engine.evaluate_verified_issue("115099901")
+
+    assert result["status"] == "ok", result
+    assert result["records"] == 18
+    assert learning_used == [("115099901", True)]
+    learned = store["115099901"]
+    assert len(learned) == 18
+    assert all(row["learned_status"] == "learned" for row in learned)
+    assert all(row["verification_status"] == "verified" for row in learned)
+
+
 def test_incomplete_unknown_marker_does_not_block_snapshot_rebuild(monkeypatch):
     saved = []
     marker = {
