@@ -1255,6 +1255,18 @@ def ensure_live_prediction_snapshot_async(target_issue: str, prediction: dict | 
     return {"status": "queued", "target_issue": target, "worker_limit": 1}
 
 
+def shutdown_learning_snapshot_executor(*, wait: bool = False) -> dict:
+    global _LEARNING_SNAPSHOT_EXECUTOR
+    executor = _LEARNING_SNAPSHOT_EXECUTOR
+    _LEARNING_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="learning-snapshot")
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    with _LEARNING_SNAPSHOT_PENDING_LOCK:
+        pending = len(_LEARNING_SNAPSHOT_PENDING)
+        _LEARNING_SNAPSHOT_PENDING.clear()
+    return {"status": "stopped", "executor_shutdown": executor is not None, "pending_cleared": pending}
+
+
 def ensure_live_prediction_snapshot(target_issue: str, prediction: dict | None = None) -> dict:
     """Ensure the canonical live-learning snapshot exists for a Production target."""
     target = str(target_issue or "").strip()

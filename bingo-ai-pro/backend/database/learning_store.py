@@ -835,6 +835,60 @@ def get_complete_live_learning_records(
     expected_top_n = {5, 10, 20}
     expected_pairs = {(model, top_n) for model in expected_models for top_n in expected_top_n}
 
+    if _cloud_enabled():
+        with _cloud_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    with complete as (
+                        select issue
+                        from learning_history
+                        where production_generation = %s
+                          and prediction_type = 'live_prediction'
+                          and verification_status = 'verified'
+                          and learned_status = 'learned'
+                          and model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                          and top_n in (5,10,20)
+                        group by issue
+                        having count(*) = 18
+                           and count(distinct (model_name, top_n)) = 18
+                        order by issue desc
+                        limit %s
+                    )
+                    select lh.issue, lh.model_name, lh.top_n, lh.predicted_numbers,
+                           lh.predicted_count, lh.hit_count, lh.prediction_type,
+                           lh.verification_status, lh.learned_status, lh.weight_changed
+                    from learning_history lh
+                    join complete c on c.issue = lh.issue
+                    where lh.production_generation = %s
+                      and lh.prediction_type = 'live_prediction'
+                      and lh.verification_status = 'verified'
+                      and lh.learned_status = 'learned'
+                      and lh.model_name in ('laowanjia','hotcold','missing','pattern','balance','ensemble')
+                      and lh.top_n in (5,10,20)
+                    order by lh.issue desc, lh.model_name asc, lh.top_n asc
+                    """,
+                    (get_production_generation(), window, get_production_generation()),
+                    prepare=False,
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "issue": str(row[0] or ""),
+                "model_name": row[1],
+                "top_n": row[2],
+                "predicted_numbers": _json_loads(row[3]) or [],
+                "predicted_count": row[4],
+                "hit_count": row[5],
+                "prediction_type": row[6],
+                "verification_status": row[7],
+                "learned_status": row[8],
+                "weight_changed": bool(row[9]),
+                "prediction_snapshot": {"compact": True},
+            }
+            for row in rows
+        ]
+
     selected: list[dict] = []
     pending_issue: str | None = None
     pending_rows: list[dict] = []

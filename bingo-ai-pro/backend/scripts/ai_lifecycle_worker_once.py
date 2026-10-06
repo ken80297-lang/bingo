@@ -18,6 +18,34 @@ def _rss_mb() -> float:
     return round(rss / 1024.0, 2)
 
 
+def _shutdown_one_shot_resources() -> dict:
+    results: dict[str, object] = {}
+
+    def run(name: str, fn) -> None:
+        try:
+            results[name] = fn()
+        except Exception as exc:
+            results[name] = {"status": "error", "error_type": type(exc).__name__, "error": str(exc)}
+
+    from database import postgres
+    from services.learning_engine import shutdown_learning_snapshot_executor
+    from services.latest_sync import shutdown_latest_sync_background_tasks
+    from services.prediction_lifecycle_orchestrator import shutdown_lifecycle_background_tasks
+    from services.prediction_service import shutdown_prediction_background_tasks
+    from services.shadow_dynamic_observer import shutdown_shadow_generate_executor, shutdown_shadow_verify_executor
+
+    run("lifecycle", lambda: shutdown_lifecycle_background_tasks(wait=False))
+    run("prediction", lambda: shutdown_prediction_background_tasks(wait=False))
+    run("latest_sync", lambda: shutdown_latest_sync_background_tasks(wait=False, timeout_seconds=0))
+    run("learning_snapshot", lambda: shutdown_learning_snapshot_executor(wait=False))
+    run("shadow_verify", lambda: shutdown_shadow_verify_executor() or {"status": "stopped"})
+    run("shadow_generate", lambda: shutdown_shadow_generate_executor() or {"status": "stopped"})
+    run("dashboard_read_pool", lambda: postgres.close_dashboard_read_pool() or {"status": "closed"})
+    run("prediction_lock_pool", lambda: postgres.close_prediction_lock_pool() or {"status": "closed"})
+    run("prediction_write_pool", lambda: postgres.close_prediction_write_pool() or {"status": "closed"})
+    return results
+
+
 def main() -> int:
     issue = str(os.getenv("AI_LIFECYCLE_ISSUE", "")).strip()
     if not issue.isdigit():
@@ -30,7 +58,6 @@ def main() -> int:
     from database.official_draw_store import get_official_draw_by_issue
     from services.prediction_lifecycle_orchestrator import (
         process_official_draw_lifecycle,
-        shutdown_lifecycle_background_tasks,
     )
 
     draw = get_official_draw_by_issue(issue)
@@ -75,10 +102,11 @@ def main() -> int:
         "target_issue": prediction_target_issue,
     }
 
-    # Learning is synchronous in this worker, so there is no lifecycle learning
-    # future that must be awaited here. Cancel any incidental pending lifecycle
-    # work and let the short-lived process exit without blocking.
-    shutdown_lifecycle_background_tasks(wait=False)
+    # Learning is synchronous in this worker. Cancel incidental background work
+    # and close psycopg pools explicitly so Python finalization does not try to
+    # join pool threads after the one-shot Cron has already done its durable
+    # writes.
+    shutdown_results = _shutdown_one_shot_resources()
     gc.collect()
     payload = {
         "status": result.get("status"),
@@ -94,6 +122,7 @@ def main() -> int:
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         "rss_mb_before": rss_before,
         "rss_mb_peak": _rss_mb(),
+        "shutdown": shutdown_results,
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str), flush=True)
     return 0 if result.get("status") == "ok" else 1
