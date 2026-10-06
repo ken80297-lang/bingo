@@ -14,7 +14,7 @@ thead th{background:#eaf1f9;font-size:11px;height:30px}.issue,.time,.odd-even{ba
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:800;font-size:10px}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{overflow:visible}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.odd-even{left:130px;min-width:38px}}
-.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;inset:0;width:100%;height:100%;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:auto;touch-action:none;cursor:crosshair}.dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 4px 14px #001b3b44;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
+.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;inset:0;width:100%;height:100%;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:auto;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair}.dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:0 4px 14px #001b3b44;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
 </style></head>
 <body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
@@ -104,19 +104,24 @@ function redrawAnnotation(){
  undoBtn.disabled=annotationStrokes.length===0;
 }
 function setAnnotationEnabled(on){
- annotationEnabled=on;annotationLayer.classList.toggle('drawing',on);markBtn.classList.toggle('active',on);
+ annotationEnabled=on;annotationLayer.classList.toggle('drawing',on);annotationHost.classList.toggle('annotation-active',on);markBtn.classList.toggle('active',on);
  markBtn.setAttribute('aria-pressed',String(on));markBtn.textContent=on?'✓ 標記中':'✏️ 標記';
 }
 markBtn.addEventListener('click',()=>setAnnotationEnabled(!annotationEnabled));
 undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();redrawAnnotation()}});
 annotationLayer.addEventListener('pointerdown',e=>{
- if(!annotationEnabled)return;e.preventDefault();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
+ if(!annotationEnabled)return;e.preventDefault();e.stopPropagation();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
  annotationStrokes.push(annotationCurrent);annotationLayer.setPointerCapture(e.pointerId);redrawAnnotation();
 });
 annotationLayer.addEventListener('pointermove',e=>{
- if(!annotationDrawing||!annotationCurrent)return;e.preventDefault();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
+ if(!annotationDrawing||!annotationCurrent)return;e.preventDefault();e.stopPropagation();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
 });
 function finishAnnotation(e){if(!annotationDrawing)return;annotationDrawing=false;annotationCurrent=null;try{annotationLayer.releasePointerCapture(e.pointerId)}catch(_){}}
-annotationLayer.addEventListener('pointerup',finishAnnotation);annotationLayer.addEventListener('pointercancel',finishAnnotation);
+annotationLayer.addEventListener('pointerup',e=>{e.preventDefault();e.stopPropagation();finishAnnotation(e)});
+annotationLayer.addEventListener('pointercancel',finishAnnotation);
+/* iOS Safari fallback: prevent page pan while annotation mode owns the touch. */
+['touchstart','touchmove','touchend'].forEach(type=>annotationLayer.addEventListener(type,e=>{
+ if(annotationEnabled){e.preventDefault();e.stopPropagation()}
+},{passive:false}));
 new ResizeObserver(resizeAnnotation).observe(annotationHost);resizeAnnotation();
 </script></body></html>
