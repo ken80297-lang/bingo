@@ -1510,7 +1510,8 @@
       const cachedTargetIssue = issueNumber(cachedRaw && (cachedRaw.prediction_issue || cachedRaw.target_issue));
       const cachedAligned = Boolean(cachedRaw)
         && (!officialIssue || isCardOnePredictionCompatible(officialIssue, cachedSourceIssue, cachedTargetIssue));
-      const raw = incomingComplete ? incomingRaw : (cachedAligned ? cachedRaw : incomingRaw);
+      const retainedRaw = cachedAligned ? cachedRaw : (cachedRaw || incomingRaw);
+      const raw = incomingComplete ? incomingRaw : retainedRaw;
       const componentMeta = incomingRaw._component_metadata || (player && player.meta && player.meta.components && player.meta.components.next_prediction_snapshot) || {};
       const rawCandidates = raw.candidates || raw.main_numbers || raw.recommend_numbers || [];
       const rawConfidence = raw.confidence_percent ?? raw.confidence;
@@ -1522,6 +1523,7 @@
         raw_candidates: rawCandidates,
         candidates: normalizeNumbers(rawCandidates),
         super_number: raw.super_number,
+        handoff_pending: !incomingComplete,
         size_prediction: raw.size_prediction || {},
         odd_even_prediction: raw.odd_even_prediction || {},
         component_metadata: componentMeta,
@@ -1571,8 +1573,9 @@
         saveCardOneSnapshot(officialDraw, next);
       } else {
         if (snapshot) {
-          officialDraw = snapshot.officialDraw;
-          next = snapshot.next;
+          // A pending prediction must never roll a valid newer draw backward.
+          if (!officialComplete) officialDraw = snapshot.officialDraw;
+          if (!predictionComplete) next = { ...snapshot.next, handoff_pending: true };
         }
       }
       const cardTwo = normalizeCardTwo(data, officialDraw);
@@ -1602,6 +1605,7 @@
       const officialNumbers = normalizeNumbers((officialDraw || {}).numbers);
       const officialSuper = normalizeNumbers([(officialDraw || {}).super_number]).filter((number) => officialNumbers.includes(number));
       const predictedSuper = normalizeNumbers([(next || {}).super_number]);
+      const waitingForNext = next.handoff_pending || (issueNumber(next.prediction_issue) && issueNumber((officialDraw || {}).issue) && issueNumber(next.prediction_issue) <= issueNumber(officialDraw.issue));
       const ruleLibrary = next.rule_library || {};
       const stateNotice = componentStateNotice(next.component_metadata);
       const officialStatus = (officialDraw || {}).verification_status;
@@ -1642,7 +1646,7 @@
 
         <div class="card1-section">
           <div class="card1-section-title">
-            <h3>下一期 AI 推薦</h3>
+            <h3>${waitingForNext ? "保留上次 AI 推薦・等待下一期更新" : "下一期 AI 推薦"}</h3>
           </div>
           <div class="card1-fixed-row">
             <span>預測期號</span>
