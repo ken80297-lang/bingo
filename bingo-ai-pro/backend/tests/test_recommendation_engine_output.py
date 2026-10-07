@@ -325,7 +325,7 @@ def test_persist_valid_recommendation_registers_tracker_without_simulation_scope
 def test_fast_super_recommendation_does_not_copy_actual_source_super(monkeypatch):
     captured = {}
 
-    def fake_super_builder(simulation, adaptive, best, issue, allowed_numbers=None):
+    def fake_super_builder(simulation, adaptive, best, issue, allowed_numbers=None, super_numbers=None):
         captured["allowed_numbers"] = allowed_numbers
         captured["simulation"] = simulation
         captured["issue"] = issue
