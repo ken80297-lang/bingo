@@ -43,6 +43,3 @@ websockets>=11,<13
 psycopg==3.3.4
 psycopg-binary==3.3.4
 supabase>=2.0.0,<3.0.0
-
-# Test-only dependency used by isolated Render parity validation
-pytest>=8,<10
