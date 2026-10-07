@@ -205,7 +205,8 @@ def test_production_fast_path_balances_zones_tails_and_previous_overlap(monkeypa
     assert len(numbers) == 20
     assert len(set(numbers)) == 20
     assert all(1 <= number <= 80 for number in numbers)
-    assert sum(zone_counts.values()) == 20\n    assert all(3 <= count <= 7 for count in zone_counts.values())
+    assert sum(zone_counts.values()) == 20
+    assert all(3 <= count <= 7 for count in zone_counts.values())
     assert diversity["tail_count"] >= 7
     assert diversity["previous_overlap_count"] <= 10
     assert any(step["stage"] == "Zone Tail Balance" for step in payload["recommendation"]["recommendation_trace"])
