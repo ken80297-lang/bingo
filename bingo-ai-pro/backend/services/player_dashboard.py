@@ -117,7 +117,7 @@ PLAYER_SUMMARY_TTL_SECONDS = 60
 PLAYER_AGGREGATE_CACHE_TTL_SECONDS = 300
 PLAYER_DASHBOARD_QUERY_TIMEOUT_SECONDS = 2
 PLAYER_DASHBOARD_TOTAL_BUDGET_SECONDS = 4.5
-PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 2.0
+PLAYER_DASHBOARD_CARD_ONE_TIMEOUT_SECONDS = 3.0
 PLAYER_DASHBOARD_OPTIONAL_TIMEOUT_SECONDS = 1.0
 # Aggregates are part of dashboard consistency, not a best-effort decoration. Production
 # normally completes this query in ~1.6s, so give it a bounded window that still fits
@@ -3216,6 +3216,22 @@ def get_player_card_one_snapshot(
         timings.append(_timed_default("next_prediction_snapshot", time.perf_counter(), "stale", "last_good_cache", reason="official_draw_unavailable"))
 
     cached_prediction = _load_component_cache("next_prediction_snapshot")
+    current_issue_int = _as_int((current or {}).get("issue"))
+    cached_prediction_issue_int = _component_cache_issue(cached_prediction)
+    if (
+        cached_prediction
+        and current_issue_int is not None
+        and cached_prediction_issue_int is not None
+        and cached_prediction_issue_int < current_issue_int - 1
+    ):
+        logger.warning(
+            "player_dashboard_prediction_cache_rejected current_issue=%s cached_issue=%s reason=too_old",
+            current_issue_int,
+            cached_prediction_issue_int,
+        )
+        cached_prediction = None
+        if next_prediction and _component_cache_issue(next_prediction) is not None and _component_cache_issue(next_prediction) < current_issue_int - 1:
+            next_prediction = None
     if not next_prediction and cached_prediction:
         # During the draw -> prediction handoff, keep the last complete 20-number
         # recommendation visible instead of flashing an empty "prediction pending"
@@ -3891,7 +3907,10 @@ def _build_player_dashboard_summary_payload(
     ]
     timeout_steps = [_public_step_name(item["step"]) for item in timings if item.get("result") == "timeout"]
     skipped_busy_steps = [_public_step_name(item["step"]) for item in timings if item.get("reason") == "worker_busy"]
-    partial = bool(stale_steps or timeout_steps or skipped_busy_steps)
+    health_stale_steps = [item for item in stale_steps if item != "card_two"]
+    health_timeout_steps = [item for item in timeout_steps if item != "card_two"]
+    health_skipped_busy_steps = [item for item in skipped_busy_steps if item != "card_two"]
+    partial = bool(health_stale_steps or health_timeout_steps or health_skipped_busy_steps)
 
     sync = {
         "database_latest_issue": database_issue,
