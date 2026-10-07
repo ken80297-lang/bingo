@@ -4090,7 +4090,14 @@ def get_prediction_lifecycle_aggregates(
                               and jsonb_array_length(winning_numbers) = 20
                               and jsonb_typeof(recommend_numbers) = 'array'
                               and jsonb_array_length(recommend_numbers) > 0
-                             then 1 else 0 end) as valid_sample_count
+                             then 1 else 0 end) as valid_sample_count,
+                    avg(hit_count) filter (where prediction_issue is not null
+                              and prediction_status = 'verified'
+                              and verified_at is not null
+                              and jsonb_typeof(winning_numbers) = 'array'
+                              and jsonb_array_length(winning_numbers) = 20
+                              and jsonb_typeof(recommend_numbers) = 'array'
+                              and jsonb_array_length(recommend_numbers) > 0) as average_hits
                 from prediction_history
             ),
             latest_prediction_issue as (
@@ -4143,6 +4150,7 @@ def get_prediction_lifecycle_aggregates(
                    prediction_counts.stored_official_result_count,
                    official_counts.has_official_result_count,
                    prediction_counts.valid_sample_count,
+                   prediction_counts.average_hits,
                    learned_counts.learned_distinct_target_count,
                    latest_prediction_issue.latest_issue
             from prediction_counts
@@ -4273,8 +4281,9 @@ def get_prediction_lifecycle_aggregates(
         "stored_official_result_count": int(row[5] or 0),
         "has_official_result_count": int(row[6] or 0),
         "valid_sample_count": int(row[7] or 0),
-        "learned_distinct_target_count": int(row[8] or 0),
-        "latest_issue": row[9],
+        "average_hits": round(float(row[8] or 0), 2),
+        "learned_distinct_target_count": int(row[9] or 0),
+        "latest_issue": row[10],
         "db_timing": db_timing,
         "query_count": 1,
     }
