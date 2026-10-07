@@ -55,6 +55,11 @@ def main() -> int:
     started = time.perf_counter()
     rss_before = _rss_mb()
 
+    # Start the durable prediction write connection in the background before
+    # lifecycle work reaches the save stage. The save itself remains synchronous.
+    from database import postgres
+    postgres.warm_prediction_write_pool()
+
     from database.official_draw_store import get_official_draw_by_issue
     from services.prediction_lifecycle_orchestrator import (
         process_official_draw_lifecycle,
