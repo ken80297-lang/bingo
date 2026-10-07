@@ -319,3 +319,42 @@ def test_persist_valid_recommendation_registers_tracker_without_simulation_scope
     assert result["status"] == "ok"
     assert result["persisted"] is True
     assert tracker_calls == [(7, None)]
+
+
+def test_fast_super_recommendation_does_not_copy_actual_source_super(monkeypatch):
+    captured = {}
+
+    def fake_super_builder(simulation, adaptive, best, issue):
+        captured["simulation"] = simulation
+        captured["issue"] = issue
+        return {
+            "based_on_issue": issue,
+            "source_issue": simulation.get("source_issue"),
+            "recommended": [
+                {"number": 31, "confidence": 61.0},
+                {"number": 42, "confidence": 58.0},
+                {"number": 53, "confidence": 55.0},
+            ],
+        }
+
+    monkeypatch.setattr(recommendation_center, "_build_super_recommendation", fake_super_builder)
+    analysis = {
+        "super_number": 7,
+        "hot_numbers": [1, 2, 3],
+        "cold_numbers": [4, 5, 6],
+        "repeated_numbers": [8, 9],
+    }
+
+    result = recommendation_center._build_fast_super_recommendation(
+        analysis,
+        {"hit_rate": 0.25},
+        "115056674",
+    )
+
+    assert [item["number"] for item in result["recommended"]] == [31, 42, 53]
+    assert result["recommended"][0]["number"] != analysis["super_number"]
+    assert captured["issue"] == "115056674"
+    assert captured["simulation"]["source_issue"] == "115056674"
+    assert captured["simulation"]["features"]["hot_numbers"] == [1, 2, 3]
+    assert captured["simulation"]["features"]["cold_numbers"] == [4, 5, 6]
+    assert captured["simulation"]["features"]["recent_repeat_numbers"] == [8, 9]
