@@ -103,6 +103,7 @@ from config.runtime_flags import env_bool as _env_bool, env_raw as _env_raw, sch
 from services.health_cache_engine import refresh_health_cache, warm_health_cache
 from services.latest_sync import HISTORICAL_CATCHUP_ENABLED, LATEST_ISSUE_PRIORITY
 from services.official_verification import collect_official_today
+from services.official_ingest import run_lightweight_official_polling_tick
 from services.traffic_observability import normalize_traffic_endpoint, record_traffic_request
 from services.daily_recovery import (
     DAILY_RECOVERY_ENABLED,
@@ -408,9 +409,9 @@ def _schedule_latest_official_job() -> None:
         update_collector_runtime(official_collector_interval_job_registered=False)
         return
     interval_job = scheduler.add_job(
-        _collect_latest_official_in_window,
-        "cron",
-        second="0,30",
+        run_lightweight_official_polling_tick,
+        "interval",
+        seconds=20,
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -445,7 +446,7 @@ def _schedule_collector_jobs() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
-        collect_official_today,
+        run_lightweight_official_polling_tick,
         "date",
         run_date=datetime.utcnow() + timedelta(seconds=5),
         id="collector_official_today_startup",
@@ -470,9 +471,9 @@ def _schedule_collector_jobs() -> None:
     )
     if not LATEST_OFFICIAL_SCHEDULER_ENABLED:
         scheduler.add_job(
-            collect_official_today,
+            run_lightweight_official_polling_tick,
             "interval",
-            minutes=2,
+            seconds=20,
             id="collector_official_today",
             replace_existing=True,
             max_instances=1,
