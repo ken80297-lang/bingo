@@ -618,7 +618,7 @@ def calculate_fast_recommendation(
         timings["promotion_lookup_ms"] = promotion_lookup_ms
         timings["previous_prediction_lookup_ms"] = previous_prediction_lookup_ms
         timings["final_selection_ms"] = final_selection_ms
-        timings["result_build_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+        timings["pre_confidence_pipeline_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         # Calibrate the displayed confidence against verified production
         # performance. A 20-number pick has a random expectation of 5 hits, so
         # recent results near 5/20 should read as neutral rather than 80%+.
@@ -659,6 +659,7 @@ def calculate_fast_recommendation(
             if output.get("is_valid")
             else 0
         )
+        result_build_started = time.perf_counter()
         recommendation = {
             "issue": source_issue,
             "target_issue": target_issue,
@@ -727,6 +728,8 @@ def calculate_fast_recommendation(
                 }
             ],
         }
+        timings["result_build_ms"] = round((time.perf_counter() - result_build_started) * 1000, 2)
+        recommendation["timings_ms"] = {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)}
         return {
             "status": "ok" if output.get("is_valid") else "skipped",
             "recommendation": recommendation if output.get("is_valid") else None,
