@@ -3810,6 +3810,18 @@ def _build_player_dashboard_summary_payload(
     ) or {}
 
     prediction_stats = _history_stats(history_records)
+    # Card Two history is a bounded recent-detail window, not the lifetime AI
+    # statistics population. Use the aggregate query for lifetime verified
+    # sample count and hit average whenever that snapshot is available.
+    aggregate_sample_size = _as_int(aggregates.get("valid_sample_count"))
+    aggregate_average_hits = aggregates.get("average_hits")
+    if aggregate_sample_size is not None and aggregate_sample_size > 0:
+        prediction_stats["sample_size"] = aggregate_sample_size
+        prediction_stats["average_hits"] = round(float(aggregate_average_hits or 0), 2)
+        prediction_stats["status"] = "ok"
+        prediction_stats["statistics_scope"] = "all_history_aggregates"
+    else:
+        prediction_stats["statistics_scope"] = "recent_history_fallback"
     prediction_stats["history_limit"] = PLAYER_DASHBOARD_HISTORY_LIMIT
     prediction_stats["stale"] = any(
         item.get("step") == "card_two_history" and item.get("result") != "ok"
