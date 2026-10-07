@@ -420,8 +420,8 @@ def _schedule_latest_official_job() -> None:
     )
     interval_job = scheduler.add_job(
         run_lightweight_official_polling_tick,
-        "interval",
-        minutes=1,
+        "cron",
+        second="0,15,30,45",
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -430,7 +430,7 @@ def _schedule_latest_official_job() -> None:
     )
     print(
         "latest_official_scheduler_registered "
-        "strategy=lightweight_draw_window first_retry_seconds=60 interval_minutes=1 "
+        "strategy=lightweight_draw_window first_retry_seconds=60 cadence_seconds=15 "
         "draw_window=07:05-23:55 "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
