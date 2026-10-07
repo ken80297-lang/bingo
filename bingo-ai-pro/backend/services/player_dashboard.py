@@ -786,7 +786,7 @@ def _complete_component(
                 late_diagnostics=deepcopy(result.get("diagnostics")) if isinstance(result, dict) else None,
             )
     updated = _store_component_cache(name, result)
-    if updated and name in {"card_two_history", "next_prediction_snapshot", "official_draw"}:
+    if updated and name in {"card_two_history", "next_prediction_snapshot", "official_draw", "prediction_aggregates"}:
         # A late background completion can make a previously built whole-summary
         # cache obsolete. Keep component caches, but force the next HTTP request
         # to rebuild the composed cards from the newly completed snapshot.
@@ -3618,6 +3618,16 @@ def _build_player_dashboard_summary_payload(
     cached_aggregates = _load_fresh_component_cache(
         "prediction_aggregates",
         PLAYER_AGGREGATE_CACHE_TTL_SECONDS,
+    )
+    # Refresh lifetime statistics in the background. Card One must never wait
+    # for this query, but Card Three must not remain stuck on the bounded
+    # Card Two history fallback when a worker starts with an empty cache.
+    _submit_component(
+        "prediction_aggregates",
+        lambda: get_prediction_lifecycle_aggregates(
+            diagnostic_component="prediction_aggregates",
+            use_dashboard_read_pool=True,
+        ),
     )
     # Aggregates are operational enrichment and can take multiple seconds on a
     # cold query. Never hold first paint for them: refresh asynchronously and
