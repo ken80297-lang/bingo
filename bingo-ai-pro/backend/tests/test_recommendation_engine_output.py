@@ -325,7 +325,8 @@ def test_persist_valid_recommendation_registers_tracker_without_simulation_scope
 def test_fast_super_recommendation_does_not_copy_actual_source_super(monkeypatch):
     captured = {}
 
-    def fake_super_builder(simulation, adaptive, best, issue):
+    def fake_super_builder(simulation, adaptive, best, issue, allowed_numbers=None):
+        captured["allowed_numbers"] = allowed_numbers
         captured["simulation"] = simulation
         captured["issue"] = issue
         return {
@@ -350,12 +351,29 @@ def test_fast_super_recommendation_does_not_copy_actual_source_super(monkeypatch
         analysis,
         {"hit_rate": 0.25},
         "115056674",
+        [31, 42, 53, 60],
     )
 
     assert [item["number"] for item in result["recommended"]] == [31, 42, 53]
     assert result["recommended"][0]["number"] != analysis["super_number"]
     assert captured["issue"] == "115056674"
+    assert captured["allowed_numbers"] == [31, 42, 53, 60]
     assert captured["simulation"]["source_issue"] == "115056674"
     assert captured["simulation"]["features"]["hot_numbers"] == [1, 2, 3]
     assert captured["simulation"]["features"]["cold_numbers"] == [4, 5, 6]
     assert captured["simulation"]["features"]["recent_repeat_numbers"] == [8, 9]
+
+
+def test_super_recommendation_respects_allowed_numbers(monkeypatch):
+    monkeypatch.setattr(recommendation_center, "_load_super_numbers", lambda limit: [18, 18, 18, 31, 42, 53])
+    result = recommendation_center._build_super_recommendation(
+        {"source_issue": "115056679", "features": {}},
+        {"hit_rate": 0.25},
+        {"rank_score": 0},
+        "115056679",
+        allowed_numbers=[2, 4, 31, 42, 53],
+    )
+    picks = [item["number"] for item in result["recommended"]]
+    assert len(picks) == 3
+    assert set(picks).issubset({2, 4, 31, 42, 53})
+    assert 18 not in picks
