@@ -250,6 +250,27 @@ def test_prediction_history_recovery_requires_and_builds_18_records():
     assert {row["top_n"] for row in records} == {5, 10, 20}
 
 
+def test_latest_prediction_for_issue_uses_target_lookup(monkeypatch):
+    import database.prediction_history_store as prediction_store
+
+    calls = []
+    monkeypatch.setattr(
+        prediction_store,
+        "get_prediction_for_target_issue",
+        lambda issue, use_prediction_pool=False: calls.append((issue, use_prediction_pool)) or {"prediction_issue": issue},
+    )
+    monkeypatch.setattr(
+        learning_engine,
+        "get_prediction_history_records",
+        lambda limit: (_ for _ in ()).throw(AssertionError("bulk prediction history should not load")),
+    )
+
+    result = learning_engine._latest_prediction_for_issue("115099901")
+
+    assert result == {"prediction_issue": "115099901"}
+    assert calls == [("115099901", True)]
+
+
 def test_prediction_service_persists_learning_snapshot_once(monkeypatch):
     from services import prediction_service
 
@@ -812,6 +833,7 @@ def test_complete_verified_issue_invokes_adaptive_updater_once(monkeypatch):
 def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch):
     from database import adaptive_weight_store
 
+    adaptive_weight_store.invalidate_active_adaptive_weights_cache()
     captured = {}
     def fake_query(sql, params=(), sqlite_sql=None, sqlite_params=None):
         captured["cloud"] = sql

@@ -4387,6 +4387,50 @@ def _prediction_records_for_target_issue(issue: str) -> list[dict]:
     return [_row_to_prediction(row) for row in rows]
 
 
+def get_prediction_for_target_issue(target_issue: str, *, use_prediction_pool: bool = False) -> dict | None:
+    target = _valid_issue(target_issue)
+    if not target:
+        return None
+    rows = _query_with_fallback(
+        """
+        select {columns}
+        from prediction_history
+        where prediction_issue = %s
+          and issue is not null
+          and prediction_issue is not null
+          and recommend_numbers is not null
+          and jsonb_typeof(recommend_numbers) = 'array'
+          and jsonb_array_length(recommend_numbers) > 0
+        order by created_at desc, id desc
+        limit 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        (target,),
+        sqlite_sql="""
+        select {columns}
+        from prediction_history
+        where prediction_issue = ?
+          and issue is not null
+          and prediction_issue is not null
+          and recommend_numbers is not null
+          and recommend_numbers not in ('', '[]')
+        order by created_at desc, id desc
+        limit 1
+        """.format(columns=PREDICTION_SELECT_COLUMNS),
+        cloud_connection_factory=_prediction_lock_connection if use_prediction_pool else None,
+        use_shared_connection=not use_prediction_pool,
+    )
+    if not rows:
+        return None
+    record = _row_to_prediction(rows[0])
+    record["read_layer"] = {
+        "data_source": "database",
+        "table_name": "prediction_history",
+        "query_name": "prediction_for_target_issue",
+        "production_filtered": True,
+    }
+    return record
+
+
 def get_prediction_for_source_target(source_issue: str, target_issue: str, *, use_prediction_pool: bool = False) -> dict | None:
     source = _valid_issue(source_issue)
     target = _valid_issue(target_issue)

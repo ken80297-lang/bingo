@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import copy
+import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -189,6 +191,25 @@ def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
 
 
+def _rss_mb() -> float | None:
+    try:
+        import psutil
+
+        return round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 2)
+    except Exception:
+        pass
+    try:
+        import resource
+
+        value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if value <= 0:
+            return None
+        # Linux reports kilobytes; macOS reports bytes.
+        return round(value / (1024 * 1024), 2) if value > 1024 * 1024 else round(value / 1024, 2)
+    except Exception:
+        return None
+
+
 def _default_learning_status_snapshot(reason: str) -> dict:
     return {
         "status": "unknown",
@@ -358,12 +379,11 @@ def _analysis_by_issue(issue: str) -> dict:
 
 
 def _latest_prediction_for_issue(issue: str | None = None) -> dict | None:
-    records = get_prediction_history_records(200)
     if issue:
-        for item in records:
-            if str(item.get("prediction_issue")) == str(issue):
-                return item
-        return None
+        from database.prediction_history_store import get_prediction_for_target_issue
+
+        return get_prediction_for_target_issue(str(issue), use_prediction_pool=True)
+    records = get_prediction_history_records(200)
     return records[0] if records else None
 
 
@@ -1000,12 +1020,60 @@ def update_v7_adaptive_weights(source_issue: str) -> dict:
 
 def evaluate_verified_issue(issue: str) -> dict:
     start = time.perf_counter()
+    stages: list[dict[str, Any]] = []
+    rss_start = _rss_mb()
+
+    def stage_done(name: str, mark: float, **payload: Any) -> None:
+        stages.append(
+            {
+                "stage": name,
+                "duration_ms": _duration_ms(mark),
+                **payload,
+            }
+        )
+
+    def finalize(payload: dict) -> dict:
+        total_ms = _duration_ms(start)
+        payload["timings_ms"] = {**(payload.get("timings_ms") or {}), "total_ms": total_ms}
+        payload["learning_stage_timings"] = stages
+        print(
+            "learning_evaluation_stage_timings "
+            f"issue={issue} duration_ms={total_ms} "
+            f"rss_mb_before={rss_start} rss_mb_after={_rss_mb()} "
+            f"stages={json.dumps(stages, ensure_ascii=False, sort_keys=True)}",
+            flush=True,
+        )
+        return payload
+
     try:
+        mark = time.perf_counter()
         snapshot = capture_prediction_snapshot(issue)
+        stage_done(
+            "snapshot_capture",
+            mark,
+            status=snapshot.get("status"),
+            records=len(snapshot.get("learning_records") or []),
+        )
         if snapshot.get("status") != "ok":
+            mark = time.perf_counter()
             recovery = ensure_live_prediction_snapshot(str(issue))
+            stage_done(
+                "snapshot_recovery",
+                mark,
+                status=recovery.get("status"),
+                records=recovery.get("records"),
+                complete=recovery.get("complete"),
+                reason=recovery.get("reason"),
+            )
             if recovery.get("status") == "ok":
+                mark = time.perf_counter()
                 snapshot = capture_prediction_snapshot(issue)
+                stage_done(
+                    "snapshot_recapture",
+                    mark,
+                    status=snapshot.get("status"),
+                    records=len(snapshot.get("learning_records") or []),
+                )
             else:
                 snapshot = {
                     **snapshot,
@@ -1038,16 +1106,25 @@ def evaluate_verified_issue(issue: str) -> dict:
                 },
             }
             saved = upsert_learning_record(record)
-            return {
+            return finalize({
                 "status": "missing_snapshot",
                 "issue": issue,
                 "snapshot_recovery": snapshot.get("snapshot_recovery"),
                 "saved": [saved],
-            }
+            })
 
+        mark = time.perf_counter()
         official = get_official_draw_by_issue(str(issue), verified_only=False)
+        stage_done(
+            "official_draw_load",
+            mark,
+            status="ok" if official else "missing",
+            records=1 if official else 0,
+            source="database",
+        )
         existing_records = snapshot.get("learning_records") or []
         if existing_records:
+            mark = time.perf_counter()
             official_numbers = _as_int_list((official or {}).get("numbers"))
             verification_status = "verified" if official and len(official_numbers) == 20 else "pending_official"
             learned_status = "learned" if verification_status == "verified" else "pending"
@@ -1077,22 +1154,38 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "error_message": None,
                 }
                 records.append(updated)
+            stage_done(
+                "feature_preparation",
+                mark,
+                status="ok",
+                records=len(records),
+                official_numbers=len(official_numbers),
+            )
         else:
-            return {"status": "missing_snapshot", "issue": issue, "saved": []}
+            return finalize({"status": "missing_snapshot", "issue": issue, "saved": []})
         status = "ok" if official else "pending_official"
         if status == "ok" and not _is_complete_learning_record_set(records):
-            return {
+            return finalize({
                 "status": "missing_snapshot",
                 "issue": issue,
                 "records": len(records),
                 "saved": [],
                 "learning_queue": {"status": "skipped"},
                 "adaptive_weights": {"status": "skipped", "reason": "incomplete_learning_record_set"},
-            }
+            })
+        mark = time.perf_counter()
         saved = (
             upsert_learning_records(records)
             if getattr(upsert_learning_record, "__module__", "") == "database.learning_store"
             else [upsert_learning_record(record) for record in records]
+        )
+        stage_done(
+            "learning_snapshot_db_save",
+            mark,
+            status="ok",
+            records=len(records),
+            cloud_saved=sum(1 for result in saved if result.get("status") == "ok" and result.get("storage") == "cloud"),
+            source="cloud" if any(result.get("storage") == "cloud" for result in saved) else "fallback",
         )
         if status == "ok":
             cloud_saved = [
@@ -1100,7 +1193,7 @@ def evaluate_verified_issue(issue: str) -> dict:
                 if result.get("status") == "ok" and result.get("storage") == "cloud"
             ]
             if len(cloud_saved) != EXPECTED_RECORDS_PER_TARGET:
-                return {
+                return finalize({
                     "status": "error",
                     "reason": "learning_cloud_save_required",
                     "issue": issue,
@@ -1108,7 +1201,8 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "saved": saved,
                     "learning_queue": {"status": "skipped"},
                     "adaptive_weights": {"status": "skipped", "reason": "learning_cloud_save_required"},
-                }
+                })
+        mark = time.perf_counter()
         record_operation_event(
             component="learning",
             event_type="learning_evaluation",
@@ -1126,14 +1220,32 @@ def evaluate_verified_issue(issue: str) -> dict:
                 message=f"learning completed for {issue}",
                 duration_ms=_duration_ms(start),
             )
+        stage_done("operations_event_writes", mark, status="ok", records=2 if status == "ok" else 1)
         learning_queue = {"status": "skipped"}
         adaptive_weights = {"status": "skipped"}
         shadow_promotions = {"status": "skipped"}
         if status == "ok":
+            mark = time.perf_counter()
             shadow_promotions = refresh_shadow_rule_promotions(str(issue))
+            stage_done(
+                "shadow_rule_promotion",
+                mark,
+                status=shadow_promotions.get("status"),
+                records=shadow_promotions.get("target_count"),
+                source="database",
+            )
+            mark = time.perf_counter()
             adaptive_weights = update_v7_adaptive_weights(str(issue))
+            stage_done(
+                "adaptive_weight_update",
+                mark,
+                status=adaptive_weights.get("status"),
+                records=adaptive_weights.get("complete_targets"),
+                reason=adaptive_weights.get("reason"),
+                source="database",
+            )
             if adaptive_weights.get("status") == "error":
-                return {
+                return finalize({
                     "status": "error",
                     "reason": "adaptive_learning_failed",
                     "issue": issue,
@@ -1142,7 +1254,8 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "learning_queue": {"status": "skipped"},
                     "adaptive_weights": adaptive_weights,
                     "shadow_promotions": shadow_promotions,
-                }
+                })
+            mark = time.perf_counter()
             try:
                 from database.prediction_history_store import mark_prediction_learning_used
 
@@ -1150,12 +1263,19 @@ def evaluate_verified_issue(issue: str) -> dict:
             except Exception as exc:
                 logger.exception("prediction history learning queue update failed")
                 learning_queue = {"status": "error", "message": str(exc)}
+            stage_done(
+                "prediction_learning_used_update",
+                mark,
+                status=learning_queue.get("status"),
+                records=learning_queue.get("updated"),
+                source=learning_queue.get("storage"),
+            )
             if (
                 learning_queue.get("status") != "ok"
                 or learning_queue.get("storage") != "cloud"
                 or int(learning_queue.get("updated") or 0) < 1
             ):
-                return {
+                return finalize({
                     "status": "error",
                     "reason": "learning_used_cloud_update_required",
                     "issue": issue,
@@ -1163,9 +1283,11 @@ def evaluate_verified_issue(issue: str) -> dict:
                     "saved": saved,
                     "learning_queue": learning_queue,
                     "adaptive_weights": adaptive_weights,
-                }
+                })
+            mark = time.perf_counter()
             invalidate_learning_status_cache()
-        return {
+            stage_done("cache_invalidation", mark, status="ok")
+        return finalize({
             "status": status,
             "issue": issue,
             "records": len(records),
@@ -1173,7 +1295,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             "learning_queue": learning_queue,
             "adaptive_weights": adaptive_weights,
             "shadow_promotions": shadow_promotions,
-        }
+        })
     except Exception as exc:
         logger.exception("learning evaluation failed")
         record_operation_event(
@@ -1186,7 +1308,7 @@ def evaluate_verified_issue(issue: str) -> dict:
             error_type=type(exc).__name__,
             error_message=str(exc),
         )
-        return {"status": "error", "issue": issue, "error": str(exc)}
+        return finalize({"status": "error", "issue": issue, "error": str(exc)})
 
 
 def recalculate_issue(issue: str) -> dict:
