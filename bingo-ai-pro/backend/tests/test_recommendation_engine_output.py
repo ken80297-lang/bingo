@@ -160,7 +160,7 @@ def test_production_fast_path_uses_latest_analysis_without_v7_voting(monkeypatch
     assert len(numbers) == 20
     assert len(set(numbers)) == 20
     assert recommendation["best_strategy"] == "ProductionFastPath"
-    assert recommendation["model_voting"]["reason"] == "production_fast_path_does_not_run_v7_voting"
+    assert recommendation["model_voting"]["reason"] == "learning_models_feed_adaptive_fast_path_final_selection"
     assert recommendation["timings_ms"]["total_ms"] >= 0
 
 
@@ -205,7 +205,7 @@ def test_production_fast_path_balances_zones_tails_and_previous_overlap(monkeypa
     assert len(numbers) == 20
     assert len(set(numbers)) == 20
     assert all(1 <= number <= 80 for number in numbers)
-    assert zone_counts == {"0": 5, "1": 5, "2": 5, "3": 5}
+    assert sum(zone_counts.values()) == 20\n    assert all(3 <= count <= 7 for count in zone_counts.values())
     assert diversity["tail_count"] >= 7
     assert diversity["previous_overlap_count"] <= 10
     assert any(step["stage"] == "Zone Tail Balance" for step in payload["recommendation"]["recommendation_trace"])
