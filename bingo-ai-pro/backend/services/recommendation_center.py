@@ -667,7 +667,7 @@ def calculate_fast_recommendation(
             "previous_strategy_version": context.get("previous_strategy_version"),
             "confidence": confidence,
             "data_quality_status": "ok",
-            "super_recommendation": {"recommended": [{"number": analysis.get("super_number")}]} if analysis.get("super_number") else {"recommended": []},
+            "super_recommendation": _build_fast_super_recommendation(analysis, adaptive, source_issue),
             "sync": {"status": "ok", "simulation_issue": source_issue, "recommendation_issue": source_issue, "super_issue": source_issue},
             "model_scores": learning_model_scores,
             "production_fast_path": {
@@ -1005,6 +1005,30 @@ def _dynamic_super_reason(
     if explored:
         parts.append("issue seed \u63a2\u7d22")
     return " + ".join(parts) if parts else "\u5e73\u8861\u5019\u9078"
+
+
+def _build_fast_super_recommendation(analysis: dict, adaptive: dict | None, issue: str) -> dict:
+    """Build a real next-issue super recommendation for the production fast path.
+
+    The previous fast path copied analysis.super_number, which is the already-drawn
+    super number for the source issue. Reuse the established super model instead,
+    with trend features derived from the current analysis and without requiring a
+    simulation run.
+    """
+    simulation = {
+        "source_issue": str(issue),
+        "features": {
+            "hot_numbers": analysis.get("hot_numbers") or [],
+            "recent_repeat_numbers": analysis.get("repeated_numbers") or [],
+            "cold_numbers": analysis.get("cold_numbers") or [],
+        },
+    }
+    return _build_super_recommendation(
+        simulation,
+        adaptive,
+        {"strategy": "ProductionFastPath", "rank_score": 0, "hit_rate": (adaptive or {}).get("hit_rate") or 0},
+        str(issue),
+    )
 
 
 def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict, issue: str | None) -> dict:
