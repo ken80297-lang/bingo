@@ -4192,7 +4192,15 @@ def get_prediction_lifecycle_aggregates(
                               and winning_numbers not in ('', '[]')
                               and recommend_numbers is not null
                               and recommend_numbers not in ('', '[]')
-                             then 1 else 0 end) as valid_sample_count
+                             then 1 else 0 end) as valid_sample_count,
+                    avg(case when prediction_issue is not null
+                              and prediction_status = 'verified'
+                              and verified_at is not null
+                              and winning_numbers is not null
+                              and winning_numbers not in ('', '[]')
+                              and recommend_numbers is not null
+                              and recommend_numbers not in ('', '[]')
+                             then hit_count end) as average_hits
                 from prediction_history
             ),
             latest_prediction_issue as (
@@ -4271,7 +4279,7 @@ def get_prediction_lifecycle_aggregates(
             db_timing.get("backend_pid"),
             db_timing.get("connection_hash"),
         )
-    row = rows[0] if rows else [0] * 10
+    row = rows[0] if rows else [0] * 11
     return {
         "total_prediction_count": int(row[0] or 0),
         "valid_target_count": int(row[1] or 0),
