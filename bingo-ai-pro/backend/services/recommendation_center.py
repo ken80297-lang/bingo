@@ -667,7 +667,7 @@ def calculate_fast_recommendation(
             "previous_strategy_version": context.get("previous_strategy_version"),
             "confidence": confidence,
             "data_quality_status": "ok",
-            "super_recommendation": _build_fast_super_recommendation(analysis, adaptive, source_issue),
+            "super_recommendation": _build_fast_super_recommendation(analysis, adaptive, source_issue, numbers),
             "sync": {"status": "ok", "simulation_issue": source_issue, "recommendation_issue": source_issue, "super_issue": source_issue},
             "model_scores": learning_model_scores,
             "production_fast_path": {
@@ -1007,7 +1007,7 @@ def _dynamic_super_reason(
     return " + ".join(parts) if parts else "\u5e73\u8861\u5019\u9078"
 
 
-def _build_fast_super_recommendation(analysis: dict, adaptive: dict | None, issue: str) -> dict:
+def _build_fast_super_recommendation(analysis: dict, adaptive: dict | None, issue: str, candidate_numbers: list[int] | None = None) -> dict:
     """Build a real next-issue super recommendation for the production fast path.
 
     The previous fast path copied analysis.super_number, which is the already-drawn
@@ -1028,10 +1028,11 @@ def _build_fast_super_recommendation(analysis: dict, adaptive: dict | None, issu
         adaptive,
         {"strategy": "ProductionFastPath", "rank_score": 0, "hit_rate": (adaptive or {}).get("hit_rate") or 0},
         str(issue),
+        allowed_numbers=candidate_numbers,
     )
 
 
-def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict, issue: str | None) -> dict:
+def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: dict, issue: str | None, allowed_numbers: list[int] | None = None) -> dict:
     super_numbers = _load_super_numbers(100)
     counter = Counter(super_numbers)
     hot = [number for number, _ in counter.most_common(5)]
@@ -1047,7 +1048,8 @@ def _build_super_recommendation(simulation: dict, adaptive: dict | None, best: d
     rng = random.Random(f"super:{based_on_issue or 'unknown'}")
 
     scored = []
-    for number in range(1, 81):
+    candidate_pool = sorted({int(number) for number in (allowed_numbers or range(1, 81)) if 1 <= int(number) <= 80})
+    for number in candidate_pool:
         hot_score = _normalize_score(counter.get(number, 0), max_count)
         cold_rebound_score = 1 if number in cold_pool else 1 - hot_score
         recent_missing_score = 1 if number in recent_missing else 0
