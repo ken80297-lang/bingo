@@ -173,6 +173,11 @@ def prediction_write_connection():
         yield conn
 
 
+def warm_prediction_write_pool() -> None:
+    """Start the prediction write pool early so first durable save avoids cold-connect latency."""
+    _get_prediction_write_pool()
+
+
 def close_prediction_write_pool() -> None:
     global _PREDICTION_WRITE_POOL
     with _PREDICTION_WRITE_POOL_LOCK:
