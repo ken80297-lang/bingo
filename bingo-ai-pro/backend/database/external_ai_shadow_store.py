@@ -46,6 +46,8 @@ def verify_pending_shadow_prediction(draw: dict) -> int:
             for row in cur.fetchall():
                 row_id, target, numbers, top5, super_number, generated_at = row
                 draw_time = draw.get("draw_time")
+                if isinstance(draw_time, str) and len(draw_time) <= 8 and draw.get("draw_date"):
+                    draw_time = f"{draw['draw_date']}T{draw_time}"
                 if isinstance(draw_time, datetime):
                     draw_at = draw_time if draw_time.tzinfo else draw_time.replace(tzinfo=TAIPEI)
                 else:
