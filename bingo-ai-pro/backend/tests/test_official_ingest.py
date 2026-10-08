@@ -186,7 +186,7 @@ def test_polling_window_stops_after_success(monkeypatch):
     monkeypatch.setattr(
         official_ingest,
         "collect_latest_official_lightweight",
-        lambda: calls.append(1) or {"status": "ok", "source_issue": "115040001"},
+        lambda: calls.append(1) or {"status": "ok", "source_issue": "115040001", "source_draw_time": "2026-10-04T23:05:00+00:00"},
     )
 
     first = official_ingest.run_lightweight_official_polling_tick(now)
@@ -205,3 +205,35 @@ def test_ingest_failure_does_not_clear_last_good_ai(monkeypatch):
 
     assert result["status"] == "error"
     assert last_good == {"recommend_numbers": list(range(1, 21))}
+
+
+def test_polling_does_not_stop_on_previous_draw(monkeypatch):
+    now = datetime(2026, 10, 5, 7, 6, 1, tzinfo=ZoneInfo("Asia/Taipei"))
+    calls = []
+    monkeypatch.setattr(
+        official_ingest,
+        "collect_latest_official_lightweight",
+        lambda: calls.append(1) or {
+            "status": "ok",
+            "source_issue": "115040000",
+            "source_draw_time": "2026-10-04T23:00:00+00:00",
+        },
+    )
+    first = official_ingest.run_lightweight_official_polling_tick(now)
+    second = official_ingest.run_lightweight_official_polling_tick(now)
+    assert first["status"] == "ok"
+    assert second["status"] == "ok"
+    assert calls == [1, 1]
+
+
+def test_polling_does_not_stop_without_verified_draw_time(monkeypatch):
+    now = datetime(2026, 10, 5, 7, 6, 1, tzinfo=ZoneInfo("Asia/Taipei"))
+    calls = []
+    monkeypatch.setattr(
+        official_ingest,
+        "collect_latest_official_lightweight",
+        lambda: calls.append(1) or {"status": "ok", "source_issue": "115040001"},
+    )
+    official_ingest.run_lightweight_official_polling_tick(now)
+    official_ingest.run_lightweight_official_polling_tick(now)
+    assert calls == [1, 1]

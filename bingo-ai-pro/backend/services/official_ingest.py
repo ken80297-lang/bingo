@@ -226,6 +226,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
             return _finish_result(result, start, timings, rss_before, rss_peak, mark_rss())
 
         source_issue = str(source_draw["issue"])
+        source_draw_time = source_draw.get("draw_time")
         source_issue_int = _issue_int(source_issue)
 
         stage = time.perf_counter()
@@ -239,6 +240,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
                 "status": "noop",
                 "exit_reason": "database_same_or_newer",
                 "source_issue": source_issue,
+                "source_draw_time": source_draw_time,
                 "database_latest_issue": latest_db_issue,
                 "saved": {"status": "ok", "saved": 0, "storage": "existing"},
             }
@@ -253,6 +255,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
                 "status": "noop",
                 "exit_reason": "issue_already_exists",
                 "source_issue": source_issue,
+                "source_draw_time": source_draw_time,
                 "database_latest_issue": latest_db_issue,
                 "saved": {"status": "ok", "saved": 0, "storage": "existing"},
             }
@@ -268,6 +271,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
                 "stage": "database_save",
                 "reason": str(save_result.get("error") or save_result),
                 "source_issue": source_issue,
+                "source_draw_time": source_draw_time,
                 "database_latest_issue": latest_db_issue,
                 "saved": save_result,
             }
@@ -277,6 +281,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
             "status": "ok",
             "exit_reason": "saved",
             "source_issue": source_issue,
+            "source_draw_time": source_draw_time,
             "database_latest_issue": source_issue,
             "saved": save_result,
             "downstream": {"status": "deferred", "reason": "lightweight_official_ingest"},
@@ -379,7 +384,21 @@ def run_lightweight_official_polling_tick(now: datetime | None = None) -> dict[s
     if not should_poll:
         return {"status": "skipped", "reason": reason}
     result = collect_latest_official_lightweight()
-    if result.get("status") == "ok" and result.get("source_issue"):
+    # An old official response must not complete the current draw's poll window.
+    current_draw_confirmed = False
+    draw_time_raw = result.get("source_draw_time")
+    if draw_time_raw:
+        try:
+            parsed = datetime.fromisoformat(str(draw_time_raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                local_draw = parsed.astimezone(TAIPEI_TZ)
+                local_now = (now or datetime.now(TAIPEI_TZ)).astimezone(TAIPEI_TZ)
+                minutes_after_first = local_now.hour * 60 + local_now.minute - (7 * 60 + 5)
+                expected_start = local_now.replace(second=0, microsecond=0) - timedelta(minutes=minutes_after_first % 5)
+                current_draw_confirmed = expected_start <= local_draw < expected_start + timedelta(minutes=5)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    if result.get("status") == "ok" and result.get("source_issue") and current_draw_confirmed:
         with _POLL_STATE_LOCK:
             _POLL_COMPLETED_ISSUES.add(reason)
             if len(_POLL_COMPLETED_ISSUES) > 256:
