@@ -26,7 +26,11 @@ def latest_shadow():
                                where prediction_issue in (%s,%s) and provider='groq'
                                order by prediction_issue desc, generated_at desc""",
                             (issue, str(int(issue) + 1)))
+                seen_targets = set()
                 for target, numbers, top5, super_number, status, hits, top_hits, super_hit, generated_at in cur.fetchall():
+                    if str(target) in seen_targets:
+                        continue
+                    seen_targets.add(str(target))
                     if str(target) == str(int(issue) + 1):
                         result["external_ai"] = {"status": status, "numbers": numbers, "top5": top5,
                                                  "super_number": super_number, "generated_at": generated_at.isoformat()}
