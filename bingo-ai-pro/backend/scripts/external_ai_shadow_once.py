@@ -29,6 +29,12 @@ def main() -> int:
     verified = verify_pending_shadow_prediction(draw)
     issue = str(draw["issue"])
     next_issue = str(int(issue) + 1)
+    # Guard against stale collection: no shadow forecast after the next draw slot.
+    from scripts.ai_lifecycle_cron_once import prediction_is_timely
+    if not prediction_is_timely(draw):
+        print(json.dumps({"status": "skipped", "reason": "prediction_deadline_passed",
+                          "verified": verified, "based_on_issue": issue}))
+        return 0
     # Never create a prediction after its target has already been drawn.
     from database.official_draw_store import get_official_draw_by_issue
     if get_official_draw_by_issue(next_issue):
