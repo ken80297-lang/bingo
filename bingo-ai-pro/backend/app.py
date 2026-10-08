@@ -1201,6 +1201,16 @@ def distribution_head() -> FileResponse:
     return FileResponse(STATIC_DIR / "distribution.html")
 
 
+@app.get("/dual-ai")
+def dual_ai_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dual_ai.html")
+
+
+@app.head("/dual-ai")
+def dual_ai_head() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dual_ai.html")
+
+
 @app.get("/dashboard")
 def dashboard_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "dashboard.html")
