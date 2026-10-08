@@ -29,6 +29,9 @@ def main() -> int:
     verified = verify_pending_shadow_prediction(draw)
     issue = str(draw["issue"])
     next_issue = str(int(issue) + 1)
+    # Normalize separate official draw_date and HH:MM draw_time fields.
+    if isinstance(draw.get("draw_time"), str) and len(draw["draw_time"]) <= 8 and draw.get("draw_date"):
+        draw = {**draw, "draw_time": f"{draw['draw_date']}T{draw['draw_time']}"}
     # Guard against stale collection: no shadow forecast after the next draw slot.
     from scripts.ai_lifecycle_cron_once import prediction_is_timely
     if not prediction_is_timely(draw):
