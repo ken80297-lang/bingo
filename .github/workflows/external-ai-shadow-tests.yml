@@ -1,0 +1,28 @@
+name: External AI shadow tests
+on:
+  pull_request:
+    paths:
+      - 'bingo-ai-pro/backend/services/external_ai_shadow*.py'
+      - 'bingo-ai-pro/backend/database/external_ai_shadow_store.py'
+      - 'bingo-ai-pro/backend/scripts/external_ai_shadow_once.py'
+      - 'bingo-ai-pro/backend/tests/test_external_ai_shadow*.py'
+      - '.github/workflows/external-ai-shadow-tests.yml'
+  workflow_dispatch:
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bingo-ai-pro/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test isolated shadow modules (no DB/API secrets)
+        env:
+          PYTHONPATH: .
+          EXTERNAL_AI_SHADOW_ENABLED: '0'
+        run: python -m unittest discover -s tests -p 'test_external_ai_shadow*.py' -v
+      - name: Syntax check
+        run: python -m py_compile services/external_ai_shadow.py services/external_ai_shadow_verification.py database/external_ai_shadow_store.py scripts/external_ai_shadow_once.py
