@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def save_shadow_prediction(*, based_on_issue: str, prediction_issue: str, model: str, result: dict) -> bool:
@@ -44,15 +47,14 @@ def verify_pending_shadow_prediction(draw: dict) -> int:
                 row_id, target, numbers, top5, super_number, generated_at = row
                 draw_time = draw.get("draw_time")
                 if isinstance(draw_time, datetime):
-                    draw_at = draw_time if draw_time.tzinfo else draw_time.replace(tzinfo=timezone.utc)
+                    draw_at = draw_time if draw_time.tzinfo else draw_time.replace(tzinfo=TAIPEI)
                 else:
                     try:
                         draw_at = datetime.fromisoformat(str(draw_time).replace("Z", "+00:00"))
                     except (TypeError, ValueError):
                         continue
                     if draw_at.tzinfo is None:
-                        # Ambiguous naive timestamp: do not claim prospective verification.
-                        continue
+                        draw_at = draw_at.replace(tzinfo=TAIPEI)
                 if generated_at >= draw_at:
                     continue
                 comparison = verify_shadow_prediction(
