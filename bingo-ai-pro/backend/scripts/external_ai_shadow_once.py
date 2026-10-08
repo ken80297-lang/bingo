@@ -42,7 +42,7 @@ def main() -> int:
         return 0
     result = propose_shadow_numbers(draw, {}, timeout=6.0)
     stored = False
-    if result.get("status") == "ok":
+    if result.get("status") == "ok" and prediction_is_timely(draw) and not get_official_draw_by_issue(next_issue):
         stored = save_shadow_prediction(
             based_on_issue=issue, prediction_issue=next_issue,
             model=os.getenv("GROQ_SHADOW_MODEL", "llama-3.3-70b-versatile"), result=result,
