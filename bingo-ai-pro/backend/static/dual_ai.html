@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>雙 AI 當期比較 | Bingo AI Pro</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#101722;color:#f3f6fb}
+body{margin:0 auto;max-width:1050px;padding:18px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+a{color:#9dd5ff}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:20px}
+article{background:#1c2635;border:1px solid #344155;border-radius:16px;padding:18px}
+h1{font-size:1.5rem}h2{font-size:1.1rem}.muted{color:#a7b5c6}.balls{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:14px 0}
+.ball{display:grid;place-items:center;aspect-ratio:1;border-radius:50%;background:#304158;font-weight:700}
+.top{background:#b78b32;color:#101722}.super{color:#ff9999;font-weight:bold}button{background:#315e88;color:white;border:0;border-radius:10px;padding:10px 16px}
+</style></head><body>
+<header><div><a href="/dashboard">← 回首頁</a><h1>雙 AI 當期比較</h1><div id="issue" class="muted">讀取最新期號中…</div></div><button onclick="load()">重新整理</button></header>
+<div class="cards"><article><h2>原本 AI</h2><p class="muted">原有推薦資料尚未接入此比較頁，請先以首頁為準。</p><a href="/dashboard">查看首頁推薦</a></article>
+<article><h2>外部 Groq AI <small class="muted">影子測試</small></h2><div id="state" class="muted">讀取中…</div><div id="numbers" class="balls"></div><div id="top5"></div><p id="super"></p></article></div>
+<article style="margin-top:16px"><h2>上一期驗證</h2><div id="verification" class="muted">等待資料</div></article>
+<p class="muted">本頁只顯示已保存的資料。外部 AI 尚未啟用時，不產生示意號碼；影子預測不影響正式推薦。</p>
+<script>
+function balls(xs, top=[]){const t=new Set(top);return xs.map(n=>'<span class="ball '+(t.has(n)?'top':'')+'">'+String(n).padStart(2,'0')+'</span>').join('')}
+async function load(){try{const r=await fetch('/api/external-ai-shadow/latest',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();document.getElementById('issue').textContent='最新開獎：'+(d.latest_official_issue||'等待資料')+' ｜ 目標期號：'+(d.target_issue||'等待資料');const x=d.external_ai||{};document.getElementById('state').textContent=x.status==='waiting'?'等待外部 AI 推薦':x.status==='unavailable'?'資料庫尚未就緒':x.status==='pending'?'已保存，等待開獎驗證':(x.status||'等待資料');document.getElementById('numbers').innerHTML=balls(Array.isArray(x.numbers)?x.numbers:[],x.top5||[]);document.getElementById('top5').textContent=x.top5?.length?'高機率 5 碼：'+x.top5.join('、'):'';document.getElementById('super').textContent=Number.isInteger(x.super_number)?'超獎候選：'+x.super_number:'';const v=d.verification;document.getElementById('verification').textContent=v?'期號 '+v.issue+' ｜ 20 碼命中 '+v.hits+' ｜ 5 碼命中 '+v.top5_hits+' ｜ 超獎 '+(v.super_hit?'命中':'未命中'):'尚無已驗證紀錄';}catch(e){document.getElementById('state').textContent='暫時無法取得資料';}}
+load();setInterval(load,60000);
+</script></body></html>
