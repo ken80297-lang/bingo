@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.adaptive_weight import router as adaptive_weight_router
 from api.admin import router as admin_router
+from api.external_ai_shadow import router as external_ai_shadow_router
 from api.analysis import router as analysis_router
 from api.analysis_history import router as analysis_history_router
 from api.backtest import router as backtest_router
@@ -135,6 +136,7 @@ STARTUP_TIME = datetime.now(timezone.utc).isoformat()
 print("startup_import_completed host=0.0.0.0 port_env=PORT")
 
 app.include_router(adaptive_weight_router)
+app.include_router(external_ai_shadow_router)
 app.include_router(admin_router)
 app.include_router(draws_router)
 app.include_router(distribution_router)
@@ -1157,6 +1159,16 @@ def distribution_page() -> FileResponse:
 @app.head("/distribution")
 def distribution_head() -> FileResponse:
     return FileResponse(STATIC_DIR / "distribution.html")
+
+
+@app.get("/dual-ai")
+def dual_ai_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dual_ai.html")
+
+
+@app.head("/dual-ai")
+def dual_ai_head() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dual_ai.html")
 
 
 @app.get("/dashboard")
