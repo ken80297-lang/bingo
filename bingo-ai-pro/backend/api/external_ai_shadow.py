@@ -24,7 +24,7 @@ def latest_shadow():
                                       hit_count, top5_hit_count, super_hit, generated_at
                                from public.external_ai_shadow_predictions
                                where prediction_issue in (%s,%s) and provider='groq'
-                               order by prediction_issue desc, generated_at desc limit 2""",
+                               order by prediction_issue desc, generated_at desc""",
                             (issue, str(int(issue) + 1)))
                 for target, numbers, top5, super_number, status, hits, top_hits, super_hit, generated_at in cur.fetchall():
                     if str(target) == str(int(issue) + 1):
