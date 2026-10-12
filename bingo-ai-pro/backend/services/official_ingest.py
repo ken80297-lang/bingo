@@ -225,8 +225,10 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
             }
             return _finish_result(result, start, timings, rss_before, rss_peak, mark_rss())
 
+        source_observed_at = _now()  # Backend observation, never official publication time.
         source_issue = str(source_draw["issue"])
         source_draw_time = source_draw.get("draw_time")
+        timings["source_observed_at"] = source_observed_at
         source_issue_int = _issue_int(source_issue)
 
         stage = time.perf_counter()
