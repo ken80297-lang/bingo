@@ -398,7 +398,7 @@ def run_lightweight_official_polling_tick(now: datetime | None = None) -> dict[s
                 current_draw_confirmed = expected_start <= local_draw < expected_start + timedelta(minutes=5)
         except (ValueError, TypeError, OverflowError):
             pass
-    if result.get("status") == "ok" and result.get("source_issue") and current_draw_confirmed:
+    if result.get("status") in {"ok", "noop"} and result.get("source_issue") and current_draw_confirmed:
         with _POLL_STATE_LOCK:
             _POLL_COMPLETED_ISSUES.add(reason)
             if len(_POLL_COMPLETED_ISSUES) > 256:
