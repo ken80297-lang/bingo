@@ -258,7 +258,7 @@ def _save_official_cloud(draws: list[dict]) -> None:
                         win_no_only = excluded.win_no_only,
                         source = excluded.source,
                         verification_status = excluded.verification_status,
-                        fetched_at = coalesce(excluded.fetched_at, official_draw_history.fetched_at),
+                        fetched_at = coalesce(official_draw_history.fetched_at, excluded.fetched_at),
                         raw_json = excluded.raw_json,
                         updated_at = now()
                     """,
@@ -292,7 +292,7 @@ def _save_official_sqlite(draws: list[dict]) -> None:
                     win_no_only = excluded.win_no_only,
                     source = excluded.source,
                     verification_status = excluded.verification_status,
-                    fetched_at = coalesce(excluded.fetched_at, official_draw_history.fetched_at),
+                    fetched_at = coalesce(official_draw_history.fetched_at, excluded.fetched_at),
                     raw_json = excluded.raw_json,
                     updated_at = excluded.updated_at
                 """,
