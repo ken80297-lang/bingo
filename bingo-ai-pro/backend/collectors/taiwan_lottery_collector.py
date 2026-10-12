@@ -181,6 +181,7 @@ def fetch_official_bingo_results(
         rows = ((payload.get("content") or {}).get("bingoQueryResult") or [])
         diagnostic["row_count"] = len(rows)
         diagnostic["total_size"] = (payload.get("content") or {}).get("totalSize")
+        observed_at = datetime.now(timezone.utc).isoformat()  # Backend observation, not official publication.
         draws = []
         for row in rows:
             issue = row.get("drawTerm")
@@ -202,6 +203,7 @@ def fetch_official_bingo_results(
                     "super_number": _as_int(row.get("bullEyeTop")),
                     "win_no_only": bool(row.get("winNoOnly")),
                     "source": "taiwan_lottery",
+                    "fetched_at": observed_at,
                     "verified": False,
                     "raw_json": row,
                 }
