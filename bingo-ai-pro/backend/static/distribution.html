@@ -14,7 +14,7 @@ thead th{background:#eaf1f9;font-size:11px;height:30px}.issue,.time,.odd-even{ba
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:650;font-size:10px}td.ball:not(.hit){background:#fff}td.ball.super{font-weight:800}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{overflow:visible}table{font-size:10px}.issue{min-width:82px}.time{left:82px;min-width:48px}.odd-even{left:130px;min-width:38px}}
-.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:auto;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:absolute;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
+.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:auto;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
 </style></head>
 <body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
@@ -79,10 +79,24 @@ async function load(){
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 const island=document.getElementById('dynamicIsland');
-// Anchor the island to the document's top edge. Do not chase visualViewport
-// offsets during pinch zoom: that moves the controls over ball cells.
-island.style.top='max(8px,env(safe-area-inset-top))';
-island.style.right='8px';
+// A fixed element is positioned in the layout viewport on iPad Safari.
+// Translate to the visual viewport so it remains visible while pinch-zoomed.
+let islandFrame=0;
+function positionIsland(){
+ islandFrame=0;
+ const v=window.visualViewport;
+ const top=v?Math.max(8,v.offsetTop+8):8;
+ const right=v?Math.max(8,window.innerWidth-v.offsetLeft-v.width+8):8;
+ if(island.style.top!==top+'px')island.style.top=top+'px';
+ if(island.style.right!==right+'px')island.style.right=right+'px';
+}
+function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
+scheduleIsland();
+if(window.visualViewport){
+ visualViewport.addEventListener('scroll',scheduleIsland,{passive:true});
+ visualViewport.addEventListener('resize',scheduleIsland,{passive:true});
+}
+window.addEventListener('orientationchange',scheduleIsland,{passive:true});
 
 /* Local-only annotation overlay: never touches draw data, API, DB, or AI lifecycle. */
 const annotationHost=document.getElementById('annotationHost');
