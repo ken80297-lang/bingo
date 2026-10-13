@@ -298,7 +298,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
 def _finish_result(
     result: dict[str, Any],
     start: float,
-    timings: dict[str, float],
+    timings: dict[str, Any],
     rss_before: float | None,
     rss_peak: float | None,
     rss_after: float | None,
@@ -307,6 +307,18 @@ def _finish_result(
     timings.setdefault("db_lookup_ms", 0.0)
     timings.setdefault("save_ms", 0.0)
     timings["total_ms"] = round((time.perf_counter() - start) * 1000, 2)
+    # Measure observation lag from the scheduled draw, not the unknown official publish time.
+    observed_at = timings.get("source_observed_at")
+    draw_time = result.get("source_draw_time")
+    if observed_at and draw_time:
+        try:
+            observed_dt = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+            draw_dt = datetime.fromisoformat(str(draw_time).replace("Z", "+00:00"))
+            if observed_dt.tzinfo and draw_dt.tzinfo:
+                result["scheduled_draw_to_observation_seconds"] = round((observed_dt - draw_dt).total_seconds(), 2)
+                result["observed_within_80_seconds"] = 0 <= result["scheduled_draw_to_observation_seconds"] <= 80
+        except (ValueError, TypeError, OverflowError):
+            pass
     result["timing"] = timings
     result["source_fetch_ms"] = timings["source_fetch_ms"]
     result["db_lookup_ms"] = timings["db_lookup_ms"]
