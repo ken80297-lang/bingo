@@ -114,6 +114,9 @@ async function load(){
 }
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
+// Diagnostic mode: keep the island visible but stop repositioning it on every
+// visualViewport scroll event. This isolates Safari's scroll-linked style updates.
+const islandStaticTest=new URLSearchParams(location.search).get('island')==='static';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -127,12 +130,12 @@ function positionIsland(){
  if(island.style.right!==right+'px')island.style.right=right+'px';
 }
 function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
-scheduleIsland();
-if(window.visualViewport){
+if(!islandStaticTest)scheduleIsland();
+if(window.visualViewport&&!islandStaticTest){
  visualViewport.addEventListener('scroll',scheduleIsland,{passive:true});
  visualViewport.addEventListener('resize',scheduleIsland,{passive:true});
 }
-window.addEventListener('orientationchange',scheduleIsland,{passive:true});
+if(!islandStaticTest)window.addEventListener('orientationchange',scheduleIsland,{passive:true});
 
 /* Local-only annotation overlay: never touches draw data, API, DB, or AI lifecycle. */
 const annotationHost=document.getElementById('annotationHost');
