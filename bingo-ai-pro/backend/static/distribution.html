@@ -38,10 +38,16 @@ function cleanTime(v){
  const m=s.match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'
 }
 async function load(){
- document.getElementById('msg').textContent='載入中…';
+ if(load.inFlight)return;
+ load.inFlight=true;
+ if(!body.children.length)document.getElementById('msg').textContent='載入中…';
  try{
   const r=await fetch('/api/distribution?date='+encodeURIComponent(dateEl.value),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
-  const p=await r.json(),rows=p.draws||[]; body.innerHTML='';
+  const p=await r.json(),rows=p.draws||[];
+  const signature=JSON.stringify(rows.map(d=>[d.issue,d.numbers,d.super_number,d.draw_time]));
+  if(load.lastSignature===signature && load.lastDate===dateEl.value)return;
+  load.lastSignature=signature;load.lastDate=dateEl.value;
+  body.innerHTML='';
   rows.forEach((d,i)=>{const tr=document.createElement('tr');if(i===0)tr.className='latest';
    const nums=new Set((d.numbers||[]).map(Number)),sup=Number(d.super_number);
    const values=[...nums],bigCount=values.filter(n=>n>=41).length,smallCount=values.filter(n=>n<=40).length,oddCount=values.filter(n=>n%2===1).length,evenCount=values.length-oddCount;
@@ -57,6 +63,7 @@ async function load(){
   const nt=rows[0]?nextTime(cleanTime(rows[0].draw_time)):'';document.getElementById('next').textContent=(dateEl.value===localDate()&&nt)?'下一期：'+nt:'';
   document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
  }catch(e){document.getElementById('msg').innerHTML='<span class="error">載入失敗：'+e.message+'</span>'}
+ finally{load.inFlight=false}
 }
 dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,250);
