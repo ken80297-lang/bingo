@@ -1,17 +1,17 @@
 <!doctype html>
-<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=0.25,maximum-scale=5,user-scalable=yes,viewport-fit=cover">
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=2132,minimum-scale=0.1,maximum-scale=5,user-scalable=yes,viewport-fit=cover">
 <title>Bingo AI Pro｜每日球號分布</title>
 <style>
-*{box-sizing:border-box}html,body{width:100%;min-height:100%;overflow:auto}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f8fc;color:#14243b}
+*{box-sizing:border-box}html{min-height:100%;overflow:visible}body{min-width:2132px;min-height:100%;overflow:visible;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f8fc;color:#14243b}
 header{height:64px;background:linear-gradient(110deg,#06294c,#06477b);color:#fff;display:flex;align-items:center;padding:0 18px;gap:18px;position:relative;z-index:20;box-shadow:0 2px 10px #001b3b33}
 .brand{font-size:22px;font-weight:800;white-space:nowrap}.brand b{color:#ffd447}.title{font-size:18px;font-weight:700;border-left:1px solid #ffffff66;padding-left:18px}
 main{padding:12px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;padding:10px;border:1px solid #d9e2ef;border-radius:10px;margin-bottom:10px}
 input,button{height:38px;border:1px solid #cbd7e6;border-radius:7px;background:#fff;padding:0 12px;font-size:14px}button{cursor:pointer;font-weight:700}button.primary{background:#0878e8;color:#fff;border-color:#0878e8}
 .info{margin-left:auto;font-size:13px;color:#51657e}.legend{display:flex;gap:12px;align-items:center;font-size:13px}.sw{width:22px;height:18px;border-radius:4px;display:inline-block;vertical-align:middle;margin-right:4px}.hit{background:#dcfcd7;color:#326c2c}.super{background:#66658f!important;color:#fff}.latest-label{color:#098c2e;font-weight:800}
 .table-wrap{background:#fff;border:1px solid #d9e2ef;border-radius:8px;overflow:visible;box-shadow:none;position:relative}
-/* Opt-in iPad horizontal-scroll experiment. Default presentation is unchanged. */
-html.native-horizontal .table-wrap{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y pinch-zoom}#grid{position:relative}
-html.canvas-mode #grid{display:none}html.canvas-mode #distributionCanvas{display:block}#distributionCanvas{display:none;width:2108px;max-width:none;background:#fff}table{border-collapse:separate;border-spacing:0;width:2108px;min-width:2108px;font-size:11px;table-layout:fixed}th,td{border-right:1px solid #000;border-bottom:1px solid #000;text-align:center;height:24px;min-width:23px;padding:0;white-space:nowrap}
+/* Auzo-style desktop page: the document owns both scroll axes. */
+#grid{position:relative}
+table{border-collapse:collapse;border-spacing:0;width:2108px;min-width:2108px;font-size:11px;table-layout:fixed}th,td{border-right:1px solid #000;border-bottom:1px solid #000;text-align:center;height:24px;min-width:23px;padding:0;white-space:nowrap}
 thead th{background:#eaf1f9;font-size:11px;height:30px}.issue,.time,.odd-even{background:#fff}.issue{left:0;width:92px;min-width:92px;font-weight:650}.time{left:92px;width:54px;min-width:54px}.odd-even{left:146px;width:42px;min-width:42px;font-weight:800}.issue.size-big{background:#1647d8;color:#fff!important}.issue.size-small{background:#e33131;color:#fff!important}
 tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 /* Keep table cells in normal painting flow: avoid WebKit pinch zoom cell misplacement. */
@@ -24,43 +24,10 @@ td.ball.hit{font-weight:650;font-size:10px}td.ball:not(.hit){background:#fff}td.
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
 </div>
-<div class="table-wrap" id="annotationHost"><canvas id="annotationLayer" class="annotation-layer" aria-label="個人標記畫板"></canvas><canvas id="distributionCanvas" aria-label="每日球號分布表 Canvas 測試"></canvas><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
+<div class="table-wrap" id="annotationHost"><canvas id="annotationLayer" class="annotation-layer" aria-label="個人標記畫板"></canvas><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
 <div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
 </main>
 <script>
-// Compare native horizontal scrolling without changing the production default.
-if(new URLSearchParams(location.search).get('horizontal')==='native')document.documentElement.classList.add('native-horizontal');
-const canvasMode=new URLSearchParams(location.search).get('render')==='canvas';
-if(canvasMode)document.documentElement.classList.add('canvas-mode');
-const distributionCanvas=document.getElementById('distributionCanvas');
-function renderCanvas(rows){
- const c=distributionCanvas,ctx=c.getContext('2d',{alpha:false});
- const width=2108,headerHeight=30,rowHeight=24,height=headerHeight+rows.length*rowHeight;
- if(c.width!==width)c.width=width;if(c.height!==height)c.height=height;c.style.height=height+'px';
- ctx.fillStyle='#fff';ctx.fillRect(0,0,width,height);
- const edges=[0,92,146,188];for(let i=1;i<=80;i++)edges.push(188+i*24);
- ctx.fillStyle='#eaf1f9';ctx.fillRect(0,0,width,headerHeight);
- ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='11px -apple-system, sans-serif';ctx.fillStyle='#14243b';
- const titles=['期號','時間','單雙'];for(let i=0;i<3;i++)ctx.fillText(titles[i],(edges[i]+edges[i+1])/2,15);
- for(let n=1;n<=80;n++)ctx.fillText(pad(n),188+(n-.5)*24,15);
- rows.forEach((d,i)=>{
-  const y=headerHeight+i*rowHeight,nums=new Set((d.numbers||[]).map(Number)),sup=Number(d.super_number);
-  const vals=[...nums],big=vals.filter(n=>n>=41).length,small=vals.filter(n=>n<=40).length,odd=vals.filter(n=>n%2).length;
-  if(big>=13||small>=13){ctx.fillStyle=big>=13?'#1647d8':'#e33131';ctx.fillRect(0,y,92,rowHeight)}
-  ctx.font='600 11px -apple-system, sans-serif';ctx.fillStyle=big>=13||small>=13?'#fff':i===0?'#078529':'#14243b';
-  ctx.fillText(String(d.issue),46,y+12);
-  ctx.fillStyle=i===0?'#078529':'#14243b';ctx.fillText(cleanTime(d.draw_time),119,y+12);
-  ctx.fillStyle='#14243b';ctx.fillText(odd>=13?'單':vals.length-odd>=13?'雙':'－',167,y+12);
-  for(const n of nums){if(n<1||n>80)continue;const x=188+(n-1)*24;
-   ctx.fillStyle=n===sup?'#66658f':'#dcfcd7';ctx.fillRect(x,y,24,rowHeight);
-   ctx.fillStyle=n===sup?'#fff':'#326c2c';ctx.font='600 10px -apple-system, sans-serif';ctx.fillText(pad(n),x+12,y+12);
-  }
- });
- ctx.beginPath();ctx.strokeStyle='#000';ctx.lineWidth=1;
- for(const x of edges.slice(1)){const p=x-.5;ctx.moveTo(p,0);ctx.lineTo(p,height)}
- for(let y=headerHeight;y<=height;y+=rowHeight){const p=y-.5;ctx.moveTo(0,p);ctx.lineTo(width,p)}
- ctx.stroke();
-}
 const pad=n=>String(n).padStart(2,'0'); const localDate=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
 const dateEl=document.getElementById('date'),body=document.getElementById('body'),head=document.getElementById('head');
 for(let n=1;n<=80;n++){const th=document.createElement('th');th.textContent=pad(n);head.appendChild(th)}
@@ -82,10 +49,9 @@ async function load(){
   const signature=JSON.stringify(rows.map(d=>[d.issue,d.numbers,d.super_number,d.draw_time]));
   if(load.lastSignature===signature && load.lastDate===dateEl.value)return;
   load.lastSignature=signature;load.lastDate=dateEl.value;
-  if(canvasMode)renderCanvas(rows);
-  const existing=canvasMode?new Map():new Map(Array.from(body.children,tr=>[tr.dataset.issue,tr]));
+  const existing=new Map(Array.from(body.children,tr=>[tr.dataset.issue,tr]));
   const desired=[];
-  if(!canvasMode)rows.forEach((d,i)=>{
+  rows.forEach((d,i)=>{
    const key=String(d.issue), rowSignature=JSON.stringify([d.issue,d.numbers,d.super_number,d.draw_time]);
    let tr=existing.get(key);
    if(tr&&tr.dataset.signature===rowSignature){tr.classList.toggle('latest',i===0);desired.push(tr);return}
@@ -101,9 +67,9 @@ async function load(){
   });
   // Move only rows whose positions changed. Keep the other ~200 rows attached
   // so Safari does not lay out and repaint the entire table every five minutes.
-  if(!canvasMode)desired.forEach((tr,i)=>{if(body.children[i]!==tr)body.insertBefore(tr,body.children[i]||null)});
+  desired.forEach((tr,i)=>{if(body.children[i]!==tr)body.insertBefore(tr,body.children[i]||null)});
   const wanted=new Set(desired);
-  if(!canvasMode)Array.from(body.children).forEach(tr=>{if(!wanted.has(tr))tr.remove()});
+  Array.from(body.children).forEach(tr=>{if(!wanted.has(tr))tr.remove()});
   document.getElementById('day').textContent=dateEl.value+(dateEl.value===localDate()?'（今天）':'');
   document.getElementById('count').textContent=rows.length;
   document.getElementById('latest').textContent=rows[0]?(rows[0].issue+'（'+cleanTime(rows[0].draw_time)+'）'):'—';
@@ -151,7 +117,7 @@ function annotationPoint(e){
 }
 function resizeAnnotation(){
  if(!annotationEnabled&&!annotationStrokes.length)return;
- const grid=canvasMode?distributionCanvas:document.getElementById('grid');
+ const grid=document.getElementById('grid');
  const w=Math.max(1,grid.scrollWidth,grid.offsetWidth,annotationHost.scrollWidth);
  const h=Math.max(1,grid.scrollHeight,grid.offsetHeight,annotationHost.scrollHeight);
  if(annotationLayer.width===w&&annotationLayer.height===h&&annotationLayer.style.width===w+'px'&&annotationLayer.style.height===h+'px')return;
