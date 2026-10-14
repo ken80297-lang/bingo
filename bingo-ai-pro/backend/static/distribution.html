@@ -17,14 +17,14 @@ tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 /* Keep table cells in normal painting flow: avoid WebKit pinch zoom cell misplacement. */
 td.ball.hit{font-weight:650;font-size:10px}td.ball:not(.hit){background:#fff}td.ball.super{font-weight:800}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{overflow:visible}table{font-size:10px}/* Preserve the same column widths at every viewport size. */}
-.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:all;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
+html.annotation-drawing,html.annotation-drawing body{touch-action:none!important;overscroll-behavior:none}.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:all;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
 </style></head>
 <body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
 </div>
-<div class="table-wrap" id="annotationHost"><svg id="annotationLayer" class="annotation-layer" xmlns="http://www.w3.org/2000/svg" aria-label="個人標記畫板" width="1" height="1"></svg><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
+<div class="table-wrap" id="annotationHost"><svg id="annotationLayer" class="annotation-layer" xmlns="http://www.w3.org/2000/svg" aria-label="個人標記畫板" width="1" height="1"><rect width="100%" height="100%" fill="transparent" pointer-events="all"/><g id="annotationPaths" pointer-events="none"></g></svg><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
 <div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
 </main>
 <script>
@@ -109,6 +109,7 @@ const annotationLayer=document.getElementById('annotationLayer');
 const markBtn=document.getElementById('mark');
 const undoBtn=document.getElementById('undo');
 const annotationNS='http://www.w3.org/2000/svg';
+const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
 
 function annotationPoint(e){
@@ -125,7 +126,7 @@ function resizeAnnotation(){
  annotationLayer.style.width=w+'px';annotationLayer.style.height=h+'px';
 }
 function redrawAnnotation(){
- annotationLayer.replaceChildren();
+ annotationPaths.replaceChildren();
  annotationStrokes.forEach(points=>{
   if(!points.length)return;
   const path=document.createElementNS(annotationNS,'path');
@@ -133,41 +134,47 @@ function redrawAnnotation(){
   const d='M '+start.x+' '+start.y+(points.length===1?' l 0.01 0':points.slice(1).map(p=>' L '+p.x+' '+p.y).join(''));
   path.setAttribute('d',d);path.setAttribute('fill','none');path.setAttribute('stroke','#e32636');
   path.setAttribute('stroke-width','4');path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-linejoin','round');
-  path.setAttribute('pointer-events','none');annotationLayer.appendChild(path);
+  path.setAttribute('pointer-events','none');annotationPaths.appendChild(path);
  });
  undoBtn.disabled=annotationStrokes.length===0;
 }
 function setAnnotationEnabled(on){
  annotationEnabled=on;
+ document.documentElement.classList.toggle('annotation-drawing',on);
+ if(!on){annotationDrawing=false;annotationCurrent=null}
  if(on)resizeAnnotation();annotationLayer.classList.toggle('drawing',on);annotationHost.classList.toggle('annotation-active',on);markBtn.classList.toggle('active',on);
  markBtn.setAttribute('aria-pressed',String(on));markBtn.textContent=on?'✓ 標記中':'✏️ 標記';
 }
 markBtn.addEventListener('click',()=>setAnnotationEnabled(!annotationEnabled));
 undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
 annotationLayer.addEventListener('pointerdown',e=>{
- if(!annotationEnabled)return;e.preventDefault();e.stopPropagation();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
+ if(!annotationEnabled||e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
  annotationStrokes.push(annotationCurrent);try{annotationLayer.setPointerCapture(e.pointerId)}catch(_){}redrawAnnotation();
 });
 annotationLayer.addEventListener('pointermove',e=>{
- if(!annotationDrawing||!annotationCurrent)return;e.preventDefault();e.stopPropagation();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
+ if(e.pointerType==='touch'||!annotationDrawing||!annotationCurrent)return;e.preventDefault();e.stopPropagation();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
 });
 function finishAnnotation(e){if(!annotationDrawing)return;annotationDrawing=false;annotationCurrent=null;try{annotationLayer.releasePointerCapture(e.pointerId)}catch(_){}}
-annotationLayer.addEventListener('pointerup',e=>{e.preventDefault();e.stopPropagation();finishAnnotation(e)});
-annotationLayer.addEventListener('pointercancel',finishAnnotation);
-/* Older touch browsers need drawing handlers, not only preventDefault. */
-if(!window.PointerEvent){
- annotationLayer.addEventListener('touchstart',e=>{
-  if(!annotationEnabled||e.touches.length!==1)return;
-  e.preventDefault();annotationDrawing=true;annotationCurrent=[annotationPoint(e.touches[0])];
-  annotationStrokes.push(annotationCurrent);redrawAnnotation();
- },{passive:false});
- annotationLayer.addEventListener('touchmove',e=>{
-  if(!annotationDrawing||!annotationCurrent)return;
-  e.preventDefault();annotationCurrent.push(annotationPoint(e.touches[0]));redrawAnnotation();
- },{passive:false});
- ['touchend','touchcancel'].forEach(type=>annotationLayer.addEventListener(type,e=>{
-  if(!annotationDrawing)return;e.preventDefault();annotationDrawing=false;annotationCurrent=null;
- },{passive:false}));
-}
+annotationLayer.addEventListener('pointerup',e=>{if(e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();finishAnnotation(e)});
+annotationLayer.addEventListener('pointercancel',e=>{if(e.pointerType!=='touch')finishAnnotation(e)});
+/* Safari needs non-passive touch handlers even when PointerEvent exists.
+   Touch draws through this path; mouse and pen use pointer handlers above. */
+annotationLayer.addEventListener('touchstart',e=>{
+ if(!annotationEnabled)return;
+ e.preventDefault();e.stopPropagation();
+ if(e.touches.length!==1)return;
+ annotationDrawing=true;annotationCurrent=[annotationPoint(e.touches[0])];
+ annotationStrokes.push(annotationCurrent);redrawAnnotation();
+},{passive:false});
+annotationLayer.addEventListener('touchmove',e=>{
+ if(!annotationEnabled)return;
+ e.preventDefault();e.stopPropagation();
+ if(!annotationDrawing||!annotationCurrent||!e.touches.length)return;
+ annotationCurrent.push(annotationPoint(e.touches[0]));redrawAnnotation();
+},{passive:false});
+['touchend','touchcancel'].forEach(type=>annotationLayer.addEventListener(type,e=>{
+ if(!annotationEnabled)return;
+ e.preventDefault();e.stopPropagation();annotationDrawing=false;annotationCurrent=null;
+},{passive:false}));
 new ResizeObserver(resizeAnnotation).observe(annotationHost);annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
 </script></body></html>
