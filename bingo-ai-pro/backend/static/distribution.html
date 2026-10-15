@@ -87,7 +87,7 @@ dateEl.addEventListener('change',load);document.getElementById('reload').onclick
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261015-touch-v4';
+const distributionBuild='20261015-ipad-compat-v5';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -171,7 +171,8 @@ function resizeAnnotation(){
  annotationLayer.style.width=w+'px';annotationLayer.style.height=h+'px';
 }
 function redrawAnnotation(){
- annotationPaths.replaceChildren();
+ // Avoid replaceChildren: unavailable on older iPad Safari.
+ while(annotationPaths.firstChild)annotationPaths.removeChild(annotationPaths.firstChild);
  annotationStrokes.forEach(points=>{
   points=points.map(p=>({...p,y:annotationY(p)}));
   if(!points.length||points.some(p=>p.y===null))return;
@@ -240,5 +241,11 @@ document.addEventListener('touchmove',e=>{
 },{capture:true,passive:false});
 ['touchend','touchcancel'].forEach(type=>document.addEventListener(type,finishAnnotation,{capture:true,passive:false}));
 window.addEventListener('pagehide',persistAnnotations);
-new ResizeObserver(()=>{resizeAnnotation();redrawAnnotation();scheduleIsland()}).observe(annotationHost);annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
+function refreshAnnotationLayout(){resizeAnnotation();redrawAnnotation();scheduleIsland()}
+if(typeof window.ResizeObserver==='function'){
+ new ResizeObserver(refreshAnnotationLayout).observe(annotationHost);
+}else{
+ window.addEventListener('resize',refreshAnnotationLayout,{passive:true});
+ window.addEventListener('orientationchange',refreshAnnotationLayout,{passive:true});
+}annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
 </script></body></html>
