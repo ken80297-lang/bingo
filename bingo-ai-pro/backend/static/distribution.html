@@ -70,6 +70,7 @@ async function load(){
   desired.forEach((tr,i)=>{if(body.children[i]!==tr)body.insertBefore(tr,body.children[i]||null)});
   const wanted=new Set(desired);
   Array.from(body.children).forEach(tr=>{if(!wanted.has(tr))tr.remove()});
+  restoreAnnotations();resizeAnnotation();redrawAnnotation();scheduleIsland();
   document.getElementById('day').textContent=dateEl.value+(dateEl.value===localDate()?'（今天）':'');
   document.getElementById('count').textContent=rows.length;
   document.getElementById('latest').textContent=rows[0]?(rows[0].issue+'（'+cleanTime(rows[0].draw_time)+'）'):'—';
@@ -89,11 +90,16 @@ const island=document.getElementById('dynamicIsland');
 let islandFrame=0;
 function positionIsland(){
  islandFrame=0;
- const v=window.visualViewport;
- const top=v?Math.max(8,v.offsetTop+8):8;
- const right=v?Math.max(8,window.innerWidth-v.offsetLeft-v.width+8):8;
- if(island.style.top!==top+'px')island.style.top=top+'px';
- if(island.style.right!==right+'px')island.style.right=right+'px';
+ const v=window.visualViewport,scale=v?v.scale:1;
+ const gap=8/scale,top=(v?v.offsetTop:0)+gap;
+ const right=(v?window.innerWidth-v.offsetLeft-v.width:0)+gap;
+ island.style.top=top+'px';island.style.right=right+'px';
+ island.style.transform='scale('+1/scale+')';
+ // Reserve a screen-sized strip above the table, including while panning.
+ const host=document.getElementById('annotationHost');
+ const r=host.getBoundingClientRect();
+ const boundary=(v?v.offsetTop:0)+(island.offsetHeight+16)/scale;
+ host.style.clipPath='inset('+Math.max(0,boundary-r.top)+'px 0 0 0)';
 }
 function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
 if(!islandStaticTest)scheduleIsland();
@@ -102,6 +108,7 @@ if(window.visualViewport&&!islandStaticTest){
  visualViewport.addEventListener('resize',scheduleIsland,{passive:true});
 }
 if(!islandStaticTest)window.addEventListener('orientationchange',scheduleIsland,{passive:true});
+window.addEventListener('scroll',scheduleIsland,{passive:true});window.addEventListener('resize',scheduleIsland,{passive:true});
 
 /* Local-only annotation overlay: never touches draw data, API, DB, or AI lifecycle. */
 const annotationHost=document.getElementById('annotationHost');
@@ -112,9 +119,25 @@ const annotationNS='http://www.w3.org/2000/svg';
 const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
 
+let annotationDate='';
+function persistAnnotations(){
+ try{localStorage.setItem('bingo-annotations-v2:'+annotationDate,JSON.stringify(annotationStrokes))}catch(_){}
+}
+function restoreAnnotations(){
+ if(annotationDate===load.lastDate)return;
+ if(annotationDate)persistAnnotations();
+ annotationDate=load.lastDate;annotationDrawing=false;annotationCurrent=null;
+ try{const saved=JSON.parse(localStorage.getItem('bingo-annotations-v2:'+annotationDate)||'[]');annotationStrokes=Array.isArray(saved)?saved:[]}catch(_){annotationStrokes=[]}
+}
+function annotationY(p){
+ if(!p.issue)return p.y;
+ const row=Array.from(body.children).find(tr=>tr.dataset.issue===p.issue);
+ return row?row.getBoundingClientRect().top-annotationLayer.getBoundingClientRect().top+p.dy:null;
+}
 function annotationPoint(e){
  const r=annotationLayer.getBoundingClientRect();
- return {x:e.clientX-r.left,y:e.clientY-r.top};
+ const row=Array.from(body.children).find(tr=>{const b=tr.getBoundingClientRect();return e.clientY>=b.top&&e.clientY<b.bottom});
+ return {x:e.clientX-r.left,y:e.clientY-r.top,issue:row?row.dataset.issue:null,dy:row?e.clientY-row.getBoundingClientRect().top:0};
 }
 function resizeAnnotation(){
  if(!annotationEnabled&&!annotationStrokes.length)return;
@@ -128,7 +151,8 @@ function resizeAnnotation(){
 function redrawAnnotation(){
  annotationPaths.replaceChildren();
  annotationStrokes.forEach(points=>{
-  if(!points.length)return;
+  points=points.map(p=>({...p,y:annotationY(p)}));
+  if(!points.length||points.some(p=>p.y===null))return;
   const path=document.createElementNS(annotationNS,'path');
   const start=points[0];
   const d='M '+start.x+' '+start.y+(points.length===1?' l 0.01 0':points.slice(1).map(p=>' L '+p.x+' '+p.y).join(''));
@@ -146,7 +170,7 @@ function setAnnotationEnabled(on){
  markBtn.setAttribute('aria-pressed',String(on));markBtn.textContent=on?'✓ 標記中':'✏️ 標記';
 }
 markBtn.addEventListener('click',()=>setAnnotationEnabled(!annotationEnabled));
-undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
+undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();persistAnnotations();redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
 annotationLayer.addEventListener('pointerdown',e=>{
  if(!annotationEnabled||e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
  annotationStrokes.push(annotationCurrent);try{annotationLayer.setPointerCapture(e.pointerId)}catch(_){}redrawAnnotation();
@@ -154,7 +178,7 @@ annotationLayer.addEventListener('pointerdown',e=>{
 annotationLayer.addEventListener('pointermove',e=>{
  if(e.pointerType==='touch'||!annotationDrawing||!annotationCurrent)return;e.preventDefault();e.stopPropagation();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
 });
-function finishAnnotation(e){if(!annotationDrawing)return;annotationDrawing=false;annotationCurrent=null;try{annotationLayer.releasePointerCapture(e.pointerId)}catch(_){}}
+function finishAnnotation(e){if(!annotationDrawing)return;annotationDrawing=false;annotationCurrent=null;persistAnnotations();try{annotationLayer.releasePointerCapture(e.pointerId)}catch(_){}}
 annotationLayer.addEventListener('pointerup',e=>{if(e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();finishAnnotation(e)});
 annotationLayer.addEventListener('pointercancel',e=>{if(e.pointerType!=='touch')finishAnnotation(e)});
 /* Safari needs non-passive touch handlers even when PointerEvent exists.
@@ -174,7 +198,8 @@ annotationLayer.addEventListener('touchmove',e=>{
 },{passive:false});
 ['touchend','touchcancel'].forEach(type=>annotationLayer.addEventListener(type,e=>{
  if(!annotationEnabled)return;
- e.preventDefault();e.stopPropagation();annotationDrawing=false;annotationCurrent=null;
+ e.preventDefault();e.stopPropagation();annotationDrawing=false;annotationCurrent=null;persistAnnotations();
 },{passive:false}));
-new ResizeObserver(resizeAnnotation).observe(annotationHost);annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
+window.addEventListener('pagehide',persistAnnotations);
+new ResizeObserver(()=>{resizeAnnotation();redrawAnnotation();scheduleIsland()}).observe(annotationHost);annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
 </script></body></html>
