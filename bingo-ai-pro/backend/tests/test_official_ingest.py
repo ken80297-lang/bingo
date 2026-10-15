@@ -249,3 +249,11 @@ def test_polling_starts_at_draw_time_and_retries_before_one_minute(monkeypatch):
         assert key == "2026-10-05:0"
     before = datetime(2026, 10, 5, 7, 4, 59, tzinfo=ZoneInfo("Asia/Taipei"))
     assert official_ingest.should_poll_official_now(before) == (False, "outside_draw_hours")
+
+
+def test_lightweight_source_fetch_requests_one_row(monkeypatch):
+    calls = []
+    monkeypatch.setattr(official_ingest, "fetch_official_bingo_results", lambda *args, **kwargs: calls.append(kwargs) or [_draw()])
+    latest, raw = official_ingest._latest_source_draw()
+    assert calls == [{"page_num": 1, "page_size": 1}]
+    assert latest["issue"] == raw[0]["issue"]

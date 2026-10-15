@@ -23,7 +23,7 @@ from services.collector_runtime import mark_error, mark_success, official_collec
 logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
-DEFAULT_PAGE_SIZE = 10
+DEFAULT_PAGE_SIZE = 1
 MAX_POLL_RETRY_MINUTES_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_MAX_RETRY_MINUTES", "3"))
 POLL_FIRST_RETRY_SECONDS_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_FIRST_RETRY_SECONDS", "0"))
 AI_LIFECYCLE_SUBPROCESS_ENABLED = os.getenv("AI_LIFECYCLE_SUBPROCESS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -279,6 +279,9 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
             }
             return _finish_result(result, start, timings, rss_before, rss_peak, mark_rss())
 
+        from services.distribution_events import publish_draw
+
+        publish_draw(source_issue)
         result = {
             "status": "ok",
             "exit_reason": "saved",
