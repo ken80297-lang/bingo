@@ -146,8 +146,8 @@ def test_latest_official_scheduler_registers_startup_and_interval_jobs(monkeypat
     by_id = {call["id"]: call for call in scheduler.calls}
     assert set(by_id) == {"collector_official_latest_startup", "collector_official_latest"}
     assert by_id["collector_official_latest_startup"]["trigger"] == "date"
-    assert by_id["collector_official_latest"]["trigger"] == "interval"
-    assert by_id["collector_official_latest"]["minutes"] == 2
+    assert by_id["collector_official_latest"]["trigger"] == "cron"
+    assert by_id["collector_official_latest"]["second"] == "0,20,40"
     assert runtime_updates[-1] == {"official_collector_interval_job_registered": True}
 
 

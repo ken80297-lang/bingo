@@ -237,3 +237,23 @@ def test_polling_does_not_stop_without_verified_draw_time(monkeypatch):
     official_ingest.run_lightweight_official_polling_tick(now)
     official_ingest.run_lightweight_official_polling_tick(now)
     assert calls == [1, 1]
+
+
+def test_polling_starts_at_draw_time_and_retries_before_one_minute(monkeypatch):
+    monkeypatch.setattr(official_ingest, "POLL_FIRST_RETRY_SECONDS_AFTER_DRAW", 0)
+    official_ingest._POLL_COMPLETED_ISSUES.clear()
+    for second in (0, 20, 40):
+        now = datetime(2026, 10, 5, 7, 5, second, tzinfo=ZoneInfo("Asia/Taipei"))
+        allowed, key = official_ingest.should_poll_official_now(now)
+        assert allowed
+        assert key == "2026-10-05:0"
+    before = datetime(2026, 10, 5, 7, 4, 59, tzinfo=ZoneInfo("Asia/Taipei"))
+    assert official_ingest.should_poll_official_now(before) == (False, "outside_draw_hours")
+
+
+def test_lightweight_source_fetch_requests_one_row(monkeypatch):
+    calls = []
+    monkeypatch.setattr(official_ingest, "fetch_official_bingo_results", lambda *args, **kwargs: calls.append(kwargs) or [_draw()])
+    latest, raw = official_ingest._latest_source_draw()
+    assert calls == [{"page_num": 1, "page_size": 1}]
+    assert latest["issue"] == raw[0]["issue"]

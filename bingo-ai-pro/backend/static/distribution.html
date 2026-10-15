@@ -42,7 +42,7 @@ function cleanTime(v){
  const m=s.match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'
 }
 async function load(){
- if(load.inFlight)return;
+ if(load.inFlight){load.pending=true;return;}
  load.inFlight=true;
  if(!body.children.length)document.getElementById('msg').textContent='載入中…';
  try{
@@ -81,9 +81,24 @@ async function load(){
   const nt=rows[0]?nextTime(cleanTime(rows[0].draw_time)):'';document.getElementById('next').textContent=(dateEl.value===localDate()&&nt)?'下一期：'+nt:'';
   document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
  }catch(e){document.getElementById('msg').innerHTML='<span class="error">載入失敗：'+e.message+'</span>'}
- finally{load.inFlight=false}
+ finally{load.inFlight=false;if(load.pending){load.pending=false;load()}}
 }
-dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();setInterval(()=>{if(dateEl.value===localDate())load()},5000);
+dateEl.addEventListener('change',load);document.getElementById('reload').onclick=load;document.getElementById('today').onclick=()=>{dateEl.value=localDate();load()};load();
+let drawStream=null,lastDrawStreamActivity=0;
+function connectDrawStream(){
+ if(drawStream||document.hidden||!window.EventSource)return;
+ drawStream=new EventSource('/api/distribution/events');
+ drawStream.addEventListener('ready',()=>{lastDrawStreamActivity=Date.now();if(dateEl.value===localDate())load()});
+ drawStream.addEventListener('draw',()=>{lastDrawStreamActivity=Date.now();if(dateEl.value===localDate())load()});
+ drawStream.onerror=()=>{lastDrawStreamActivity=0};
+}
+connectDrawStream();
+// Five-second fallback while disconnected; periodic reconciliation also covers
+// writes from another process and reconnect races without downloading all day repeatedly.
+setInterval(()=>{if(!document.hidden&&dateEl.value===localDate()&&(!drawStream||drawStream.readyState!==1||Date.now()-lastDrawStreamActivity>=30000)){load();if(drawStream&&drawStream.readyState===1)lastDrawStreamActivity=Date.now()}},5000);
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(drawStream)drawStream.close();drawStream=null}else{load();connectDrawStream()}});
+window.addEventListener('pagehide',()=>{if(drawStream)drawStream.close();drawStream=null});
+window.addEventListener('pageshow',connectDrawStream);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
