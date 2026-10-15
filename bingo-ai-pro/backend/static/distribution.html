@@ -87,7 +87,7 @@ dateEl.addEventListener('change',load);document.getElementById('reload').onclick
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261015-ipad-compat-v5';
+const distributionBuild='20261015-crisp-island-v6';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -99,16 +99,35 @@ function positionIsland(){
  // Fixed positioning excludes the dock from document scroll overflow.
  // An absolute dock at pageLeft/pageTop grows the page while the user pans.
  const x=v?v.offsetLeft:0,y=v?v.offsetTop:0;
- dock.style.left='0px';dock.style.top='0px';
- dock.style.width=((v?v.width:document.documentElement.clientWidth)*scale)+'px';
- dock.style.transform='translate('+x+'px,'+y+'px) scale('+1/scale+')';
- island.style.removeProperty('transform');island.style.removeProperty('top');island.style.removeProperty('right');
+ dock.style.left=x+'px';dock.style.top=y+'px';
+ dock.style.width=(v?v.width:document.documentElement.clientWidth)+'px';
+ dock.style.transform='none';
+ sizeIslandForViewport(scale);
  const host=document.getElementById('annotationHost'),r=host.getBoundingClientRect();
  // Use one document coordinate system for the exclusion boundary.
  const hostPageTop=r.top+window.scrollY;
  const cut=Math.min(host.offsetHeight,Math.max(0,(v?v.pageTop:window.scrollY)+60/scale-hostPageTop));
  const clip='inset('+cut+'px 0 0 0)';
  if(host.style.clipPath!==clip){host.style.clipPath=clip;host.style.webkitClipPath=clip}
+}
+let islandUIScale=0;
+function sizeIslandForViewport(scale){
+ if(islandUIScale===scale)return;
+ islandUIScale=scale;
+ const u=1/scale,px=n=>(n*u)+'px';
+ const dock=document.getElementById('islandDock');
+ // Size the actual text and controls; never magnify a rasterized layer.
+ dock.style.height=px(60);
+ island.style.transform='none';island.style.top=px(8);island.style.right=px(8);
+ island.style.gap=px(7);island.style.padding=[6,8,6,10].map(px).join(' ');
+ island.style.borderWidth=px(1);island.style.borderRadius=px(999);
+ const clock=document.getElementById('liveClock');
+ clock.style.fontSize=px(14);clock.style.letterSpacing=px(.7);
+ island.querySelector('.annotation-controls').style.gap=px(5);
+ Array.from(island.querySelectorAll('button')).forEach(button=>{
+  button.style.height=px(30);button.style.padding='0 '+px(9);
+  button.style.fontSize=px(12);button.style.borderWidth=px(1);button.style.borderRadius=px(999);
+ });
 }
 function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
 let viewportGestureFrame=0,viewportGestureUntil=0;
