@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_PAGE_SIZE = 10
 MAX_POLL_RETRY_MINUTES_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_MAX_RETRY_MINUTES", "3"))
-POLL_FIRST_RETRY_SECONDS_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_FIRST_RETRY_SECONDS", "60"))
+POLL_FIRST_RETRY_SECONDS_AFTER_DRAW = int(os.getenv("LIGHTWEIGHT_OFFICIAL_FIRST_RETRY_SECONDS", "0"))
 AI_LIFECYCLE_SUBPROCESS_ENABLED = os.getenv("AI_LIFECYCLE_SUBPROCESS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 ROOT = Path(__file__).resolve().parents[1]
 _AI_WORKER_LOCK = threading.Lock()
