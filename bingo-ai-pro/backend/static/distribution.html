@@ -18,8 +18,10 @@ tr.latest .issue,tr.latest .time{color:#078529;font-weight:800}
 td.ball.hit{font-weight:650;font-size:10px}td.ball:not(.hit){background:#fff}td.ball.super{font-weight:800}.empty{color:#9aa9b9}.status{display:flex;gap:22px;align-items:center;padding:11px 4px;font-size:14px;flex-wrap:wrap}.status strong{color:#0878e8}.error{color:#c5222f;font-weight:700}
 @media(max-width:700px){header{height:54px;padding:0 10px}.brand{font-size:18px}.title{font-size:15px;padding-left:10px}main{padding:7px}.info{width:100%;margin-left:0}.table-wrap{overflow:visible}table{font-size:10px}/* Preserve the same column widths at every viewport size. */}
 html.annotation-drawing,html.annotation-drawing body{touch-action:none!important;overscroll-behavior:none}.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:all;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
+#islandDock{position:absolute;left:0;top:0;width:100%;height:60px;z-index:9999;background:#f5f8fc;transform-origin:top left;pointer-events:none}
+#islandDock .dynamic-island{position:absolute;top:8px;right:8px;transform:none;pointer-events:auto}
 </style></head>
-<body><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
+<body><div id="islandDock"><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
@@ -44,8 +46,10 @@ async function load(){
  load.inFlight=true;
  if(!body.children.length)document.getElementById('msg').textContent='載入中…';
  try{
-  const r=await fetch('/api/distribution?date='+encodeURIComponent(dateEl.value),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
+  const requestedDate=dateEl.value;
+  const r=await fetch('/api/distribution?date='+encodeURIComponent(requestedDate),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
   const p=await r.json(),rows=p.draws||[];
+  if(dateEl.value!==requestedDate)return;
   const signature=JSON.stringify(rows.map(d=>[d.issue,d.numbers,d.super_number,d.draw_time]));
   if(load.lastSignature===signature && load.lastDate===dateEl.value)return;
   load.lastSignature=signature;load.lastDate=dateEl.value;
@@ -83,7 +87,7 @@ dateEl.addEventListener('change',load);document.getElementById('reload').onclick
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const islandStaticTest=new URLSearchParams(location.search).get('island')==='static';
+const distributionBuild='20261015-dock-v2';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -91,23 +95,25 @@ let islandFrame=0;
 function positionIsland(){
  islandFrame=0;
  const v=window.visualViewport,scale=v?v.scale:1;
- const gap=8/scale,top=(v?v.offsetTop:0)+gap;
- const right=(v?window.innerWidth-v.offsetLeft-v.width:0)+gap;
- island.style.top=top+'px';island.style.right=right+'px';
- island.style.transform='scale('+1/scale+')';
- // Reserve a screen-sized strip above the table, including while panning.
- const host=document.getElementById('annotationHost');
- const r=host.getBoundingClientRect();
- const boundary=(v?v.offsetTop:0)+(island.offsetHeight+16)/scale;
- host.style.clipPath='inset('+Math.max(0,boundary-r.top)+'px 0 0 0)';
+ const dock=document.getElementById('islandDock');
+ // Absolute page coordinates avoid Safari fixed-position viewport compensation.
+ const x=v?v.pageLeft:window.scrollX,y=v?v.pageTop:window.scrollY;
+ dock.style.left=x+'px';dock.style.top=y+'px';
+ dock.style.width=((v?v.width:document.documentElement.clientWidth)*scale)+'px';
+ dock.style.transform='scale('+1/scale+')';
+ island.style.removeProperty('transform');island.style.removeProperty('top');island.style.removeProperty('right');
+ const host=document.getElementById('annotationHost'),r=host.getBoundingClientRect();
+ const cut=Math.max(0,(v?v.offsetTop:0)+60/scale-r.top);
+ const clip='inset('+cut+'px 0 0 0)';
+ if(host.style.clipPath!==clip){host.style.clipPath=clip;host.style.webkitClipPath=clip}
 }
 function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
-if(!islandStaticTest)scheduleIsland();
-if(window.visualViewport&&!islandStaticTest){
+scheduleIsland();
+if(window.visualViewport){
  visualViewport.addEventListener('scroll',scheduleIsland,{passive:true});
  visualViewport.addEventListener('resize',scheduleIsland,{passive:true});
 }
-if(!islandStaticTest)window.addEventListener('orientationchange',scheduleIsland,{passive:true});
+window.addEventListener('orientationchange',scheduleIsland,{passive:true});
 window.addEventListener('scroll',scheduleIsland,{passive:true});window.addEventListener('resize',scheduleIsland,{passive:true});
 
 /* Local-only annotation overlay: never touches draw data, API, DB, or AI lifecycle. */
@@ -165,7 +171,7 @@ function redrawAnnotation(){
 function setAnnotationEnabled(on){
  annotationEnabled=on;
  document.documentElement.classList.toggle('annotation-drawing',on);
- if(!on){annotationDrawing=false;annotationCurrent=null}
+ if(!on){persistAnnotations();annotationDrawing=false;annotationCurrent=null}
  if(on)resizeAnnotation();annotationLayer.classList.toggle('drawing',on);annotationHost.classList.toggle('annotation-active',on);markBtn.classList.toggle('active',on);
  markBtn.setAttribute('aria-pressed',String(on));markBtn.textContent=on?'✓ 標記中':'✏️ 標記';
 }
