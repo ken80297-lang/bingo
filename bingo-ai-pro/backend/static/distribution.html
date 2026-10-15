@@ -87,7 +87,7 @@ dateEl.addEventListener('change',load);document.getElementById('reload').onclick
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261015-dock-v3';
+const distributionBuild='20261015-touch-v4';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -111,6 +111,19 @@ function positionIsland(){
  if(host.style.clipPath!==clip){host.style.clipPath=clip;host.style.webkitClipPath=clip}
 }
 function scheduleIsland(){if(!islandFrame)islandFrame=requestAnimationFrame(positionIsland)}
+let viewportGestureFrame=0,viewportGestureUntil=0;
+function trackViewportGesture(){
+ viewportGestureFrame=0;positionIsland();
+ if(performance.now()<viewportGestureUntil)viewportGestureFrame=requestAnimationFrame(trackViewportGesture);
+}
+function keepViewportTracking(ms){
+ viewportGestureUntil=performance.now()+ms;
+ if(!viewportGestureFrame)viewportGestureFrame=requestAnimationFrame(trackViewportGesture);
+}
+document.addEventListener('touchstart',()=>keepViewportTracking(1500),{capture:true,passive:true});
+document.addEventListener('touchmove',()=>keepViewportTracking(500),{capture:true,passive:true});
+document.addEventListener('touchend',()=>keepViewportTracking(350),{capture:true,passive:true});
+document.addEventListener('gesturechange',()=>keepViewportTracking(500),{capture:true,passive:true});
 scheduleIsland();
 if(window.visualViewport){
  visualViewport.addEventListener('scroll',scheduleIsland,{passive:true});
@@ -180,35 +193,52 @@ function setAnnotationEnabled(on){
 }
 markBtn.addEventListener('click',()=>setAnnotationEnabled(!annotationEnabled));
 undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();persistAnnotations();redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
-annotationLayer.addEventListener('pointerdown',e=>{
- if(!annotationEnabled||e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();annotationDrawing=true;annotationCurrent=[annotationPoint(e)];
- annotationStrokes.push(annotationCurrent);try{annotationLayer.setPointerCapture(e.pointerId)}catch(_){}redrawAnnotation();
-});
-annotationLayer.addEventListener('pointermove',e=>{
- if(e.pointerType==='touch'||!annotationDrawing||!annotationCurrent)return;e.preventDefault();e.stopPropagation();annotationCurrent.push(annotationPoint(e));redrawAnnotation();
-});
-function finishAnnotation(e){if(!annotationDrawing)return;annotationDrawing=false;annotationCurrent=null;persistAnnotations();try{annotationLayer.releasePointerCapture(e.pointerId)}catch(_){}}
-annotationLayer.addEventListener('pointerup',e=>{if(e.pointerType==='touch')return;e.preventDefault();e.stopPropagation();finishAnnotation(e)});
-annotationLayer.addEventListener('pointercancel',e=>{if(e.pointerType!=='touch')finishAnnotation(e)});
-/* Safari needs non-passive touch handlers even when PointerEvent exists.
-   Touch draws through this path; mouse and pen use pointer handlers above. */
-annotationLayer.addEventListener('touchstart',e=>{
- if(!annotationEnabled)return;
+function annotationEventAllowed(e){
+ if(!annotationEnabled||!load.lastDate)return false;
+ if(document.getElementById('islandDock').contains(e.target))return false;
+ const p=e.touches?e.touches[0]:e;
+ if(!p)return false;
+ const r=annotationHost.getBoundingClientRect();
+ const v=window.visualViewport;
+ const top=Math.max(r.top,(v?v.offsetTop:0)+60/(v?v.scale:1));
+ return p.clientX>=r.left&&p.clientX<=r.right&&p.clientY>=top&&p.clientY<=r.bottom;
+}
+function beginAnnotation(e,p){
  e.preventDefault();e.stopPropagation();
- if(e.touches.length!==1)return;
- annotationDrawing=true;annotationCurrent=[annotationPoint(e.touches[0])];
+ annotationDrawing=true;annotationCurrent=[annotationPoint(p)];
  annotationStrokes.push(annotationCurrent);redrawAnnotation();
-},{passive:false});
-annotationLayer.addEventListener('touchmove',e=>{
- if(!annotationEnabled)return;
+}
+function moveAnnotation(e,p){
+ if(!annotationDrawing||!annotationCurrent)return;
  e.preventDefault();e.stopPropagation();
- if(!annotationDrawing||!annotationCurrent||!e.touches.length)return;
- annotationCurrent.push(annotationPoint(e.touches[0]));redrawAnnotation();
-},{passive:false});
-['touchend','touchcancel'].forEach(type=>annotationLayer.addEventListener(type,e=>{
- if(!annotationEnabled)return;
- e.preventDefault();e.stopPropagation();annotationDrawing=false;annotationCurrent=null;persistAnnotations();
-},{passive:false}));
+ annotationCurrent.push(annotationPoint(p));redrawAnnotation();
+}
+function finishAnnotation(e){
+ if(!annotationDrawing)return;
+ e.preventDefault();e.stopPropagation();
+ annotationDrawing=false;annotationCurrent=null;persistAnnotations();
+}
+// Capture at document level: zoomed Safari SVG hit testing must not decide
+// whether a finger reaches the drawing handlers.
+document.addEventListener('pointerdown',e=>{
+ if(e.pointerType==='touch'||!annotationEventAllowed(e))return;
+ beginAnnotation(e,e);
+},{capture:true,passive:false});
+document.addEventListener('pointermove',e=>{
+ if(e.pointerType==='touch')return;moveAnnotation(e,e);
+},{capture:true,passive:false});
+['pointerup','pointercancel'].forEach(type=>document.addEventListener(type,e=>{
+ if(e.pointerType!=='touch')finishAnnotation(e);
+},{capture:true,passive:false}));
+document.addEventListener('touchstart',e=>{
+ if(e.touches.length!==1||!annotationEventAllowed(e))return;
+ beginAnnotation(e,e.touches[0]);
+},{capture:true,passive:false});
+document.addEventListener('touchmove',e=>{
+ if(!annotationDrawing||!e.touches.length)return;
+ moveAnnotation(e,e.touches[0]);
+},{capture:true,passive:false});
+['touchend','touchcancel'].forEach(type=>document.addEventListener(type,finishAnnotation,{capture:true,passive:false}));
 window.addEventListener('pagehide',persistAnnotations);
 new ResizeObserver(()=>{resizeAnnotation();redrawAnnotation();scheduleIsland()}).observe(annotationHost);annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px';
 </script></body></html>
