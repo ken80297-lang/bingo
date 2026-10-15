@@ -21,7 +21,7 @@ html.annotation-drawing,html.annotation-drawing body{touch-action:none!important
 #islandDock{position:fixed;left:0;top:0;width:100%;height:60px;z-index:9999;background:#f5f8fc;transform-origin:top left;pointer-events:none}
 #islandDock .dynamic-island{position:absolute;top:8px;right:8px;transform:none;pointer-events:auto}
 </style></head>
-<body><div id="islandDock"><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button></div></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
+<body><div id="islandDock"><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button><button id="clearMarks" class="annotation-btn" type="button" disabled>清除全部</button></div></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
@@ -87,7 +87,7 @@ dateEl.addEventListener('change',load);document.getElementById('reload').onclick
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261015-crisp-island-v6';
+const distributionBuild='20261015-clear-v7';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -156,6 +156,7 @@ const annotationHost=document.getElementById('annotationHost');
 const annotationLayer=document.getElementById('annotationLayer');
 const markBtn=document.getElementById('mark');
 const undoBtn=document.getElementById('undo');
+const clearMarksBtn=document.getElementById('clearMarks');
 const annotationNS='http://www.w3.org/2000/svg';
 const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
@@ -203,6 +204,7 @@ function redrawAnnotation(){
   path.setAttribute('pointer-events','none');annotationPaths.appendChild(path);
  });
  undoBtn.disabled=annotationStrokes.length===0;
+ clearMarksBtn.disabled=annotationStrokes.length===0;
 }
 function setAnnotationEnabled(on){
  annotationEnabled=on;
@@ -212,6 +214,10 @@ function setAnnotationEnabled(on){
  markBtn.setAttribute('aria-pressed',String(on));markBtn.textContent=on?'✓ 標記中':'✏️ 標記';
 }
 markBtn.addEventListener('click',()=>setAnnotationEnabled(!annotationEnabled));
+clearMarksBtn.addEventListener('click',()=>{
+ annotationDrawing=false;annotationCurrent=null;annotationStrokes=[];
+ persistAnnotations();redrawAnnotation();
+});
 undoBtn.addEventListener('click',()=>{if(annotationStrokes.length){annotationStrokes.pop();persistAnnotations();redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
 function annotationEventAllowed(e){
  if(!annotationEnabled||!load.lastDate)return false;
