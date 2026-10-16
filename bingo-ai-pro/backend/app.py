@@ -423,7 +423,9 @@ def _schedule_latest_official_job() -> None:
     interval_job = scheduler.add_job(
         run_lightweight_official_polling_tick,
         "cron",
-        second="0,20,40",
+        # Keep a 20-second cadence, with a poll at draw+75 rather than +80.
+        # This leaves time to commit and notify before the 80-second target.
+        second="15,35,55",
         id="collector_official_latest",
         replace_existing=True,
         max_instances=1,
@@ -432,7 +434,8 @@ def _schedule_latest_official_job() -> None:
     )
     print(
         "latest_official_scheduler_registered "
-        "strategy=lightweight_draw_window first_retry_seconds=0 cadence_seconds=20 "
+        "strategy=lightweight_draw_window first_poll_offset_seconds=15 cadence_seconds=20 "
+        "poll_seconds=15,35,55 "
         "draw_window=07:05-23:55 "
         f"interval_job_id={getattr(interval_job, 'id', 'collector_official_latest')} "
         f"next_run_time={getattr(interval_job, 'next_run_time', None)}"
