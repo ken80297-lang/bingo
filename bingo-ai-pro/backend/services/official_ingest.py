@@ -19,6 +19,7 @@ from database.official_draw_store import (
     save_official_draws,
 )
 from services.collector_runtime import mark_error, mark_success, official_collection_lock
+from services.distribution_events import publish_draw
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ def validate_official_draw(draw: dict | None) -> tuple[bool, str | None, dict | 
 
 
 def _latest_source_draw(page_size: int = DEFAULT_PAGE_SIZE) -> tuple[dict | None, list[dict]]:
-    draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=page_size)
+    draws = fetch_official_bingo_results(_today_taipei(), page_num=1, page_size=page_size, fresh=True)
     valid: list[dict] = []
     for draw in draws:
         ok, _reason, sanitized = validate_official_draw(draw)
@@ -238,6 +239,9 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
         latest_db_issue = str((latest_db or {}).get("issue") or "").strip() or None
         latest_db_issue_int = _issue_int(latest_db_issue)
         if latest_db_issue_int is not None and source_issue_int is not None and latest_db_issue_int >= source_issue_int:
+            # A separate cron process may have committed this draw first.
+            # Relay the already-observed DB issue to this process's viewers.
+            publish_draw(latest_db_issue)
             result = {
                 "status": "noop",
                 "exit_reason": "database_same_or_newer",
@@ -253,6 +257,7 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
         timings["existing_lookup_ms"] = round((time.perf_counter() - stage) * 1000, 2)
         mark_rss()
         if existing:
+            publish_draw(source_issue)
             result = {
                 "status": "noop",
                 "exit_reason": "issue_already_exists",
@@ -278,8 +283,6 @@ def ingest_latest_official_once(*, page_size: int = DEFAULT_PAGE_SIZE) -> dict[s
                 "saved": save_result,
             }
             return _finish_result(result, start, timings, rss_before, rss_peak, mark_rss())
-
-        from services.distribution_events import publish_draw
 
         publish_draw(source_issue)
         result = {

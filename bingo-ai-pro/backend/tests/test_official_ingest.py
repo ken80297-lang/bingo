@@ -255,5 +255,38 @@ def test_lightweight_source_fetch_requests_one_row(monkeypatch):
     calls = []
     monkeypatch.setattr(official_ingest, "fetch_official_bingo_results", lambda *args, **kwargs: calls.append(kwargs) or [_draw()])
     latest, raw = official_ingest._latest_source_draw()
-    assert calls == [{"page_num": 1, "page_size": 1}]
+    assert calls == [{"page_num": 1, "page_size": 1, "fresh": True}]
     assert latest["issue"] == raw[0]["issue"]
+
+
+def test_cron_saved_draw_is_relayed_even_when_official_response_is_older(monkeypatch):
+    published = []
+    monkeypatch.setattr(official_ingest, "publish_draw", published.append)
+    monkeypatch.setattr(official_ingest, "_latest_source_draw", lambda **kw: (_draw("115040550"), []))
+    monkeypatch.setattr(official_ingest, "get_latest_official_draw_summary", lambda: _draw("115040551"))
+    monkeypatch.setattr(official_ingest, "save_official_draws", lambda _: (_ for _ in ()).throw(AssertionError("no write needed")))
+    result = official_ingest.ingest_latest_official_once()
+    assert result["status"] == "noop"
+    assert published == ["115040551"]
+
+
+def test_cron_commit_between_summary_and_lookup_is_relayed(monkeypatch):
+    published = []
+    monkeypatch.setattr(official_ingest, "publish_draw", published.append)
+    monkeypatch.setattr(official_ingest, "_latest_source_draw", lambda **kw: (_draw("115040551"), []))
+    monkeypatch.setattr(official_ingest, "get_latest_official_draw_summary", lambda: _draw("115040550"))
+    monkeypatch.setattr(official_ingest, "get_official_draw_by_issue", lambda _: _draw("115040551"))
+    result = official_ingest.ingest_latest_official_once()
+    assert result["exit_reason"] == "issue_already_exists"
+    assert published == ["115040551"]
+
+
+def test_failed_save_does_not_publish_uncommitted_draw(monkeypatch):
+    published = []
+    monkeypatch.setattr(official_ingest, "publish_draw", published.append)
+    monkeypatch.setattr(official_ingest, "_latest_source_draw", lambda **kw: (_draw("115040551"), []))
+    monkeypatch.setattr(official_ingest, "get_latest_official_draw_summary", lambda: _draw("115040550"))
+    monkeypatch.setattr(official_ingest, "get_official_draw_by_issue", lambda _: None)
+    monkeypatch.setattr(official_ingest, "save_official_draws", lambda _: {"status": "error", "saved": 0})
+    assert official_ingest.ingest_latest_official_once()["status"] == "error"
+    assert published == []
