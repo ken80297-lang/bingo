@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -129,6 +130,8 @@ def fetch_official_bingo_results(
     open_date: str | date,
     page_num: int = 1,
     page_size: int = 10,
+    *,
+    fresh: bool = False,
 ) -> list[dict]:
     query_date = open_date.isoformat() if isinstance(open_date, date) else str(open_date)
     page_num = max(1, int(page_num or 1))
@@ -139,6 +142,7 @@ def fetch_official_bingo_results(
         "page_size": page_size,
         "ok": False,
         "parsed_count": 0,
+        "fresh": fresh,
     }
     try:
         params = {
@@ -146,6 +150,11 @@ def fetch_official_bingo_results(
             "pageNum": page_num,
             "pageSize": page_size,
         }
+        # The official CDN can serve a previous draw for the fixed URL even
+        # with no-cache headers. Use a new cache key for each realtime poll;
+        # this stays one request and one row, with no extra retry or fetch.
+        if fresh:
+            params["_"] = str(time.time_ns())
         headers = {
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://www.taiwanlottery.com",
@@ -155,6 +164,8 @@ def fetch_official_bingo_results(
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
             ),
         }
+        if fresh:
+            headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
         result = safe_get_json(OFFICIAL_BINGO_URL, params=params, headers=headers)
         diagnostic.update(
             {

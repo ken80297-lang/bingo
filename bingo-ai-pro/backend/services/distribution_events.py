@@ -12,9 +12,16 @@ _issue = ""
 
 def publish_draw(issue: str) -> None:
     global _revision, _issue
+    issue = str(issue).strip()
+    if not issue.isdigit():
+        return
     with _lock:
+        # No-op polls and writers racing with a newer draw must not cause
+        # repeated full-day downloads or roll the notification backwards.
+        if _issue and int(issue) <= int(_issue):
+            return
         _revision += 1
-        _issue = str(issue)
+        _issue = issue
 
 
 def snapshot() -> tuple[int, str]:
