@@ -147,8 +147,34 @@ def test_latest_official_scheduler_registers_startup_and_interval_jobs(monkeypat
     assert set(by_id) == {"collector_official_latest_startup", "collector_official_latest"}
     assert by_id["collector_official_latest_startup"]["trigger"] == "date"
     assert by_id["collector_official_latest"]["trigger"] == "cron"
-    assert by_id["collector_official_latest"]["second"] == "0,20,40"
+    assert by_id["collector_official_latest"]["second"] == "15,35,55"
     assert runtime_updates[-1] == {"official_collector_interval_job_registered": True}
+
+
+def test_poll_phase_keeps_twenty_second_spacing_and_checks_before_deadline(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from apscheduler.triggers.cron import CronTrigger
+    import app as app_module
+
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(app_module, "scheduler", scheduler)
+    monkeypatch.setattr(app_module, "LATEST_OFFICIAL_SCHEDULER_ENABLED", True)
+    monkeypatch.setattr(app_module, "update_collector_runtime", lambda **kwargs: None)
+    app_module._schedule_latest_official_job()
+    config = next(call for call in scheduler.calls if call["id"] == "collector_official_latest")
+    tz = ZoneInfo("Asia/Taipei")
+    trigger = CronTrigger(second=config["second"], timezone=tz)
+    # Both the first and final daily draws must retain the same schedule.
+    for hour, minute in [(7, 5), (13, 30), (23, 55)]:
+        start = datetime(2026, 10, 16, hour, minute, tzinfo=tz)
+        previous, now, offsets = None, start, []
+        for _ in range(6):
+            previous = trigger.get_next_fire_time(previous, now)
+            offsets.append(int((previous - start).total_seconds()))
+            now = previous
+        assert offsets == [15, 35, 55, 75, 95, 115]
+        assert all(right - left == 20 for left, right in zip(offsets, offsets[1:]))
 
 
 def test_disabled_schedulers_do_not_call_outbound_collectors(monkeypatch):
