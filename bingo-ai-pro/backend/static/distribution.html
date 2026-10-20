@@ -47,9 +47,16 @@ async function load(){
  if(!body.children.length)document.getElementById('msg').textContent='載入中…';
  try{
   const requestedDate=dateEl.value;
-  const r=await fetch('/api/distribution?date='+encodeURIComponent(requestedDate),{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
+  const headers={};
+  if(load.etagDate===requestedDate&&load.etag)headers['If-None-Match']=load.etag;
+  const r=await fetch('/api/distribution?compact=true&date='+encodeURIComponent(requestedDate),{cache:'no-store',headers});
+  if(dateEl.value!==requestedDate)return;
+  if(r.status===304){document.getElementById('msg').textContent=body.children.length?'':'當日尚無資料';return}
+  if(!r.ok)throw new Error('HTTP '+r.status);
   const p=await r.json(),rows=p.draws||[];
   if(dateEl.value!==requestedDate)return;
+  load.etag=r.headers.get('ETag');load.etagDate=requestedDate;
+  document.getElementById('msg').textContent=rows.length?'':'當日尚無資料';
   const signature=JSON.stringify(rows.map(d=>[d.issue,d.numbers,d.super_number,d.draw_time]));
   if(load.lastSignature===signature && load.lastDate===dateEl.value)return;
   load.lastSignature=signature;load.lastDate=dateEl.value;
@@ -102,7 +109,7 @@ window.addEventListener('pageshow',connectDrawStream);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261015-clear-v7';
+const distributionBuild='20261020-conditional-v8';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
