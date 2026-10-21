@@ -658,7 +658,18 @@ def calculate_fast_recommendation(
             if output.get("is_valid")
             else 0
         )
+        # Shadow-only: use prediction-time scores; never alter the 20-number selection.
+        top_k_shadow = None
+        if output.get("is_valid"):
+            try:
+                from services.top_k_shadow_evaluation import rank_candidates
+                top_k_shadow = rank_candidates(
+                    numbers, {number: adaptive_number_scores.get(number, 0.0) for number in numbers}
+                )
+            except (ValueError, TypeError, OverflowError):
+                logger.exception("top-k shadow ranking unavailable")
         recommendation = {
+            "top_k_shadow": top_k_shadow,
             "issue": source_issue,
             "target_issue": target_issue,
             "best_strategy": "ProductionFastPath",
