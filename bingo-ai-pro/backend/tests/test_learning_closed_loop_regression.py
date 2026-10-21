@@ -748,6 +748,7 @@ def test_complete_verified_issue_invokes_adaptive_updater_once(monkeypatch):
 
 def test_active_v7_weights_require_complete_weight_changed_evidence(monkeypatch):
     from database import adaptive_weight_store
+    adaptive_weight_store.invalidate_active_adaptive_weights_cache()
 
     captured = {}
     def fake_query(sql, params=(), sqlite_sql=None, sqlite_params=None):
