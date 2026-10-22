@@ -25,6 +25,7 @@ class TopKShadowEvaluationTests(unittest.TestCase):
 
     def test_frozen_prediction_verification(self):
         record = {
+            "recommend_numbers": list(range(1, 21)),
             "prediction_issue": "115052200",
             "prediction_status": "verified",
             "verified_issue": "115052200",
@@ -58,6 +59,21 @@ class TopKShadowEvaluationTests(unittest.TestCase):
             }},
         }
         self.assertEqual(evaluate_frozen_prediction(record)["reason"], "not_verified")
+
+    def test_frozen_selection_outside_production_twenty_rejected(self):
+        record = {
+            "recommend_numbers": list(range(1, 21)),
+            "prediction_issue": "115052200",
+            "prediction_status": "verified",
+            "verified_issue": "115052200",
+            "winning_numbers": list(range(1, 21)),
+            "fast_path_metadata": {"top_k_shadow": {
+                "target_issue": "115052200",
+                "top5": [1, 2, 3, 4, 5],
+                "top6": [1, 2, 3, 4, 5, 80],
+            }},
+        }
+        self.assertEqual(evaluate_frozen_prediction(record)["reason"], "invalid_frozen_data")
 
     def test_invalid_inputs_rejected(self):
         with self.assertRaises(ValueError):
