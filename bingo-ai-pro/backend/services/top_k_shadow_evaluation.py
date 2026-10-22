@@ -68,8 +68,11 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
         or any(not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 80 for n in recommended)
     ):
         return {"status": "unavailable", "reason": "invalid_production_twenty"}
-    if str(shadow.get("source_issue") or "") != str(record.get("issue") or ""):
+    source = str(record.get("issue") or "")
+    if not source or str(shadow.get("source_issue") or "") != source:
         return {"status": "unavailable", "reason": "source_issue_mismatch"}
+    if not (source.isdecimal() and target.isdecimal() and int(target) == int(source) + 1):
+        return {"status": "unavailable", "reason": "nonconsecutive_prediction_issue"}
     actual = record.get("winning_numbers") or []
     top5, top6 = shadow.get("top5"), shadow.get("top6")
     try:
