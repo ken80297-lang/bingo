@@ -59,10 +59,19 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
         return {"status": "unavailable", "reason": "not_verified"}
     if str(record.get("verified_issue") or "") != target:
         return {"status": "unavailable", "reason": "verification_issue_mismatch"}
+    # Require the frozen selections to belong to the persisted production 20.
+    recommended = record.get("recommend_numbers") or []
+    if (
+        not isinstance(recommended, list)
+        or len(recommended) != 20
+        or len(set(recommended)) != 20
+        or any(not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 80 for n in recommended)
+    ):
+        return {"status": "unavailable", "reason": "invalid_production_twenty"}
     actual = record.get("winning_numbers") or []
     top5, top6 = shadow.get("top5"), shadow.get("top6")
     try:
-        if not isinstance(top5, list) or not isinstance(top6, list) or top6[:5] != top5:
+        if not isinstance(top5, list) or not isinstance(top6, list) or top6[:5] != top5 or not set(top6).issubset(set(recommended)):
             raise ValueError("invalid nested selections")
         return {
             "status": "verified", "target_issue": target,
