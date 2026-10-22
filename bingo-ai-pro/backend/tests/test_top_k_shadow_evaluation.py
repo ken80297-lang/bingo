@@ -45,6 +45,20 @@ class TopKShadowEvaluationTests(unittest.TestCase):
         record["prediction_status"] = "waiting_draw"
         self.assertEqual(evaluate_frozen_prediction(record)["status"], "waiting_draw")
 
+    def test_unknown_status_fails_closed(self):
+        record = {
+            "prediction_issue": "115052200",
+            "prediction_status": "unexpected",
+            "verified_issue": "115052200",
+            "winning_numbers": list(range(1, 21)),
+            "fast_path_metadata": {"top_k_shadow": {
+                "target_issue": "115052200",
+                "top5": [1, 2, 3, 4, 5],
+                "top6": [1, 2, 3, 4, 5, 6],
+            }},
+        }
+        self.assertEqual(evaluate_frozen_prediction(record)["reason"], "not_verified")
+
     def test_invalid_inputs_rejected(self):
         with self.assertRaises(ValueError):
             rank_candidates([1] * 20, self.scores)
