@@ -35,13 +35,13 @@ class TopKShadowEvaluationTests(unittest.TestCase):
                 "source_issue": "115052199",
                 "target_issue": "115052200",
                 "top5": [1, 2, 3, 4, 5],
-                "top6": [1, 2, 3, 4, 5, 80],
+                "top6": [1, 2, 3, 4, 5, 6],
             }},
         }
         result = evaluate_frozen_prediction(record)
         self.assertEqual(result["status"], "verified")
         self.assertEqual(result["top5_hits"], 5)
-        self.assertEqual(result["top6_hits"], 5)
+        self.assertEqual(result["top6_hits"], 6)
         record["verified_issue"] = "115052199"
         self.assertEqual(evaluate_frozen_prediction(record)["status"], "unavailable")
         record["verified_issue"] = "115052200"
