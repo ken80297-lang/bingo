@@ -26,11 +26,13 @@ class TopKShadowEvaluationTests(unittest.TestCase):
     def test_frozen_prediction_verification(self):
         record = {
             "recommend_numbers": list(range(1, 21)),
+            "issue": "115052199",
             "prediction_issue": "115052200",
             "prediction_status": "verified",
             "verified_issue": "115052200",
             "winning_numbers": list(range(1, 21)),
             "fast_path_metadata": {"top_k_shadow": {
+                "source_issue": "115052199",
                 "target_issue": "115052200",
                 "top5": [1, 2, 3, 4, 5],
                 "top6": [1, 2, 3, 4, 5, 80],
@@ -48,11 +50,13 @@ class TopKShadowEvaluationTests(unittest.TestCase):
 
     def test_unknown_status_fails_closed(self):
         record = {
+            "issue": "115052199",
             "prediction_issue": "115052200",
             "prediction_status": "unexpected",
             "verified_issue": "115052200",
             "winning_numbers": list(range(1, 21)),
             "fast_path_metadata": {"top_k_shadow": {
+                "source_issue": "115052199",
                 "target_issue": "115052200",
                 "top5": [1, 2, 3, 4, 5],
                 "top6": [1, 2, 3, 4, 5, 6],
@@ -63,17 +67,36 @@ class TopKShadowEvaluationTests(unittest.TestCase):
     def test_frozen_selection_outside_production_twenty_rejected(self):
         record = {
             "recommend_numbers": list(range(1, 21)),
+            "issue": "115052199",
             "prediction_issue": "115052200",
             "prediction_status": "verified",
             "verified_issue": "115052200",
             "winning_numbers": list(range(1, 21)),
             "fast_path_metadata": {"top_k_shadow": {
+                "source_issue": "115052199",
                 "target_issue": "115052200",
                 "top5": [1, 2, 3, 4, 5],
                 "top6": [1, 2, 3, 4, 5, 80],
             }},
         }
         self.assertEqual(evaluate_frozen_prediction(record)["reason"], "invalid_frozen_data")
+
+    def test_source_issue_mismatch_rejected(self):
+        record = {
+            "issue": "115052198",
+            "prediction_issue": "115052200",
+            "prediction_status": "verified",
+            "verified_issue": "115052200",
+            "recommend_numbers": list(range(1, 21)),
+            "winning_numbers": list(range(1, 21)),
+            "fast_path_metadata": {"top_k_shadow": {
+                "source_issue": "115052199",
+                "target_issue": "115052200",
+                "top5": [1, 2, 3, 4, 5],
+                "top6": [1, 2, 3, 4, 5, 6],
+            }},
+        }
+        self.assertEqual(evaluate_frozen_prediction(record)["reason"], "source_issue_mismatch")
 
     def test_invalid_inputs_rejected(self):
         with self.assertRaises(ValueError):
