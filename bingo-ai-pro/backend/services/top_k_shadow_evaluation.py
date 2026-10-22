@@ -38,3 +38,36 @@ def random_baseline(selection_size: int) -> float:
     if selection_size not in (5, 6):
         raise ValueError("selection_size must be 5 or 6")
     return selection_size / 4.0
+
+
+def evaluate_frozen_prediction(record: Mapping) -> dict:
+    """Evaluate only a previously persisted shadow snapshot after verification.
+
+    Does not infer historical selections from post-draw scores.
+    """
+    metadata = record.get("fast_path_metadata") or {}
+    shadow = metadata.get("top_k_shadow") if isinstance(metadata, dict) else None
+    if not isinstance(shadow, dict):
+        return {"status": "unavailable", "reason": "no_frozen_shadow"}
+    target = str(record.get("prediction_issue") or record.get("target_issue") or "")
+    if not target or str(shadow.get("target_issue") or "") != target:
+        return {"status": "unavailable", "reason": "target_mismatch"}
+    if str(record.get("prediction_status") or "") not in ("verified", "learned"):
+        return {"status": "waiting_draw"}
+    if str(record.get("verified_issue") or "") != target:
+        return {"status": "unavailable", "reason": "verification_issue_mismatch"}
+    actual = record.get("winning_numbers") or []
+    top5, top6 = shadow.get("top5"), shadow.get("top6")
+    try:
+        if not isinstance(top5, list) or not isinstance(top6, list) or top6[:5] != top5:
+            raise ValueError("invalid nested selections")
+        return {
+            "status": "verified", "target_issue": target,
+            "top5": top5, "top6": top6,
+            "top5_hits": evaluate_selection(top5, actual),
+            "top6_hits": evaluate_selection(top6, actual),
+            "random_top5_expected": random_baseline(5),
+            "random_top6_expected": random_baseline(6),
+        }
+    except (ValueError, TypeError):
+        return {"status": "unavailable", "reason": "invalid_frozen_data"}
