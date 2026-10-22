@@ -3359,6 +3359,13 @@ def _enrich_prediction_metadata_from_map(record: dict, metadata: dict | None) ->
     record["trigger"] = metadata.get("trigger") or "production_read_layer"
     if metadata.get("operation_event"):
         record["operation_event"] = metadata.get("operation_event")
+    # Read-only shadow evaluation; never alter the persisted recommendation.
+    if isinstance(record.get("fast_path_metadata"), dict):
+        try:
+            from services.top_k_shadow_evaluation import evaluate_frozen_prediction
+            record["top_k_shadow_evaluation"] = evaluate_frozen_prediction(record)
+        except (ValueError, TypeError):
+            logger.exception("top-k shadow evaluation unavailable")
     return record
 
 
