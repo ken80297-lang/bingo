@@ -52,8 +52,11 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
     target = str(record.get("prediction_issue") or record.get("target_issue") or "")
     if not target or str(shadow.get("target_issue") or "") != target:
         return {"status": "unavailable", "reason": "target_mismatch"}
-    if str(record.get("prediction_status") or "") not in ("verified", "learned"):
+    status = str(record.get("prediction_status") or "")
+    if status in ("waiting_draw", "pending", "predicted"):
         return {"status": "waiting_draw"}
+    if status not in ("verified", "learned"):
+        return {"status": "unavailable", "reason": "not_verified"}
     if str(record.get("verified_issue") or "") != target:
         return {"status": "unavailable", "reason": "verification_issue_mismatch"}
     actual = record.get("winning_numbers") or []
