@@ -98,6 +98,23 @@ class TopKShadowEvaluationTests(unittest.TestCase):
         }
         self.assertEqual(evaluate_frozen_prediction(record)["reason"], "source_issue_mismatch")
 
+    def test_nonconsecutive_issue_pair_rejected(self):
+        record = {
+            "issue": "115052198",
+            "prediction_issue": "115052200",
+            "prediction_status": "verified",
+            "verified_issue": "115052200",
+            "recommend_numbers": list(range(1, 21)),
+            "winning_numbers": list(range(1, 21)),
+            "fast_path_metadata": {"top_k_shadow": {
+                "source_issue": "115052198",
+                "target_issue": "115052200",
+                "top5": [1, 2, 3, 4, 5],
+                "top6": [1, 2, 3, 4, 5, 6],
+            }},
+        }
+        self.assertEqual(evaluate_frozen_prediction(record)["reason"], "nonconsecutive_prediction_issue")
+
     def test_invalid_inputs_rejected(self):
         with self.assertRaises(ValueError):
             rank_candidates([1] * 20, self.scores)
