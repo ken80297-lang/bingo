@@ -68,6 +68,8 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
         or any(not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 80 for n in recommended)
     ):
         return {"status": "unavailable", "reason": "invalid_production_twenty"}
+    if str(shadow.get("source_issue") or "") != str(record.get("issue") or ""):
+        return {"status": "unavailable", "reason": "source_issue_mismatch"}
     actual = record.get("winning_numbers") or []
     top5, top6 = shadow.get("top5"), shadow.get("top6")
     try:
