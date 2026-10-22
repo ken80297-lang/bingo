@@ -777,6 +777,23 @@ def create_for_official_draw(
         # learning model.
         record["model_scores"] = model_scores
         record["fast_path_strategy_version"] = FAST_PATH_STRATEGY_VERSION
+        # Freeze shadow selections alongside the prediction, before the draw.
+        # This existing JSONB column avoids schema migrations and extra writes.
+        shadow = recommendation.get("top_k_shadow")
+        if isinstance(shadow, dict):
+            top5, top6 = shadow.get("top5"), shadow.get("top6")
+            recommended_set = set(recommended)
+            if (
+                isinstance(top5, list) and isinstance(top6, list)
+                and len(top5) == 5 and len(top6) == 6
+                and len(set(top6)) == 6 and top6[:5] == top5
+                and all(isinstance(n, int) and not isinstance(n, bool) and n in recommended_set for n in top6)
+            ):
+                fast_path_scores["top_k_shadow"] = {
+                    "top5": top5, "top6": top6,
+                    "source_issue": based_on, "target_issue": target,
+                    "status": "waiting_draw", "version": "top-k-shadow-v1",
+                }
         record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")

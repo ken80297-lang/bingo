@@ -3166,6 +3166,7 @@ def _row_to_prediction(row: Any) -> dict:
         "git_commit_hash": row[41] if len(row) > 41 else GIT_COMMIT_HASH,
         "model_version": row[42] if len(row) > 42 else MODEL_VERSION,
         "feature_version": row[43] if len(row) > 43 else FEATURE_VERSION,
+        "fast_path_metadata": _json_loads(row[44]) if len(row) > 44 else {},
     }
 
 
@@ -3358,6 +3359,13 @@ def _enrich_prediction_metadata_from_map(record: dict, metadata: dict | None) ->
     record["trigger"] = metadata.get("trigger") or "production_read_layer"
     if metadata.get("operation_event"):
         record["operation_event"] = metadata.get("operation_event")
+    # Read-only shadow evaluation; never alter the persisted recommendation.
+    if isinstance(record.get("fast_path_metadata"), dict):
+        try:
+            from services.top_k_shadow_evaluation import evaluate_frozen_prediction
+            record["top_k_shadow_evaluation"] = evaluate_frozen_prediction(record)
+        except (ValueError, TypeError):
+            logger.exception("top-k shadow evaluation unavailable")
     return record
 
 
@@ -3384,7 +3392,7 @@ PREDICTION_SELECT_COLUMNS_P = """
         p.missed_numbers, p.prediction_count, p.hit_rate, p.super_number_hit,
         p.verification_version, p.learning_used, p.model_score,
         p.production_generation, p.production_valid, p.release_version,
-        p.git_commit_hash, p.model_version, p.feature_version
+        p.git_commit_hash, p.model_version, p.feature_version, p.fast_path_metadata
 """
 
 PREDICTION_SUMMARY_COLUMNS = (
