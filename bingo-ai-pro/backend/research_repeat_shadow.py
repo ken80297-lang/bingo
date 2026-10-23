@@ -27,7 +27,14 @@ def read_draws(path: Path) -> list[list[int]]:
             names = [f"number_{i}" for i in range(1, 21)]
         if not all(n in rows.fieldnames for n in names):
             raise ValueError("CSV requires n1..n20 or number_1..number_20")
-        return [sorted(_draw(int(row[n]) for n in names)) for row in rows]
+        records = list(rows)
+        issue_column = next((name for name in ("issue", "draw_issue", "issue_number") if name in rows.fieldnames), None)
+        if issue_column is None:
+            raise ValueError("CSV must include issue, draw_issue, or issue_number to verify chronology")
+        issues = [int(row[issue_column]) for row in records]
+        if any(b <= a for a, b in zip(issues, issues[1:])):
+            raise ValueError("Issues must be strictly increasing with no duplicates")
+        return [sorted(_draw(int(row[n]) for n in names)) for row in records]
 
 
 def evaluate(draws: list[list[int]], warmup: int = 100) -> dict:
