@@ -51,11 +51,11 @@ def evaluate(draws: list[list[int]], warmup: int = 100) -> dict:
         previous = set(draws[i - 1])
         actual = set(draws[i])
         # Control: top-20 by cumulative frequency, no explicit repeat feature.
-        control = select_shadow_twenty(scores, previous)
+        control = select_shadow_twenty(scores, previous, tie_seed=i)
         # Candidate: one-step repeat feature with Laplace-style shrinkage.
         # This is deliberately evaluated separately and must beat control out-of-sample.
         candidate_scores = {n: scores[n] + (1 if n in previous else 0) for n in scores}
-        candidate = select_shadow_twenty(candidate_scores, previous)
+        candidate = select_shadow_twenty(candidate_scores, previous, tie_seed=i)
         baseline_hits.append(len(set(control["selected_numbers"]) & actual))
         candidate_hits.append(len(set(candidate["selected_numbers"]) & actual))
         repeat_counts.append(candidate["repeat_count"])
