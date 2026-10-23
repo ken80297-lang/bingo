@@ -4,7 +4,6 @@ No database writes, scheduling, or production recommendation changes.
 """
 from __future__ import annotations
 
-from collections import Counter
 from math import comb
 from typing import Iterable, Sequence
 
@@ -47,7 +46,7 @@ def repeat_streaks(draws: Sequence[Iterable[int]]) -> dict[int, int]:
 
 
 def select_shadow_twenty(
-    scores: dict[int, float], previous_draw: Iterable[int]
+    scores: dict[int, float], previous_draw: Iterable[int], tie_seed: int = 0
 ) -> dict:
     """Select top 20 freely, without repeat quotas or repeat bonuses."""
     previous = _draw(previous_draw)
@@ -56,7 +55,8 @@ def select_shadow_twenty(
     from math import isfinite
     if any(not isinstance(s, (int, float)) or not isfinite(s) for s in scores.values()):
         raise ValueError("Scores must be finite numbers")
-    selected = sorted(UNIVERSE, key=lambda n: (-scores[n], n))[:DRAW_SIZE]
+    # Full-cycle affine permutation avoids systematically favoring low numbers on ties.
+    selected = sorted(UNIVERSE, key=lambda n: (-scores[n], ((n - 1) * 37 + tie_seed) % 80))[:DRAW_SIZE]
     repeated = sorted(set(selected) & previous)
     return {
         "selected_numbers": sorted(selected),
