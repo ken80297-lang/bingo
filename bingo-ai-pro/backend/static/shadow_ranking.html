@@ -14,7 +14,8 @@
 <div class="toolbar"><button id="refresh" type="button">重新整理</button><span id="state" class="muted" role="status" aria-live="polite">載入中…</span></div>
 <p id="error" class="error" role="alert" hidden></p>
 <section class="card"><h2>最新凍結快照</h2><div id="latest">等待讀取資料…</div></section>
-<section class="card"><h2>最近快照的驗證成績</h2><div id="summary" class="summary">尚無統計</div>
+<section class="card"><h2>原版與修正版配對比較</h2><p class="muted">修正版先處理全部開獎球號再選補號，移除候選順位加分與成熟規則加分。兩版皆從同一組正式 20 碼選 6 顆；只比較同一期、都有開獎前快照的資料。</p><div id="pairedSummary">尚無配對資料</div><div class="scroll"><table><thead><tr><th>同一期配對平均</th><th>原版 6 碼</th><th>修正版 6 碼</th></tr></thead><tbody id="pairedStats"></tbody></table></div><p class="muted">修正版是測試版本，尚未證明命中較高；此處仍是描述性比較，獨立留存與完整樣本覆蓋另行稽核。</p></section>
+<section class="card"><h2>原版最近快照的驗證成績</h2><div id="summary" class="summary">尚無統計</div>
 <p class="muted notice">以下為描述性比較。資料庫的凍結時間與雜湊核對，不能代替獨立開獎前留存證據；此頁不宣稱嚴格 OOS 驗證完成，也不能據此推論命中率提升或獲利。</p>
 <div class="scroll"><table><thead><tr><th>平均命中顆數</th><th>Top 5</th><th>Top 6</th></tr></thead><tbody id="stats"></tbody></table></div></section>
 <section class="card"><h2>逐期紀錄</h2><p class="muted">黃色為命中號碼；未完成驗證顯示「等待驗證」。無效資料不計入平均，缺樣不當作零命中。</p><div id="history"></div></section>
@@ -25,14 +26,16 @@ const byId=id=>document.getElementById(id);
 const fmt=n=>n==null?'—':Number(n).toFixed(3);
 const time=s=>new Date(s).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
 function node(tag,text,cls){const el=document.createElement(tag);if(text!=null)el.textContent=text;if(cls)el.className=cls;return el;}
-function picks(item){const line=node('div',null,'line');line.append(node('strong','Top 6','label'));for(const n of [...item.top6].sort((a,b)=>a-b))line.append(node('span',String(n).padStart(2,'0'),'ball'+(item.matched_numbers.includes(n)?' hit':'')));line.append(node('span',item.status==='verified'?item.top6_hits+'／6 命中':'等待驗證','result'));return line;}
-function card(item){const el=node('div');el.append(node('strong',item.target_issue+' 期 '));el.append(node('span',item.status==='verified'?'已驗證':'等待驗證','pill'));el.append(node('div','凍結於 '+time(item.frozen_at)+'（台北時間）','muted'));el.append(picks(item));return el;}
+function picks(item,label='原版 6 碼'){const line=node('div',null,'line');line.append(node('strong',label,'label'));for(const n of [...item.top6].sort((a,b)=>a-b))line.append(node('span',String(n).padStart(2,'0'),'ball'+(item.matched_numbers.includes(n)?' hit':'')));line.append(node('span',item.status==='verified'?item.top6_hits+'／6 命中':'等待驗證','result'));return line;}
+function card(item){const el=node('div');el.append(node('strong',item.target_issue+' 期 '));el.append(node('span',item.status==='verified'?'已驗證':'等待驗證','pill'));el.append(node('div','原版凍結於 '+time(item.frozen_at)+'（台北時間）','muted'));el.append(picks(item));if(item.v3){el.append(node('div','修正版凍結於 '+time(item.v3.frozen_at),'muted'));el.append(picks({...item,...item.v3},'修正版 6 碼'));}else el.append(node('div','此期尚無修正版快照','muted'));return el;}
 function row(label,a,b){const tr=node('tr');tr.append(node('td',label),node('td',fmt(a)),node('td',fmt(b)));return tr;}
 let busy=false;
 async function refresh(){if(busy)return;busy=true;byId('refresh').disabled=true;byId('state').textContent='讀取中…';const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);
 try{const res=await fetch('/api/top-k-shadow',{cache:'no-store',signal:controller.signal});if(!res.ok)throw Error('讀取失敗');const d=await res.json();
 byId('latest').replaceChildren(d.items.length?card(d.items[0]):node('p','尚無有效 shadow 快照。'));
 byId('summary').textContent='已驗證 '+d.verified_count+' 期 · 等待驗證 '+d.waiting_count+' 期 · 排除 '+d.excluded+' 筆';
+const p=d.v3||{};byId('pairedSummary').textContent='已配對驗證 '+(p.paired_verified_count||0)+' 期 · 等待驗證 '+(p.waiting_count||0)+' 期 · 修正版排除 '+(p.excluded||0)+' 筆';
+byId('pairedStats').replaceChildren(row('實際平均',p.v2_paired_top6_mean,p.top6_mean),row('80 碼隨機基準',1.50,1.50),row('同一組 20 碼內隨機選取',p.same20_expected,p.same20_expected));
 byId('stats').replaceChildren(row('實際平均',d.top5_mean,d.top6_mean),row('80 碼隨機基準',1.25,1.50),row('與隨機基準差值',d.top5_mean==null?null:d.top5_mean-1.25,d.top6_mean==null?null:d.top6_mean-1.50),row('同一組 20 碼內隨機選取',d.same20_top5_expected,d.same20_top6_expected));
 byId('history').replaceChildren(...d.items.map(item=>{const el=card(item);el.className='card';return el;}));
 byId('state').textContent='更新於 '+time(d.as_of);byId('error').hidden=true;
