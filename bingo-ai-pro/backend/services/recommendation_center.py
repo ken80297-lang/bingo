@@ -662,9 +662,10 @@ def calculate_fast_recommendation(
         top_k_shadow = None
         if output.get("is_valid"):
             try:
-                from services.top_k_shadow_evaluation import rank_candidates
-                top_k_shadow = rank_candidates(
-                    numbers, {number: adaptive_number_scores.get(number, 0.0) for number in numbers}
+                from services.top_k_shadow_evaluation import freeze_selection
+                top_k_shadow = freeze_selection(
+                    numbers, {number: adaptive_number_scores.get(number, 0.0) for number in numbers},
+                    source_issue, target_issue,
                 )
             except (ValueError, TypeError, OverflowError):
                 logger.exception("top-k shadow ranking unavailable")

@@ -8,6 +8,31 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from math import isfinite
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
+
+
+def freeze_selection(recommended_twenty, scores, source_issue, target_issue):
+    """Bounded, synchronous snapshot; no database, worker, or weight writes."""
+    source_issue, target_issue = str(source_issue), str(target_issue)
+    if not (source_issue.isdecimal() and target_issue.isdecimal() and int(target_issue) == int(source_issue) + 1):
+        raise ValueError('source and target must be consecutive numeric issues')
+    ranked = rank_candidates(recommended_twenty, scores)
+    payload = {
+        **ranked, 'source_issue': str(source_issue), 'target_issue': str(target_issue),
+        'ranking_scores': {str(n): float(scores[n]) for n in sorted(recommended_twenty)},
+        'production_twenty': sorted(recommended_twenty),
+        'frozen_at': datetime.now(timezone.utc).isoformat(),
+        'status': 'waiting_draw', 'version': 'top-k-shadow-v2',
+    }
+    payload['snapshot_sha256'] = snapshot_hash(payload)
+    return payload
+
+
+def snapshot_hash(payload):
+    content = {key: value for key, value in payload.items() if key != 'snapshot_sha256'}
+    return sha256(json.dumps(content, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
 def rank_candidates(recommended_twenty: Sequence[int], scores: Mapping[int, float]) -> dict[str, list[int]]:
@@ -64,8 +89,8 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
     if (
         not isinstance(recommended, list)
         or len(recommended) != 20
-        or len(set(recommended)) != 20
         or any(not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 80 for n in recommended)
+        or len(set(recommended)) != 20
     ):
         return {"status": "unavailable", "reason": "invalid_production_twenty"}
     source = str(record.get("issue") or "")
@@ -76,8 +101,18 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
     actual = record.get("winning_numbers") or []
     top5, top6 = shadow.get("top5"), shadow.get("top6")
     try:
-        if not isinstance(top5, list) or not isinstance(top6, list) or top6[:5] != top5 or not set(top6).issubset(set(recommended)):
+        if not isinstance(top5, list) or not isinstance(top6, list) or len(top5) != 5 or len(top6) != 6 or top6[:5] != top5 or not set(top6).issubset(set(recommended)):
             raise ValueError("invalid nested selections")
+        if shadow.get('version') == 'top-k-shadow-v2':
+            if shadow.get('production_twenty') != sorted(recommended) or shadow.get('snapshot_sha256') != snapshot_hash(shadow):
+                raise ValueError('snapshot integrity mismatch')
+            if not isinstance(shadow.get('ranking_scores'), dict) or set(shadow['ranking_scores']) != {str(n) for n in recommended}:
+                raise ValueError('invalid ranking scores')
+            scores = {int(n): score for n, score in shadow['ranking_scores'].items()}
+            if rank_candidates(recommended, scores) != {'top5': top5, 'top6': top6}:
+                raise ValueError('ranking mismatch')
+            if datetime.fromisoformat(shadow['frozen_at']).tzinfo is None:
+                raise ValueError('freeze time needs timezone')
         return {
             "status": "verified", "target_issue": target,
             "top5": top5, "top6": top6,
@@ -86,5 +121,5 @@ def evaluate_frozen_prediction(record: Mapping) -> dict:
             "random_top5_expected": random_baseline(5),
             "random_top6_expected": random_baseline(6),
         }
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, KeyError, OverflowError):
         return {"status": "unavailable", "reason": "invalid_frozen_data"}

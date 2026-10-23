@@ -794,6 +794,11 @@ def create_for_official_draw(
                     "source_issue": based_on, "target_issue": target,
                     "status": "waiting_draw", "version": "top-k-shadow-v1",
                 }
+                if shadow.get('version') == 'top-k-shadow-v2':
+                    # Copy the complete prediction-time evidence, including
+                    # exact scores and hash; never regenerate it after draw.
+                    from copy import deepcopy
+                    fast_path_scores['top_k_shadow'] = deepcopy(shadow)
         record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")
