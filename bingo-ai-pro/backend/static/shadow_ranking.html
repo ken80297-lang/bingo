@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Top 5／Top 6 shadow 驗證 · Bingo AI</title>
+<style>
+:root{color-scheme:dark;font-family:Arial,"PingFang TC","Microsoft JhengHei",sans-serif;background:#07111c;color:#f4f8ff}*{box-sizing:border-box}body{margin:0}main{max-width:780px;margin:auto;padding:24px 14px 48px}a{color:#9dd5ff}h1{font-size:26px}h2{font-size:20px;margin-top:0}p{line-height:1.7}.muted{color:#a9bbcf;font-size:14px}.card{background:#101c28;border:1px solid #284058;border-radius:14px;padding:18px;margin:16px 0}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}button{background:#1c344a;color:#fff;border:1px solid #426683;border-radius:8px;padding:10px 16px;font-size:15px}.ball{display:inline-flex;align-items:center;justify-content:center;min-width:36px;height:36px;border-radius:50%;background:#213a51;margin:3px;font-weight:bold}.hit{background:#f5ce58;color:#122030}.line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}.label{min-width:52px}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:420px}th,td{text-align:left;padding:10px 6px;border-bottom:1px solid #284058;white-space:nowrap}th{color:#a9bbcf;font-size:13px}.summary{font-size:16px}.error{color:#ffb3be}.pill{font-size:12px;color:#9dd5ff;border:1px solid #426683;border-radius:20px;padding:4px 9px}.result{margin-left:auto;color:#f5ce58}.notice{border-left:3px solid #f5ce58;padding-left:12px}
+</style>
+</head>
+<body><main>
+<a href="/">← 回首頁</a>
+<h1>Top 5／Top 6 shadow 驗證</h1>
+<p class="muted">從原推薦 20 碼內，依開獎前已保存的分數選出 Top 5／Top 6。此頁只讀取與核對快照，不調整正式推薦或權重。</p>
+<div class="toolbar"><button id="refresh" type="button">重新整理</button><span id="state" class="muted" role="status" aria-live="polite">載入中…</span></div>
+<p id="error" class="error" role="alert" hidden></p>
+<section class="card"><h2>最新凍結快照</h2><div id="latest">等待讀取資料…</div></section>
+<section class="card"><h2>最近快照的驗證成績</h2><div id="summary" class="summary">尚無統計</div>
+<p class="muted notice">以下為描述性比較。資料庫的凍結時間與雜湊核對，不能代替獨立開獎前留存證據；此頁不宣稱嚴格 OOS 驗證完成，也不能據此推論命中率提升或獲利。</p>
+<div class="scroll"><table><thead><tr><th>平均命中顆數</th><th>Top 5</th><th>Top 6</th></tr></thead><tbody id="stats"></tbody></table></div></section>
+<section class="card"><h2>逐期紀錄</h2><p class="muted">黃色為命中號碼；未完成驗證顯示「等待驗證」。無效資料不計入平均，缺樣不當作零命中。</p><div id="history"></div></section>
+<p class="muted">每 60 秒自動讀取；保留上次成功資料直到更新完成。統計範圍為最近最多 200 筆已保存快照，並非完整期數覆蓋率。</p>
+</main>
+<script>
+const byId=id=>document.getElementById(id);
+const fmt=n=>n==null?'—':Number(n).toFixed(3);
+const time=s=>new Date(s).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
+function node(tag,text,cls){const el=document.createElement(tag);if(text!=null)el.textContent=text;if(cls)el.className=cls;return el;}
+function picks(item,k){const line=node('div',null,'line');line.append(node('strong','Top '+k,'label'));for(const n of item['top'+k])line.append(node('span',String(n).padStart(2,'0'),'ball'+(item.matched_numbers.includes(n)?' hit':'')));line.append(node('span',item.status==='verified'?item['top'+k+'_hits']+'／'+k+' 命中':'等待驗證','result'));return line;}
+function card(item){const el=node('div');el.append(node('strong',item.target_issue+' 期 '));el.append(node('span',item.status==='verified'?'已驗證':'等待驗證','pill'));el.append(node('div','凍結於 '+time(item.frozen_at)+'（台北時間）','muted'));el.append(picks(item,5),picks(item,6));return el;}
+function row(label,a,b){const tr=node('tr');tr.append(node('td',label),node('td',fmt(a)),node('td',fmt(b)));return tr;}
+let busy=false;
+async function refresh(){if(busy)return;busy=true;byId('refresh').disabled=true;byId('state').textContent='讀取中…';const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);
+try{const res=await fetch('/api/top-k-shadow',{cache:'no-store',signal:controller.signal});if(!res.ok)throw Error('讀取失敗');const d=await res.json();
+byId('latest').replaceChildren(d.items.length?card(d.items[0]):node('p','尚無有效 shadow 快照。'));
+byId('summary').textContent='已驗證 '+d.verified_count+' 期 · 等待驗證 '+d.waiting_count+' 期 · 排除 '+d.excluded+' 筆';
+byId('stats').replaceChildren(row('實際平均',d.top5_mean,d.top6_mean),row('80 碼隨機基準',1.25,1.50),row('與隨機基準差值',d.top5_mean==null?null:d.top5_mean-1.25,d.top6_mean==null?null:d.top6_mean-1.50),row('同一組 20 碼內隨機選取',d.same20_top5_expected,d.same20_top6_expected));
+byId('history').replaceChildren(...d.items.map(item=>{const el=card(item);el.className='card';return el;}));
+byId('state').textContent='更新於 '+time(d.as_of);byId('error').hidden=true;
+}catch(e){byId('state').textContent='更新失敗';byId('error').textContent='資料暫時無法讀取，請稍後重試。若已有資料，以下保留上次成功結果。';byId('error').hidden=false;
+}finally{clearTimeout(timer);busy=false;byId('refresh').disabled=false;}}
+byId('refresh').addEventListener('click',refresh);setInterval(()=>{if(!document.hidden)refresh();},60000);refresh();
+</script></body></html>

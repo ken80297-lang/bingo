@@ -132,6 +132,9 @@ BACKGROUND_CACHE_SCHEDULER_ENABLED = _env_bool("BACKGROUND_CACHE_SCHEDULER_ENABL
 DATA_QUALITY_SCHEDULER_ENABLED = _env_bool("DATA_QUALITY_SCHEDULER_ENABLED", False)
 
 app = FastAPI(title="Bingo AI Pro API")
+
+from api.top_k_shadow import router as top_k_shadow_router
+app.include_router(top_k_shadow_router)
 STARTUP_TIME = datetime.now(timezone.utc).isoformat()
 print("startup_import_completed host=0.0.0.0 port_env=PORT")
 
@@ -1177,6 +1180,11 @@ def dual_ai_head() -> FileResponse:
 @app.get("/dashboard")
 def dashboard_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/shadow-ranking")
+def shadow_ranking_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "shadow_ranking.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.head("/dashboard")
