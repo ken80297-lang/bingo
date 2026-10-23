@@ -15,7 +15,35 @@ from collections import Counter
 from itertools import combinations
 from pathlib import Path
 
-from research_repeat_shadow import read_draws
+import csv
+
+
+def read_draws(path: Path) -> list[list[int]]:
+    """Read and validate chronological Bingo draw CSV without external modules."""
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        fields = reader.fieldnames or []
+        columns = [f"n{i}" for i in range(1, 21)]
+        if not all(c in fields for c in columns):
+            columns = [f"number_{i}" for i in range(1, 21)]
+        if not all(c in fields for c in columns):
+            raise ValueError("CSV must have n1..n20 or number_1..number_20")
+        issue_column = next((c for c in ("issue", "draw_issue", "issue_number") if c in fields), None)
+        if issue_column is None:
+            raise ValueError("CSV must include issue")
+        issues = []
+        draws = []
+        for row in reader:
+            issue = int(row[issue_column])
+            numbers = sorted(int(row[c]) for c in columns)
+            if len(set(numbers)) != 20 or any(n < 1 or n > 80 for n in numbers):
+                raise ValueError(f"Invalid draw for issue {issue}")
+            issues.append(issue)
+            draws.append(numbers)
+        if any(b <= a for a, b in zip(issues, issues[1:])):
+            raise ValueError("Issues must be strictly increasing")
+        return draws
+
 
 
 def choose_six(history: list[list[int]], method: str, window: int) -> list[int]:
