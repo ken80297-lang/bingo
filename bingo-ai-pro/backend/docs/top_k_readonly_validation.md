@@ -37,6 +37,16 @@ exit code, elapsed time, and Linux child peak RSS. It is a local validation
 benchmark, not a production Render Cron benchmark. The selected 104 tests passed
 with exit code 0; one measured run took 7.049 seconds and 71,368 KiB peak RSS.
 
+The lifecycle test now also has a Postgres parameter, skipped unless
+`TOP_K_TEST_POSTGRES_DSN` explicitly identifies loopback and the dedicated
+`top_k_validation` database. It creates a unique temporary schema, runs the real
+JSONB insert/read/update paths, rejects SQLite fallback, and drops the schema in
+fixture cleanup. The isolated GitHub Actions workflow provisions a disposable
+Postgres 17 service with no production credentials, runs the bounded suite,
+and then destroys the service. This tests PostgreSQL behavior without changing
+Render or production tables. Workflow execution status must be checked before
+claiming cloud Postgres validation passed.
+
 The audit command reads only local JSON and writes stdout. Input examples are
 in `tests/test_top_k_readonly_audit.py`; those are synthetic, not historical
 performance. Each pair contains a pre-draw record and capture time, target draw
