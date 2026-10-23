@@ -13,6 +13,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = [
+    'test_top_k_shadow_v3.py',
     'test_top_k_shadow_evaluation.py', 'test_top_k_shadow_roundtrip.py',
     'test_top_k_readonly_audit.py', 'test_top_k_known_gaps.py', 'test_top_k_shadow_integrity.py',
     'test_prediction_service.py', 'test_prediction_lifecycle_repair.py',

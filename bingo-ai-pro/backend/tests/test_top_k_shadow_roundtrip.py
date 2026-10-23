@@ -45,6 +45,7 @@ def isolated_database(request, monkeypatch, tmp_path):
 
 def test_frozen_selection_survives_lifecycle(monkeypatch, isolated_database):
     monkeypatch.setenv('TOP_K_SHADOW_CAPTURE_ENABLED', 'true')
+    monkeypatch.setenv('TOP_K_SHADOW_V3_CAPTURE_ENABLED', 'true')
     backend, connect = isolated_database
     def no_network(*args, **kwargs):
         raise AssertionError('network is forbidden in isolated lifecycle validation')
@@ -80,10 +81,16 @@ def test_frozen_selection_survives_lifecycle(monkeypatch, isolated_database):
     monkeypatch.setattr(service, 'get_prediction_for_source_target', lambda *a, **kw: None)
     twenty = list(range(1, 21))
     frozen = freeze_selection(twenty, {n: float(n) for n in twenty}, '115052199', '115052200')
+    from services.top_k_shadow_v3 import freeze_v3, validate_v3, MODELS
+    rows = [dict(issue=str(115052199-i), numbers=twenty, hot_numbers=twenty[:10],
+                 missing_numbers=twenty[10:], twins=[twenty[:2]], consecutive=[twenty[2:5]],
+                 patch_numbers=twenty[:12], laowanjia_score=70, cluster_score=70, pattern='補號模式')
+            for i in range(100)]
+    frozen_v3 = freeze_v3(twenty, rows, {key: 1 for key in MODELS}, '115052199', '115052200')
     payload = {'status': 'ok', 'recommendation_status': 'production_fast_path',
                'recommendation': {'issue': '115052199', 'target_issue': '115052200',
                    'best_strategy': 'ProductionFastPath', 'confidence': 50,
-                   'top_k_shadow': frozen, 'model_scores': {},
+                   'top_k_shadow': frozen, 'top_k_shadow_v3': frozen_v3, 'model_scores': {},
                    'results': [{'numbers': twenty, 'strategy': 'ProductionFastPath', 'confidence': 50}]}}
     monkeypatch.setattr(service, 'calculate_fast_recommendation', lambda *a, **kw: copy.deepcopy(payload))
     monkeypatch.setattr(service, 'save_prediction_history', store.save_prediction_history)
@@ -95,6 +102,7 @@ def test_frozen_selection_survives_lifecycle(monkeypatch, isolated_database):
             return store._row_to_prediction(conn.execute('select ' + store.PREDICTION_SELECT_COLUMNS + ' from prediction_history').fetchone())
     before = read()
     assert before['fast_path_metadata']['top_k_shadow']['top5'] == frozen['top5']
+    assert before['fast_path_metadata']['top_k_shadow_v3'] == frozen_v3
     assert evaluate_frozen_prediction(before)['status'] == 'waiting_draw'
     # A second insert must not replace an already frozen selection.
     changed = copy.deepcopy(before)
@@ -107,6 +115,7 @@ def test_frozen_selection_survives_lifecycle(monkeypatch, isolated_database):
     assert store.update_prediction_history_result({'issue': '115052200', 'numbers': list(range(16, 36)), 'super_number': 16})['updated'] == 1
     after = read()
     assert after['fast_path_metadata'] == before['fast_path_metadata']
+    assert validate_v3(after['fast_path_metadata']['top_k_shadow_v3'], twenty, '115052199', '115052200')
     assert after['recommend_numbers'] == twenty
     assert after['model_scores'] == before['model_scores']
     evaluation = evaluate_frozen_prediction(after)

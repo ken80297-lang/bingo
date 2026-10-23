@@ -89,8 +89,10 @@ def test_cron_child_enables_metadata_capture_with_core_worker_protection(monkeyp
     captured = {}
     if override is None:
         monkeypatch.delenv('TOP_K_SHADOW_CAPTURE_ENABLED', raising=False)
+        monkeypatch.delenv('TOP_K_SHADOW_V3_CAPTURE_ENABLED', raising=False)
     else:
         monkeypatch.setenv('TOP_K_SHADOW_CAPTURE_ENABLED', override)
+        monkeypatch.setenv('TOP_K_SHADOW_V3_CAPTURE_ENABLED', override)
     monkeypatch.setattr(cron, 'wait_for_current_draw', lambda reader: {'issue': '115059999'})
     def run(command, **kwargs):
         captured.update(command=command, **kwargs)
@@ -98,6 +100,7 @@ def test_cron_child_enables_metadata_capture_with_core_worker_protection(monkeyp
     monkeypatch.setattr(cron.subprocess, 'run', run)
     assert cron.main() == 0
     assert captured['env']['TOP_K_SHADOW_CAPTURE_ENABLED'] == expected
+    assert captured['env']['TOP_K_SHADOW_V3_CAPTURE_ENABLED'] == expected
     assert captured['env']['AI_LIFECYCLE_CRON_CORE_ONLY'] == '1'
     assert captured['env']['AI_LIFECYCLE_ISSUE'] == '115059999'
     assert captured['command'][1].endswith('scripts/ai_lifecycle_worker_once.py')
