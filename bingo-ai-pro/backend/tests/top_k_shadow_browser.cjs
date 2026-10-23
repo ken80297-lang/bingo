@@ -7,7 +7,8 @@ const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../static/shadow_ranking.html'), 'utf8');
   const item = { target_issue: '115059939', frozen_at: '2026-10-23T03:26:00Z',
     status: 'waiting_draw', top5: [14,3,11,2,9], top6: [14,3,11,2,9,6],
-    top5_hits: null, top6_hits: null, matched_numbers: [] };
+    top5_hits: null, top6_hits: null, matched_numbers: [],
+    v3: {top6: [65,4,18,50,11,79], top6_hits: null, matched_numbers: [], frozen_at: '2026-10-23T03:26:01Z'} };
   const payload = { items: [item], verified_count: 0, waiting_count: 1,
     excluded: 0, top5_mean: null, top6_mean: null, same20_top5_expected: null,
     same20_top6_expected: null, as_of: '2026-10-23T03:27:00Z' };
@@ -22,8 +23,9 @@ const path = require('path');
         : { contentType: 'text/html', body: html }));
     await page.goto('http://shadow.test/shadow-ranking');
     await page.waitForFunction(() => document.getElementById('state').textContent.startsWith('更新於'));
-    if (await page.locator('#latest .ball').count() !== 6) throw Error('Expected only six picks');
-    if (JSON.stringify(await page.locator('#latest .ball').allTextContents()) !== JSON.stringify(['02','03','06','09','11','14'])) throw Error('Picks must display in numeric order');
+    if (await page.locator('#latest .ball').count() !== 12) throw Error('Expected six picks per version');
+    if (JSON.stringify(await page.locator('#latest .line').nth(0).locator('.ball').allTextContents()) !== JSON.stringify(['02','03','06','09','11','14'])) throw Error('Original picks must display in numeric order');
+    if (JSON.stringify(await page.locator('#latest .line').nth(1).locator('.ball').allTextContents()) !== JSON.stringify(['04','11','18','50','65','79'])) throw Error('V3 picks must display in numeric order');
     if (!(await page.locator('#latest').innerText()).includes('等待驗證')) throw Error('Pending state missing');
     if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw Error('Page overflow');
     const original = await page.locator('#latest').innerText();

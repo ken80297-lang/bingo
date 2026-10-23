@@ -3,8 +3,9 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from services.top_k_shadow_evaluation import (
-    evaluate_frozen_prediction, rank_candidates, snapshot_hash,
+    evaluate_frozen_prediction, evaluate_selection, rank_candidates, snapshot_hash,
 )
+from services.top_k_shadow_v3 import validate_v3
 
 
 def _time(value):
@@ -74,7 +75,7 @@ def build_shadow_view(records):
     n = len(verified)
     mean = lambda key: sum(r[key] for r in verified) / n if n else None
     parent_mean = mean('parent20_hits')
-    return {
+    result = {
         'status': 'ok', 'as_of': datetime.now(timezone.utc).isoformat(),
         'scope': 'latest_200_snapshots', 'evidence': 'descriptive_only',
         'scanned': len(records), 'excluded': sum(excluded.values()),
@@ -85,6 +86,43 @@ def build_shadow_view(records):
         'same20_top6_expected': parent_mean * .30 if n else None,
         'items': items,
     }
+    # A V3 row is only compared with the original V2 from the same saved parent.
+    lookup = {item['target_issue']: item for item in items}
+    pair_excluded = 0
+    for record in records:
+        target = str(record['prediction_issue'])
+        item = lookup.get(target)
+        snapshot = (record.get('fast_path_metadata') or {}).get('top_k_shadow_v3')
+        if not item or not snapshot:
+            continue
+        try:
+            validate_v3(snapshot, record['recommend_numbers'], record['issue'], target)
+            if _time(snapshot['frozen_at']) > _time(record['created_at']):
+                raise ValueError('V3 saved before frozen')
+            if record.get('official_draw_at') and _time(snapshot['frozen_at']) >= _time(record['official_draw_at']):
+                raise ValueError('late V3 snapshot')
+            actual = record.get('official_numbers') or []
+            verified_pair = item['status'] == 'verified'
+            item['v3'] = {
+                'top6': snapshot['top6'], 'frozen_at': snapshot['frozen_at'],
+                'top6_hits': evaluate_selection(snapshot['top6'], actual) if verified_pair else None,
+                'matched_numbers': sorted(set(snapshot['top6']) & set(actual)) if verified_pair else [],
+            }
+        except (ValueError, KeyError, TypeError, OverflowError):
+            pair_excluded += 1
+    paired = [item for item in items if item.get('v3') and item['status'] == 'verified']
+    available = [item for item in items if item.get('v3')]
+    pair_n = len(paired)
+    result['v3'] = {
+        'paired_verified_count': pair_n, 'waiting_count': len(available)-pair_n,
+        'excluded': pair_excluded,
+        'top6_mean': sum(item['v3']['top6_hits'] for item in paired)/pair_n if pair_n else None,
+        'v2_paired_top6_mean': sum(item['top6_hits'] for item in paired)/pair_n if pair_n else None,
+        'same20_expected': sum(item['parent20_hits']*.3 for item in paired)/pair_n if pair_n else None,
+        'first_issue': min((i['target_issue'] for i in available), default=None),
+        'last_issue': max((i['target_issue'] for i in available), default=None),
+    }
+    return result
 
 
 def load_shadow_view():
