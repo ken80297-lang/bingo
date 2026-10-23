@@ -65,18 +65,55 @@ for two means under independent-draw assumptions. These intervals do not prove
 the paired ranking delta is positive. Serial dependence, repeated tuning, and
 multiple models require additional block/multiple-comparison analysis.
 
-The previously queried Supabase store had 9,964 predictions and zero frozen
-Top-k rows. Its identity as the current Render data source is not yet confirmed.
+The Supabase store now has 9,969 predictions and zero frozen Top-k rows.
+Three current record fingerprints match the live production HTTP API exactly
+(IDs, source/target, prediction/creation timestamps, all 20 picks, hit counts,
+and writer commit). This corroborates the shared live dataset without reading
+secret environment variables; the configured DSN itself was not inspected.
 Therefore the observed strict real-data sample size remains zero, means/deltas
 are unavailable, and no improvement/full-hit/profitability claim is justified.
 Synthetic test hits prove arithmetic only.
+
+## Live read-only evidence, 2026-10-23 (Asia/Taipei)
+
+The user confirmed `chan's workspace` (`tea-d8u9lt8js32c739gp8h0`).
+Render lists no managed Postgres instances in this workspace. Reads used the
+existing Supabase connection and production HTTP API; no DB schema/data,
+service settings, or weights were changed.
+
+| Resource | Live commit / evidence |
+| --- | --- |
+| `bingo-ai-pro`, `srv-d925llsm0tmc73djvme0` | main, `4c995cc35bc00785ce4387e9b09bcee120bbe717`; HTTP diagnostics agree, Postgres read succeeded without fallback |
+| `bingo-ai-lifecycle-worker`, `crn-db1uohbbc2fs73ei9gv0` | fix-learning-snapshot-integrity, `ac082dce7d824c0e738b59d92267d24fb5919389` |
+| 10:00 slot, target `115059922` | worker summary ok, 40.450 s, peak 90.45 MiB; Render successful finish at 10:02:14 |
+| 10:05 slot, target `115059923` | worker summary ok, 40.179 s, peak 87.57 MiB; Render successful finish at 10:07:13 |
+
+Both Cron summaries show prediction save to cloud, delayed shadow generation
+deferred, shadow executors stopped, DB pools closed, and verification ok.
+These are observations of the **old deployed code**, not a cloud test of this
+patch. The 40-second metric excludes the Cron wrapper's wait for draw readiness.
+Neither deployed commit contains PR181/PR182, explaining why no frozen Top-k
+rows are being produced. No deployment was triggered.
+
+Live API `/api/prediction-history/history?limit=3` and Supabase both returned:
+
+| Record ID | Source | Target | Created (UTC) | Parent-20 hits at read |
+| --- | --- | --- | --- | --- |
+| 10187 | 115059920 | 115059921 | 2026-10-23 01:56:52.268115 | 6 |
+| 10188 | 115059921 | 115059922 | 2026-10-23 02:01:52.033444 | 5 |
+| 10189 | 115059922 | 115059923 | 2026-10-23 02:06:51.793222 | waiting draw |
+
+The parent-20 hits are **not** Top5/Top6 results. The read-only aggregate was
+`count(*)=9969`, `count(*) filter (where fast_path_metadata ? 'top_k_shadow')=0`.
+Late reconstruction of these missing picks would not create eligible OOS data.
 
 ## Remaining merge/release gates
 
 1. Review the patch and pass CI on the exact commit. Local selected tests are not
    the entire repository suite.
-2. Confirm the intended Render workspace and service/database identity; verify
-   isolated Postgres roundtrip and the actual one-shot Cron RSS/exit behavior.
+2. Workspace, services and live dataset fingerprints are now checked. Still
+   verify isolated Postgres roundtrip and one-shot Cron RSS/exit on the exact
+   patched commit; observed old-version success is not a substitute.
 3. Supply independently retained pre-draw V2 snapshots plus matching official
    results and a precommitted OOS plan. Run the audit and fold validation; no
    retroactive reselection.
