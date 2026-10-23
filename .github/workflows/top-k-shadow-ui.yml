@@ -1,0 +1,33 @@
+name: Top-k shadow read-only UI
+on:
+  push:
+    branches: [feature/top-k-shadow-ui]
+  pull_request:
+    paths:
+      - 'bingo-ai-pro/backend/services/top_k_shadow*'
+      - 'bingo-ai-pro/backend/api/top_k_shadow.py'
+      - 'bingo-ai-pro/backend/static/shadow_ranking.html'
+      - 'bingo-ai-pro/backend/tests/test_top_k_shadow_view.py'
+      - '.github/workflows/top-k-shadow-ui.yml'
+permissions:
+  contents: read
+jobs:
+  read-only-view:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: bingo-ai-pro/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest fastapi 'psycopg[binary]' psycopg_pool python-dotenv
+      - run: PYTHONPATH=. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_top_k_shadow_view.py
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+      - run: npm install --prefix /tmp/shadow-ui-browser playwright@1.58.2
+      - run: /tmp/shadow-ui-browser/node_modules/.bin/playwright install --with-deps chromium
+      - run: NODE_PATH=/tmp/shadow-ui-browser/node_modules node tests/top_k_shadow_browser.cjs
