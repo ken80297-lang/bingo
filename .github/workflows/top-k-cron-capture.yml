@@ -1,0 +1,46 @@
+name: Top-k Cron capture validation
+
+on:
+  push:
+    branches:
+      - feature/top-k-cron-capture
+    paths:
+      - bingo-ai-pro/backend/**
+      - .github/workflows/top-k-isolated-postgres.yml
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: top_k_validation
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ephemeral-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d top_k_validation"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: bingo-ai-pro/backend
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      TOP_K_TEST_POSTGRES_DSN: postgresql://postgres:ephemeral-test-only@127.0.0.1:5432/top_k_validation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated test dependencies
+        run: python -m pip install -r requirements-top-k-validation.txt
+      - name: Run bounded suite against ephemeral Postgres
+        run: python scripts/run_top_k_validation.py

@@ -6,6 +6,12 @@ from services import learning_engine
 @pytest.fixture(autouse=True)
 def _disable_distributed_prediction_lock(monkeypatch):
     from services import prediction_service
+    from database import analysis_store
+    from services import shadow_dynamic_observer
+    # Each non-core test must opt into core behavior explicitly; no external IO.
+    monkeypatch.delenv('AI_LIFECYCLE_CRON_CORE_ONLY', raising=False)
+    monkeypatch.setattr(analysis_store, 'get_v7_model_history', lambda *a, **kw: [])
+    monkeypatch.setattr(shadow_dynamic_observer, 'generate_for_prediction_async', lambda *a, **kw: {'status': 'skipped'})
 
     monkeypatch.setattr(prediction_service, "_distributed_prediction_lock", lambda *args, **kwargs: ("unit-test-lock", None))
     monkeypatch.setattr(prediction_service, "_release_distributed_prediction_lock", lambda *args, **kwargs: None)
