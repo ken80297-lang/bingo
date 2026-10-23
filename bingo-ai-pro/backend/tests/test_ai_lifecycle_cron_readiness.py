@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.ai_lifecycle_cron_once import TAIPEI, current_draw_slot, draw_datetime, prediction_is_timely, wait_for_current_draw
@@ -79,3 +80,24 @@ def test_prediction_deadline_uses_draw_time_even_when_next_draw_not_in_database(
     assert not prediction_is_timely(draw, now=slot + timedelta(seconds=300))
     assert not prediction_is_timely(draw, now=slot + timedelta(seconds=360))
     assert not prediction_is_timely({"draw_time": "invalid"}, now=slot)
+
+
+@pytest.mark.parametrize('override,expected', [(None, '1'), ('0', '0')])
+def test_cron_child_enables_metadata_capture_with_core_worker_protection(monkeypatch, override, expected):
+    from scripts import ai_lifecycle_cron_once as cron
+    from types import SimpleNamespace
+    captured = {}
+    if override is None:
+        monkeypatch.delenv('TOP_K_SHADOW_CAPTURE_ENABLED', raising=False)
+    else:
+        monkeypatch.setenv('TOP_K_SHADOW_CAPTURE_ENABLED', override)
+    monkeypatch.setattr(cron, 'wait_for_current_draw', lambda reader: {'issue': '115059999'})
+    def run(command, **kwargs):
+        captured.update(command=command, **kwargs)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(cron.subprocess, 'run', run)
+    assert cron.main() == 0
+    assert captured['env']['TOP_K_SHADOW_CAPTURE_ENABLED'] == expected
+    assert captured['env']['AI_LIFECYCLE_CRON_CORE_ONLY'] == '1'
+    assert captured['env']['AI_LIFECYCLE_ISSUE'] == '115059999'
+    assert captured['command'][1].endswith('scripts/ai_lifecycle_worker_once.py')

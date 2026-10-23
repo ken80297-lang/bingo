@@ -19,6 +19,12 @@ from services import next_prediction_center, prediction_refresh, prediction_serv
 def _disable_distributed_prediction_lock(monkeypatch):
     monkeypatch.setattr(prediction_service, "_distributed_prediction_lock", lambda *args, **kwargs: ("unit-test-lock", None))
     monkeypatch.setattr(prediction_service, "_release_distributed_prediction_lock", lambda *args, **kwargs: None)
+    from database import analysis_store
+    from services import shadow_dynamic_observer, learning_engine
+    monkeypatch.setattr(analysis_store, 'get_cached_analysis_history', lambda *a, **kw: ([], {}))
+    monkeypatch.setattr(analysis_store, 'get_v7_model_history', lambda *a, **kw: [])
+    monkeypatch.setattr(shadow_dynamic_observer, 'generate_for_prediction_async', lambda *a, **kw: {'status': 'skipped'})
+    monkeypatch.setattr(learning_engine, 'ensure_live_prediction_snapshot_async', lambda *a, **kw: {'status': 'skipped'})
 
 
 def setup_function():
@@ -486,7 +492,8 @@ def test_latest_prediction_history_filters_test_records_with_sqlite(monkeypatch,
                 release_version text,
                 git_commit_hash text,
                 model_version text,
-                feature_version text
+                feature_version text,
+                fast_path_metadata text
                 );
             create table official_draw_history (issue text primary key);
             create table operation_events (
@@ -613,7 +620,8 @@ def test_latest_prediction_history_includes_waiting_draw_without_official_result
                 release_version text,
                 git_commit_hash text,
                 model_version text,
-                feature_version text
+                feature_version text,
+                fast_path_metadata text
                 );
             create table official_draw_history (issue text primary key);
             create table operation_events (

@@ -4,6 +4,7 @@ import logging
 import json
 import random
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 
@@ -659,6 +660,16 @@ def calculate_fast_recommendation(
             if output.get("is_valid")
             else 0
         )
+        top_k_shadow = None
+        if output.get('is_valid') and os.getenv('TOP_K_SHADOW_CAPTURE_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            try:
+                from services.top_k_shadow_evaluation import freeze_selection
+                top_k_shadow = freeze_selection(
+                    numbers, {n: adaptive_number_scores.get(n, 0.0) for n in numbers},
+                    source_issue, target_issue,
+                )
+            except (ValueError, TypeError, OverflowError):
+                logger.exception('top-k shadow capture unavailable; production selection unchanged')
         result_build_started = time.perf_counter()
         recommendation = {
             "issue": source_issue,
@@ -728,6 +739,8 @@ def calculate_fast_recommendation(
                 }
             ],
         }
+        if top_k_shadow is not None:
+            recommendation['top_k_shadow'] = top_k_shadow
         timings["result_build_ms"] = round((time.perf_counter() - result_build_started) * 1000, 2)
         recommendation["timings_ms"] = {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)}
         return {

@@ -779,6 +779,22 @@ def create_for_official_draw(
         # learning model.
         record["model_scores"] = model_scores
         record["fast_path_strategy_version"] = FAST_PATH_STRATEGY_VERSION
+        if os.getenv('TOP_K_SHADOW_CAPTURE_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            shadow = recommendation.get('top_k_shadow')
+            if isinstance(shadow, dict):
+                try:
+                    from copy import deepcopy
+                    from services.top_k_shadow_evaluation import rank_candidates, snapshot_hash
+                    expected = rank_candidates(recommended, {int(n): score for n, score in shadow['ranking_scores'].items()})
+                    if (shadow.get('version') != 'top-k-shadow-v2'
+                        or shadow.get('source_issue') != based_on or shadow.get('target_issue') != target
+                        or shadow.get('production_twenty') != sorted(recommended)
+                        or shadow.get('snapshot_sha256') != snapshot_hash(shadow)
+                        or any(shadow.get(k) != expected[k] for k in ('top5', 'top6'))):
+                        raise ValueError('invalid frozen Top-k snapshot')
+                    fast_path_scores['top_k_shadow'] = deepcopy(shadow)
+                except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                    logger.exception('top-k shadow snapshot rejected; production selection unchanged')
         record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")

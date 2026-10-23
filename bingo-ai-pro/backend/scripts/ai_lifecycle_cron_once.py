@@ -76,6 +76,11 @@ def main() -> int:
     env = os.environ.copy()
     env["AI_LIFECYCLE_ISSUE"] = issue
     env["AI_LIFECYCLE_CRON_CORE_ONLY"] = "1"
+    # User-authorized metadata-only capture; no delayed worker or weight gate.
+    env.setdefault('TOP_K_SHADOW_CAPTURE_ENABLED', '1')
+    print(json.dumps({'event': 'top_k_shadow_capture_mode',
+                      'enabled': env['TOP_K_SHADOW_CAPTURE_ENABLED'].strip().lower() in {'1', 'true', 'yes', 'on'},
+                      'version': 'top-k-shadow-v2'}), flush=True)
     completed = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "ai_lifecycle_worker_once.py")],
         cwd=str(ROOT),

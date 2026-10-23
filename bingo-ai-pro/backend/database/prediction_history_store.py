@@ -3166,6 +3166,7 @@ def _row_to_prediction(row: Any) -> dict:
         "git_commit_hash": row[41] if len(row) > 41 else GIT_COMMIT_HASH,
         "model_version": row[42] if len(row) > 42 else MODEL_VERSION,
         "feature_version": row[43] if len(row) > 43 else FEATURE_VERSION,
+        "fast_path_metadata": _json_loads(row[44]) if len(row) > 44 else {},
     }
 
 
@@ -3358,6 +3359,9 @@ def _enrich_prediction_metadata_from_map(record: dict, metadata: dict | None) ->
     record["trigger"] = metadata.get("trigger") or "production_read_layer"
     if metadata.get("operation_event"):
         record["operation_event"] = metadata.get("operation_event")
+    if isinstance(record.get('fast_path_metadata'), dict):
+        from services.top_k_shadow_evaluation import evaluate_frozen_prediction
+        record['top_k_shadow_evaluation'] = evaluate_frozen_prediction(record)
     return record
 
 
@@ -3371,7 +3375,7 @@ PREDICTION_SELECT_COLUMNS = """
         missed_numbers, prediction_count, hit_rate, super_number_hit,
         verification_version, learning_used, model_score,
         production_generation, production_valid, release_version,
-        git_commit_hash, model_version, feature_version
+        git_commit_hash, model_version, feature_version, fast_path_metadata
 """
 
 PREDICTION_SELECT_COLUMNS_P = """
@@ -3384,7 +3388,7 @@ PREDICTION_SELECT_COLUMNS_P = """
         p.missed_numbers, p.prediction_count, p.hit_rate, p.super_number_hit,
         p.verification_version, p.learning_used, p.model_score,
         p.production_generation, p.production_valid, p.release_version,
-        p.git_commit_hash, p.model_version, p.feature_version
+        p.git_commit_hash, p.model_version, p.feature_version, p.fast_path_metadata
 """
 
 PREDICTION_SUMMARY_COLUMNS = (
