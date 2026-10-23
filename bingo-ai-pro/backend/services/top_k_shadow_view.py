@@ -77,7 +77,7 @@ def build_shadow_view(records):
     parent_mean = mean('parent20_hits')
     result = {
         'status': 'ok', 'as_of': datetime.now(timezone.utc).isoformat(),
-        'scope': 'latest_200_snapshots', 'evidence': 'descriptive_only',
+        'scope': 'latest_200_snapshots_in_1000_recent_predictions', 'evidence': 'descriptive_only',
         'scanned': len(records), 'excluded': sum(excluded.values()),
         'verified_count': n, 'waiting_count': len(items) - n,
         'top5_mean': mean('top5_hits'), 'top6_mean': mean('top6_hits'),
@@ -135,7 +135,11 @@ def load_shadow_view():
                 cur.execute("SET LOCAL statement_timeout = '2000ms'")
                 cur.execute('''
                     SELECT p.issue, p.prediction_issue, p.created_at,
-                           p.recommend_numbers, p.fast_path_metadata,
+                           p.recommend_numbers,
+                           jsonb_build_object(
+                               'top_k_shadow', p.fast_path_metadata->'top_k_shadow',
+                               'top_k_shadow_v3', p.fast_path_metadata->'top_k_shadow_v3'
+                           ) AS fast_path_metadata,
                            p.prediction_status, p.verified_issue, p.verified_at,
                            p.winning_numbers, d.numbers AS official_numbers,
                            d.draw_time AS official_draw_at,
@@ -144,7 +148,13 @@ def load_shadow_view():
                         SELECT issue, prediction_issue, created_at,
                                recommend_numbers, fast_path_metadata,
                                prediction_status, verified_issue, verified_at, winning_numbers
-                        FROM prediction_history
+                        FROM (
+                            SELECT id, issue, prediction_issue, created_at,
+                                   recommend_numbers, fast_path_metadata,
+                                   prediction_status, verified_issue, verified_at, winning_numbers
+                            FROM prediction_history
+                            ORDER BY id DESC LIMIT 1000
+                        ) recent
                         WHERE fast_path_metadata ? 'top_k_shadow'
                         ORDER BY created_at DESC, id DESC LIMIT 200
                     ) p

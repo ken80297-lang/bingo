@@ -92,6 +92,8 @@ def test_database_reader_has_readonly_transaction_and_bounded_query(monkeypatch)
     assert statements[0] == 'SET TRANSACTION READ ONLY'
     assert 'statement_timeout' in statements[1]
     assert 'LIMIT 200' in statements[2]
+    assert 'ORDER BY id DESC LIMIT 1000' in statements[2]
+    assert 'jsonb_build_object' in statements[2]
     assert all(word not in statements[2].upper() for word in ('INSERT', 'UPDATE', 'DELETE'))
 
 
