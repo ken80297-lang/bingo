@@ -795,6 +795,16 @@ def create_for_official_draw(
                     fast_path_scores['top_k_shadow'] = deepcopy(shadow)
                 except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
                     logger.exception('top-k shadow snapshot rejected; production selection unchanged')
+        if os.getenv('TOP_K_SHADOW_V3_CAPTURE_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            shadow_v3 = recommendation.get('top_k_shadow_v3')
+            if isinstance(shadow_v3, dict) and 'top_k_shadow' in fast_path_scores:
+                try:
+                    from copy import deepcopy
+                    from services.top_k_shadow_v3 import validate_v3
+                    validate_v3(shadow_v3, recommended, based_on, target)
+                    fast_path_scores['top_k_shadow_v3'] = deepcopy(shadow_v3)
+                except Exception:
+                    logger.exception('top-k V3 snapshot rejected; production unchanged')
         record["fast_path_metadata"] = fast_path_scores
         mark = time.perf_counter()
         saved = save_prediction_history(record, caller_context="prediction_service")

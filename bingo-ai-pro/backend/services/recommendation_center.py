@@ -670,6 +670,14 @@ def calculate_fast_recommendation(
                 )
             except (ValueError, TypeError, OverflowError):
                 logger.exception('top-k shadow capture unavailable; production selection unchanged')
+        top_k_shadow_v3 = None
+        if top_k_shadow is not None and os.getenv('TOP_K_SHADOW_V3_CAPTURE_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            try:
+                from services.top_k_shadow_v3 import freeze_v3
+                top_k_shadow_v3 = freeze_v3(numbers, context.get('learning_analysis_history'),
+                                              applied_multipliers, source_issue, target_issue)
+            except Exception:
+                logger.exception('top-k V3 research capture unavailable; production unchanged')
         result_build_started = time.perf_counter()
         recommendation = {
             "issue": source_issue,
@@ -741,6 +749,8 @@ def calculate_fast_recommendation(
         }
         if top_k_shadow is not None:
             recommendation['top_k_shadow'] = top_k_shadow
+        if top_k_shadow_v3 is not None:
+            recommendation['top_k_shadow_v3'] = top_k_shadow_v3
         timings["result_build_ms"] = round((time.perf_counter() - result_build_started) * 1000, 2)
         recommendation["timings_ms"] = {**timings, "total_ms": round((time.perf_counter() - started) * 1000, 2)}
         return {

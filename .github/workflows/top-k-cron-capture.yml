@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/top-k-cron-capture
+      - feature/top-k-shadow-v3-paired
     paths:
       - bingo-ai-pro/backend/**
       - .github/workflows/top-k-isolated-postgres.yml
