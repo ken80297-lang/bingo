@@ -33,6 +33,15 @@ class RepeatNumberShadowTests(unittest.TestCase):
         self.assertEqual(result["evaluated_draws"], 10)
         self.assertEqual(result["evaluations"][0]["target_index"], 100)
 
+    def test_tied_scores_rotate_without_low_number_bias(self):
+        scores = {n: 1.0 for n in range(1, 81)}
+        counts = {n: 0 for n in range(1, 81)}
+        for seed in range(80):
+            chosen = select_shadow_twenty(scores, range(1, 21), tie_seed=seed)
+            for n in chosen["selected_numbers"]:
+                counts[n] += 1
+        self.assertEqual(set(counts.values()), {20})
+
     def test_invalid_draw(self):
         with self.assertRaises(ValueError):
             consecutive_overlaps([[1] * 20])
