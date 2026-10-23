@@ -6,7 +6,7 @@ const path = require('path');
   const browser = await chromium.launch({ headless: true });
   const html = fs.readFileSync(path.join(__dirname, '../static/shadow_ranking.html'), 'utf8');
   const item = { target_issue: '115059939', frozen_at: '2026-10-23T03:26:00Z',
-    status: 'waiting_draw', top5: [1,2,3,4,5], top6: [1,2,3,4,5,6],
+    status: 'waiting_draw', top5: [14,3,11,2,9], top6: [14,3,11,2,9,6],
     top5_hits: null, top6_hits: null, matched_numbers: [] };
   const payload = { items: [item], verified_count: 0, waiting_count: 1,
     excluded: 0, top5_mean: null, top6_mean: null, same20_top5_expected: null,
@@ -22,7 +22,8 @@ const path = require('path');
         : { contentType: 'text/html', body: html }));
     await page.goto('http://shadow.test/shadow-ranking');
     await page.waitForFunction(() => document.getElementById('state').textContent.startsWith('更新於'));
-    if (await page.locator('#latest .ball').count() !== 11) throw Error('Missing frozen picks');
+    if (await page.locator('#latest .ball').count() !== 6) throw Error('Expected only six picks');
+    if (JSON.stringify(await page.locator('#latest .ball').allTextContents()) !== JSON.stringify(['02','03','06','09','11','14'])) throw Error('Picks must display in numeric order');
     if (!(await page.locator('#latest').innerText()).includes('等待驗證')) throw Error('Pending state missing');
     if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw Error('Page overflow');
     const original = await page.locator('#latest').innerText();

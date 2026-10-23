@@ -25,8 +25,8 @@ const byId=id=>document.getElementById(id);
 const fmt=n=>n==null?'—':Number(n).toFixed(3);
 const time=s=>new Date(s).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
 function node(tag,text,cls){const el=document.createElement(tag);if(text!=null)el.textContent=text;if(cls)el.className=cls;return el;}
-function picks(item,k){const line=node('div',null,'line');line.append(node('strong','Top '+k,'label'));for(const n of item['top'+k])line.append(node('span',String(n).padStart(2,'0'),'ball'+(item.matched_numbers.includes(n)?' hit':'')));line.append(node('span',item.status==='verified'?item['top'+k+'_hits']+'／'+k+' 命中':'等待驗證','result'));return line;}
-function card(item){const el=node('div');el.append(node('strong',item.target_issue+' 期 '));el.append(node('span',item.status==='verified'?'已驗證':'等待驗證','pill'));el.append(node('div','凍結於 '+time(item.frozen_at)+'（台北時間）','muted'));el.append(picks(item,5),picks(item,6));return el;}
+function picks(item){const line=node('div',null,'line');line.append(node('strong','Top 6','label'));for(const n of [...item.top6].sort((a,b)=>a-b))line.append(node('span',String(n).padStart(2,'0'),'ball'+(item.matched_numbers.includes(n)?' hit':'')));line.append(node('span',item.status==='verified'?item.top6_hits+'／6 命中':'等待驗證','result'));return line;}
+function card(item){const el=node('div');el.append(node('strong',item.target_issue+' 期 '));el.append(node('span',item.status==='verified'?'已驗證':'等待驗證','pill'));el.append(node('div','凍結於 '+time(item.frozen_at)+'（台北時間）','muted'));el.append(picks(item));return el;}
 function row(label,a,b){const tr=node('tr');tr.append(node('td',label),node('td',fmt(a)),node('td',fmt(b)));return tr;}
 let busy=false;
 async function refresh(){if(busy)return;busy=true;byId('refresh').disabled=true;byId('state').textContent='讀取中…';const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);
