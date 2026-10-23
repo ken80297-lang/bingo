@@ -3379,7 +3379,7 @@ PREDICTION_SELECT_COLUMNS = """
         missed_numbers, prediction_count, hit_rate, super_number_hit,
         verification_version, learning_used, model_score,
         production_generation, production_valid, release_version,
-        git_commit_hash, model_version, feature_version
+        git_commit_hash, model_version, feature_version, fast_path_metadata
 """
 
 PREDICTION_SELECT_COLUMNS_P = """

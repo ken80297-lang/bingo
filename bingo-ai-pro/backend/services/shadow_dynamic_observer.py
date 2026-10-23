@@ -329,6 +329,9 @@ def generate_for_prediction(recommendation: dict, record: dict) -> dict:
 
 
 def generate_for_prediction_async(recommendation: dict, record: dict) -> dict:
+    # A one-shot core Cron must not leave a delayed executor alive at exit.
+    if os.getenv('AI_LIFECYCLE_CRON_CORE_ONLY', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        return {'status': 'skipped', 'reason': 'cron_core_only'}
     recommendation_snapshot = dict(recommendation or {})
     record_snapshot = dict(record or {})
     based_on = _valid_issue(record_snapshot.get("issue") or recommendation_snapshot.get("issue"))

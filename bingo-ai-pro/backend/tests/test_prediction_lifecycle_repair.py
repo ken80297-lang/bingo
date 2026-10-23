@@ -174,7 +174,8 @@ def test_live_verification_updates_by_target_issue_without_history_selector(monk
                 release_version text,
                 git_commit_hash text,
                 model_version text,
-                feature_version text
+                feature_version text,
+                fast_path_metadata text
                 );
             """
         )
