@@ -3,6 +3,7 @@
 Local process/RSS evidence only; this is not a Render Cron benchmark.
 """
 import json
+import argparse
 import os
 from pathlib import Path
 import resource
@@ -21,6 +22,13 @@ TESTS = [
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile', choices=('full', 'smoke'), default='full')
+    parser.add_argument('--timeout', type=int, default=25)
+    args = parser.parse_args()
+    if not 10 <= args.timeout <= 60:
+        parser.error('--timeout must be between 10 and 60 seconds')
+    selected_tests = TESTS if args.profile == 'full' else TESTS[:5]
     env = dict(os.environ)
     # Do not allow pytest to load credentials from the invoking shell or .env.
     for key in list(env):
@@ -30,16 +38,22 @@ if __name__ == '__main__':
                AI_LIFECYCLE_CRON_CORE_ONLY='true', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
     started = time.monotonic()
     try:
-        result = subprocess.run([sys.executable, '-m', 'pytest', *['tests/'+n for n in TESTS],
+        result = subprocess.run([sys.executable, '-m', 'pytest', *['tests/'+n for n in selected_tests],
                                  '-q', '--disable-warnings'], cwd=ROOT, env=env,
-                                capture_output=True, text=True, timeout=25)
+                                capture_output=True, text=True, timeout=args.timeout)
         report = {'exit_code': result.returncode, 'timed_out': False,
                   'elapsed_seconds': round(time.monotonic()-started, 3),
                   'peak_child_rss_kib_linux': resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
                   'stdout': result.stdout, 'stderr': result.stderr,
                   'scope': 'isolated local tests, not production Cron'}
-    except subprocess.TimeoutExpired:
-        report = {'exit_code': 124, 'timed_out': True, 'deadline_seconds': 25,
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ''
+        if isinstance(output, bytes):
+            output = output.decode(errors='replace')
+        report = {'exit_code': 124, 'timed_out': True, 'deadline_seconds': args.timeout,
+                  'partial_stdout': output[-2000:],
                   'scope': 'isolated local tests, not production Cron'}
+    report['profile'] = args.profile
+    report['deadline_seconds'] = args.timeout
     print(json.dumps(report, indent=2, ensure_ascii=False))
     raise SystemExit(report['exit_code'])

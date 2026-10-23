@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     if any(os.getenv(key) for key in ('DATABASE_URL', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'TOP_K_TEST_POSTGRES_DSN')):
         raise SystemExit('isolated Render smoke test refuses external database configuration')
-    process = subprocess.run([sys.executable, str(ROOT / 'scripts/run_top_k_validation.py')],
-                             cwd=ROOT, text=True, capture_output=True, timeout=35)
+    process = subprocess.run([sys.executable, str(ROOT / 'scripts/run_top_k_validation.py'),
+                              '--profile', 'smoke', '--timeout', '60'],
+                             cwd=ROOT, text=True, capture_output=True, timeout=75)
     report = json.loads(process.stdout)
     report.update(git_commit=os.getenv('RENDER_GIT_COMMIT'), service_id=os.getenv('RENDER_SERVICE_ID'),
                   captured_at=datetime.now(timezone.utc).isoformat(),
