@@ -20,12 +20,26 @@ td.ball.hit{font-weight:650;font-size:10px}td.ball:not(.hit){background:#fff}td.
 html.annotation-drawing,html.annotation-drawing body{touch-action:none!important;overscroll-behavior:none}.annotation-controls{display:flex;gap:5px;align-items:center}.dynamic-island .annotation-btn{height:30px;padding:0 9px;border-radius:999px;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.12);color:#fff;font-size:12px}.dynamic-island .annotation-btn.active{background:#0878e8;border-color:#4aa5ff}.dynamic-island .annotation-btn:disabled{opacity:.4}.annotation-btn.active{background:#0878e8;color:#fff;border-color:#0878e8}.annotation-btn:disabled{opacity:.45;cursor:default}.annotation-layer{position:absolute;left:0;top:0;z-index:12;pointer-events:none;touch-action:auto}.annotation-layer.drawing{pointer-events:all;touch-action:none!important;-webkit-user-select:none;user-select:none;overscroll-behavior:contain;cursor:crosshair} .dynamic-island{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:9999;display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(5,35,64,.94);color:#fff;box-shadow:none;white-space:nowrap;transform-origin:top right}.live-clock{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.7px}@media(max-width:700px){.dynamic-island{padding:5px 9px}.live-clock{font-size:13px}header{visibility:hidden;height:48px}}
 #islandDock{position:fixed;left:0;top:0;width:100%;height:60px;z-index:9999;background:#f5f8fc;transform-origin:top left;pointer-events:none}
 #islandDock .dynamic-island{position:absolute;top:8px;right:8px;transform:none;pointer-events:auto}
+
+/* Six recent draws; scoped styles leave the original daily table untouched. */
+.six-draws{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;width:2108px;margin:0 0 12px}
+.six-card{border:2px solid #a0a0a0;border-radius:6px;overflow:hidden;background:#fff}
+.six-header{display:flex;align-items:center;gap:10px;background:#ff8c00;color:white;padding:5px 10px;height:48px;font-size:28px;font-weight:800}
+.six-time{background:white;color:#111;border-radius:3px;padding:1px 6px}
+.six-flags{display:flex;gap:5px;margin-left:auto}
+.six-flag{background:#aaa;color:white;padding:1px 5px;border-radius:5px;min-width:30px;text-align:center}
+.six-flag.big{background:#1647d8}.six-flag.small{background:#e33131}
+.six-balls{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;padding:5px}
+.six-ball{height:61px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#f1f1f1;color:#e2e2e2;font-size:38px;font-weight:800;line-height:1}
+.six-ball.open{background:#4031ed;color:white}.six-ball.repeat-two{background:#fa0000;color:white}.six-ball.repeat-three{background:#009000;color:white}
+.six-ball.super-ball{background:#ff37b3;color:#ff0;border:3px solid #ffed00;box-shadow:0 0 7px 2px #ff82bf}
 </style></head>
 <body><div id="islandDock"><div class="dynamic-island" id="dynamicIsland"><span id="liveClock" class="live-clock">--:--:--</span><div class="annotation-controls"><button id="mark" class="annotation-btn" type="button" aria-pressed="false">✏️ 標記</button><button id="undo" class="annotation-btn" type="button" disabled>↶ 復原</button><button id="clearMarks" class="annotation-btn" type="button" disabled>清除全部</button></div></div></div><header><div class="brand"><b>♛</b> Bingo AI Pro</div><div class="title">每日球號分布表</div></header>
 <main><div class="toolbar">
 <input id="date" type="date"><button id="today" class="primary">回到今天</button><button id="reload">重新整理</button>
 <div class="legend"><span><i class="sw hit"></i>開出號碼</span><span><i class="sw super"></i>超級獎號</span></div>
 </div>
+<section id="sixDraws" class="six-draws" aria-label="最近六期開獎數字陣列"></section>
 <div class="table-wrap" id="annotationHost"><svg id="annotationLayer" class="annotation-layer" xmlns="http://www.w3.org/2000/svg" aria-label="個人標記畫板" width="1" height="1"><rect width="100%" height="100%" fill="transparent" pointer-events="all"/><g id="annotationPaths" pointer-events="none"></g></svg><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
 <div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
 </main>
@@ -41,6 +55,42 @@ function cleanTime(v){
  if(iso){const mins=(+iso[1]*60 + +iso[2] + 480)%(24*60);return pad(Math.floor(mins/60))+':'+pad(mins%60)}
  const m=s.match(/(\d{1,2}):(\d{2})/);return m?pad(+m[1])+':'+m[2]:'—'
 }
+
+function renderSixDraws(rows){
+ const host=document.getElementById('sixDraws');
+ const ordered=rows.slice().sort((a,b)=>Number(b.issue)-Number(a.issue));
+ const sets=ordered.map(d=>new Set((d.numbers||[]).map(Number)));
+ const fragment=document.createDocumentFragment();
+ ordered.slice(0,6).forEach((d,index)=>{
+  const card=document.createElement('article');card.className='six-card';
+  const header=document.createElement('div');header.className='six-header';
+  const issue=document.createElement('span');issue.textContent=String(d.issue)+'期';
+  const time=document.createElement('span');time.className='six-time';time.textContent=cleanTime(d.draw_time);
+  const nums=sets[index],values=Array.from(nums),big=values.filter(n=>n>=41).length,odd=values.filter(n=>n%2===1).length;
+  const flags=document.createElement('span');flags.className='six-flags';
+  const size=document.createElement('span');size.className='six-flag'+(big>=13?' big':values.length-big>=13?' small':'');size.textContent=big>=13?'大':values.length-big>=13?'小':'－';
+  const parity=document.createElement('span');parity.className='six-flag';parity.textContent=odd>=13?'單':values.length-odd>=13?'雙':'－';
+  flags.appendChild(size);flags.appendChild(parity);header.appendChild(issue);header.appendChild(time);header.appendChild(flags);card.appendChild(header);
+  const balls=document.createElement('div');balls.className='six-balls';
+  for(let n=1;n<=80;n++){
+   const ball=document.createElement('span');ball.className='six-ball';ball.textContent=pad(n);
+   if(nums.has(n)){
+    let run=1;
+    for(let j=index+1;j<ordered.length;j++){
+     if(Number(ordered[j-1].issue)-Number(ordered[j].issue)!==1||!sets[j].has(n))break;
+     run++;if(run>=3)break;
+    }
+    ball.className+=' open'+(run>=3?' repeat-three':run===2?' repeat-two':'');
+    if(n===Number(d.super_number))ball.className+=' super-ball';
+   }
+   balls.appendChild(ball);
+  }
+  card.appendChild(balls);fragment.appendChild(card);
+ });
+ while(host.firstChild)host.removeChild(host.firstChild);
+ host.appendChild(fragment);
+}
+
 async function load(){
  if(load.inFlight){load.pending=true;return;}
  load.inFlight=true;
@@ -60,6 +110,7 @@ async function load(){
   const signature=JSON.stringify(rows.map(d=>[d.issue,d.numbers,d.super_number,d.draw_time]));
   if(load.lastSignature===signature && load.lastDate===dateEl.value)return;
   load.lastSignature=signature;load.lastDate=dateEl.value;
+  renderSixDraws(rows);
   const existing=new Map(Array.from(body.children,tr=>[tr.dataset.issue,tr]));
   const desired=[];
   rows.forEach((d,i)=>{
