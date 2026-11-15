@@ -233,7 +233,7 @@ const penRedBtn=document.getElementById('penRed'),penGreenBtn=document.getElemen
 let annotationPenColor='#e32636';
 function selectAnnotationColor(color){if(annotationEnabled&&annotationPenColor===color){setAnnotationEnabled(false);return;}annotationPenColor=color;setAnnotationEnabled(true);}
 penRedBtn.addEventListener('click',()=>selectAnnotationColor('#e32636'));
-penGreenBtn.addEventListener('click',()=>selectAnnotationColor('#22c55e'));
+penGreenBtn.addEventListener('click',()=>selectAnnotationColor('#15803d'));
 const annotationNS='http://www.w3.org/2000/svg';
 const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
@@ -276,7 +276,7 @@ function redrawAnnotation(){
   const path=document.createElementNS(annotationNS,'path');
   const start=points[0];
   const d='M '+start.x+' '+start.y+(points.length===1?' l 0.01 0':points.slice(1).map(p=>' L '+p.x+' '+p.y).join(''));
-  path.setAttribute('d',d);path.setAttribute('fill','none');path.setAttribute('stroke',points[0].color==='#22c55e'?'#22c55e':'#e32636');
+  path.setAttribute('d',d);path.setAttribute('fill','none');path.setAttribute('stroke',points[0].color==='#15803d'?'#15803d':'#e32636');
   path.setAttribute('stroke-width','4');path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-linejoin','round');
   path.setAttribute('pointer-events','none');annotationPaths.appendChild(path);
  });
@@ -288,8 +288,8 @@ function setAnnotationEnabled(on){
  annotationEnabled=on;
  document.documentElement.classList.toggle('annotation-drawing',on);
  if(!on){persistAnnotations();annotationDrawing=false;annotationCurrent=null}
- if(on)resizeAnnotation();annotationLayer.classList.toggle('drawing',on);annotationHost.classList.toggle('annotation-active',on);penRedBtn.classList.toggle('active',on&&annotationPenColor==='#e32636');penGreenBtn.classList.toggle('active',on&&annotationPenColor==='#22c55e');
- penRedBtn.setAttribute('aria-pressed',String(on&&annotationPenColor==='#e32636'));penGreenBtn.setAttribute('aria-pressed',String(on&&annotationPenColor==='#22c55e'));
+ if(on)resizeAnnotation();annotationLayer.classList.toggle('drawing',on);annotationHost.classList.toggle('annotation-active',on);penRedBtn.classList.toggle('active',on&&annotationPenColor==='#e32636');penGreenBtn.classList.toggle('active',on&&annotationPenColor==='#15803d');
+ penRedBtn.setAttribute('aria-pressed',String(on&&annotationPenColor==='#e32636'));penGreenBtn.setAttribute('aria-pressed',String(on&&annotationPenColor==='#15803d'));
 }
 clearMarksBtn.addEventListener('click',()=>{
  resetAnnotationInput();annotationStrokes=[];
