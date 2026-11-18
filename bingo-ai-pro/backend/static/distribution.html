@@ -41,7 +41,7 @@ html.annotation-drawing #annotationHost,html.annotation-drawing #annotationHost 
 </div>
 <section id="sixDraws" class="six-draws" aria-label="最近六期開獎數字陣列"></section>
 <div class="table-wrap" id="annotationHost"><svg id="annotationLayer" class="annotation-layer" xmlns="http://www.w3.org/2000/svg" aria-label="個人標記畫板" width="1" height="1"><rect width="100%" height="100%" fill="transparent" pointer-events="all"/><g id="annotationPaths" pointer-events="none"></g></svg><table id="grid"><colgroup><col style="width:92px"><col style="width:54px"><col style="width:42px"><col span="80" style="width:24px"></colgroup><thead><tr id="head"><th class="issue head-issue">期號</th><th class="time head-time">時間</th><th class="odd-even head-odd-even">單雙</th></tr></thead><tbody id="body"></tbody></table></div>
-<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span></div>
+<div class="status"><span id="day"></span><span>已開期數：<strong id="count">—</strong> / 203</span><span>最新：<strong id="latest">—</strong></span><span id="next"></span><span id="msg"></span><span id="annotationStorageStatus" role="status" style="font-weight:700"></span></div>
 </main>
 <script>
 const pad=n=>String(n).padStart(2,'0'); const localDate=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
@@ -160,7 +160,7 @@ window.addEventListener('pageshow',connectDrawStream);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261118-annotation-persistence-v11';
+const distributionBuild='20261118-annotation-storage-diagnostics-v12';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -239,15 +239,33 @@ const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
 
 let annotationDate='';
+function annotationStorageNotice(message,failed=false){
+ const node=document.getElementById('annotationStorageStatus');
+ if(node){node.textContent=message;node.style.color=failed?'#c5222f':'#078529'}
+}
 function persistAnnotations(allowEmpty=false){
  if(!annotationDate||(!allowEmpty&&!annotationStrokes.length))return;
- try{localStorage.setItem('bingo-annotations-v2:'+annotationDate,JSON.stringify(annotationStrokes))}catch(error){console.warn('[annotations] save failed',error)}
+ try{
+  const key='bingo-annotations-v2:'+annotationDate;
+  const serialized=JSON.stringify(annotationStrokes);
+  localStorage.setItem(key,serialized);
+  if(localStorage.getItem(key)!==serialized)throw new Error('storage verification mismatch');
+  annotationStorageNotice('記號已儲存（'+annotationStrokes.length+'筆）');
+ }catch(error){
+  console.warn('[annotations] save failed',error);
+  annotationStorageNotice('記號儲存失敗，請勿重新整理',true);
+ }
 }
 function restoreAnnotations(){
  if(annotationDate===load.lastDate)return;
  if(annotationDate)persistAnnotations();
  annotationDate=load.lastDate;annotationDrawing=false;annotationCurrent=null;
- try{const saved=JSON.parse(localStorage.getItem('bingo-annotations-v2:'+annotationDate)||'[]');annotationStrokes=Array.isArray(saved)?saved:[]}catch(_){annotationStrokes=[]}
+ try{
+  const raw=localStorage.getItem('bingo-annotations-v2:'+annotationDate);
+  const saved=JSON.parse(raw||'[]');
+  annotationStrokes=Array.isArray(saved)?saved:[];
+  annotationStorageNotice(raw?'已還原記號（'+annotationStrokes.length+'筆）':'此日期尚無已儲存記號');
+ }catch(error){console.warn('[annotations] restore failed',error);annotationStrokes=[];annotationStorageNotice('讀取記號失敗，請勿清除網站資料',true)}
 }
 function annotationY(p){
  if(!p.issue)return p.y;
