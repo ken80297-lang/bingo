@@ -268,30 +268,44 @@ async function readAnnotationDB(key){
   request.onerror=()=>reject(request.error||new Error('IndexedDB read failed'));
  });
 }
-let annotationBackupTimer=0;
-function scheduleAnnotationBackup(key,serialized){
+let annotationBackupTimer=0,annotationBackupRevision=0,annotationBackupSavedRevision=0;
+function scheduleAnnotationBackup(key,serialized,immediate=false){
+ const revision=++annotationBackupRevision;
  clearTimeout(annotationBackupTimer);
- annotationBackupTimer=setTimeout(()=>{
-  writeAnnotationDB(key,serialized).then(()=>annotationStorageNotice('記號已備份（'+annotationStrokes.length+'筆）')).catch(error=>annotationStorageNotice('備份失敗：'+(error.name||error.message),true));
- },300);
+ const save=()=>{
+  writeAnnotationDB(key,serialized).then(()=>{
+   annotationBackupSavedRevision=Math.max(annotationBackupSavedRevision,revision);
+   if(revision===annotationBackupRevision)annotationStorageNotice('記號已備份（'+annotationStrokes.length+'筆）');
+  }).catch(error=>{
+   if(revision===annotationBackupRevision)annotationStorageNotice('備份失敗：'+(error.name||error.message),true);
+  });
+ };
+ if(immediate)save();else annotationBackupTimer=setTimeout(save,500);
 }
 function annotationStorageNotice(message,failed=false){
  const node=document.getElementById('annotationStorageStatus');
  if(node){node.textContent=message;node.style.color=failed?'#c5222f':'#078529'}
 }
-function persistAnnotations(allowEmpty=false){
+function persistAnnotations(allowEmpty=false,immediate=false){
  if(!annotationDate||(!allowEmpty&&!annotationStrokes.length))return;
+ const key='bingo-annotations-v2:'+annotationDate;
+ // Store compact points; existing v2 strokes remain readable.
+ const compact=annotationStrokes.map(stroke=>stroke.map(p=>({
+  x:Math.round(p.x*10)/10,y:Math.round(p.y*10)/10,
+  issue:p.issue||null,dy:Math.round(p.dy*10)/10,
+  ...(p.color?{color:p.color}:{})
+ })));
+ const serialized=JSON.stringify(compact);
+ // IndexedDB is primary; localStorage is a best-effort legacy fallback.
+ scheduleAnnotationBackup(key,serialized,immediate);
+ if(persistAnnotations.localStorageFull)return;
  try{
-  const key='bingo-annotations-v2:'+annotationDate;
-  const serialized=JSON.stringify(annotationStrokes);
   localStorage.setItem(key,serialized);
-  if(localStorage.getItem(key)!==serialized)throw new Error('storage verification mismatch');
-  annotationStorageNotice('記號已儲存（'+annotationStrokes.length+'筆）');
-  scheduleAnnotationBackup(key,serialized);
+  annotationStorageNotice('本機已儲存，正在備份');
  }catch(error){
-  console.warn('[annotations] save failed',error);
-  annotationStorageNotice('本機儲存失敗（'+(error.name||'未知錯誤')+'），正在備份',true);
-  scheduleAnnotationBackup(key,serialized);
+  if(error.name==='QuotaExceededError')persistAnnotations.localStorageFull=true;
+  console.warn('[annotations] localStorage failed; IndexedDB backup pending',error);
+  annotationStorageNotice('本機空間不足，正在使用備份');
  }
 }
 function restoreAnnotations(){
@@ -359,9 +373,9 @@ function setAnnotationEnabled(on){
 }
 clearMarksBtn.addEventListener('click',()=>{
  resetAnnotationInput();annotationStrokes=[];
- persistAnnotations(true);redrawAnnotation();
+ persistAnnotations(true,true);redrawAnnotation();
 });
-undoBtn.addEventListener('click',()=>{resetAnnotationInput();if(annotationStrokes.length){annotationStrokes.pop();persistAnnotations(true);redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
+undoBtn.addEventListener('click',()=>{resetAnnotationInput();if(annotationStrokes.length){annotationStrokes.pop();persistAnnotations(true,true);redrawAnnotation();if(!annotationStrokes.length&&!annotationEnabled){annotationLayer.setAttribute('width','1');annotationLayer.setAttribute('height','1');annotationLayer.style.width='1px';annotationLayer.style.height='1px'}}});
 // Prefer Pointer Events, including fingers. Older WebKit can fall back to
 // Touch Events; a claimed pointer suppresses the duplicate touch stream.
 let annotationPointerId=null,annotationTouchId=null,annotationFrame=0;
@@ -380,7 +394,7 @@ function resetAnnotationInput(){
  annotationDrawing=false;annotationCurrent=null;
  if(pointer!==null){try{annotationHost.releasePointerCapture(pointer)}catch(_){}}
  if(annotationFrame){cancelAnimationFrame(annotationFrame);annotationFrame=0;redrawAnnotation()}
- persistAnnotations();
+ persistAnnotations(false,true);
 }
 function beginAnnotation(e,p){
  consumeAnnotationEvent(e);
@@ -437,7 +451,7 @@ document.addEventListener('touchmove',e=>{
 window.addEventListener('blur',resetAnnotationInput);
 window.addEventListener('pageshow',()=>{if(annotationDate&&load.lastDate===annotationDate){try{const saved=JSON.parse(localStorage.getItem('bingo-annotations-v2:'+annotationDate)||'[]');if(Array.isArray(saved)&&saved.length>annotationStrokes.length)annotationStrokes=saved}catch(_){}}resetAnnotationInput();resizeAnnotation();redrawAnnotation();scheduleIsland()});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)resetAnnotationInput()});
-window.addEventListener('pagehide',persistAnnotations);
+window.addEventListener('pagehide',()=>persistAnnotations(false,true));
 function refreshAnnotationLayout(){resizeAnnotation();redrawAnnotation();scheduleIsland()}
 if(typeof window.ResizeObserver==='function'){
  new ResizeObserver(refreshAnnotationLayout).observe(annotationHost);
