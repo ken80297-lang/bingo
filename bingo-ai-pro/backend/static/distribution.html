@@ -239,6 +239,42 @@ const annotationPaths=document.getElementById('annotationPaths');
 let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annotationStrokes=[];
 
 let annotationDate='';
+let annotationDBPromise=null;
+function openAnnotationDB(){
+ if(!window.indexedDB)return Promise.reject(new Error('IndexedDB unavailable'));
+ if(!annotationDBPromise)annotationDBPromise=new Promise((resolve,reject)=>{
+  const request=indexedDB.open('bingo-annotation-backup',1);
+  request.onupgradeneeded=()=>{const db=request.result;if(!db.objectStoreNames.contains('days'))db.createObjectStore('days')};
+  request.onsuccess=()=>resolve(request.result);
+  request.onerror=()=>reject(request.error||new Error('IndexedDB open failed'));
+ }).catch(error=>{annotationDBPromise=null;throw error});
+ return annotationDBPromise;
+}
+async function writeAnnotationDB(key,serialized){
+ const db=await openAnnotationDB();
+ return new Promise((resolve,reject)=>{
+  const tx=db.transaction('days','readwrite');
+  tx.objectStore('days').put(serialized,key);
+  tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));
+  tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'));
+ });
+}
+async function readAnnotationDB(key){
+ const db=await openAnnotationDB();
+ return new Promise((resolve,reject)=>{
+  const tx=db.transaction('days','readonly');
+  const request=tx.objectStore('days').get(key);
+  request.onsuccess=()=>resolve(request.result||null);
+  request.onerror=()=>reject(request.error||new Error('IndexedDB read failed'));
+ });
+}
+let annotationBackupTimer=0;
+function scheduleAnnotationBackup(key,serialized){
+ clearTimeout(annotationBackupTimer);
+ annotationBackupTimer=setTimeout(()=>{
+  writeAnnotationDB(key,serialized).then(()=>annotationStorageNotice('記號已備份（'+annotationStrokes.length+'筆）')).catch(error=>annotationStorageNotice('備份失敗：'+(error.name||error.message),true));
+ },300);
+}
 function annotationStorageNotice(message,failed=false){
  const node=document.getElementById('annotationStorageStatus');
  if(node){node.textContent=message;node.style.color=failed?'#c5222f':'#078529'}
@@ -251,9 +287,11 @@ function persistAnnotations(allowEmpty=false){
   localStorage.setItem(key,serialized);
   if(localStorage.getItem(key)!==serialized)throw new Error('storage verification mismatch');
   annotationStorageNotice('記號已儲存（'+annotationStrokes.length+'筆）');
+  scheduleAnnotationBackup(key,serialized);
  }catch(error){
   console.warn('[annotations] save failed',error);
-  annotationStorageNotice('記號儲存失敗，請勿重新整理',true);
+  annotationStorageNotice('本機儲存失敗（'+(error.name||'未知錯誤')+'），正在備份',true);
+  scheduleAnnotationBackup(key,serialized);
  }
 }
 function restoreAnnotations(){
@@ -264,8 +302,17 @@ function restoreAnnotations(){
   const raw=localStorage.getItem('bingo-annotations-v2:'+annotationDate);
   const saved=JSON.parse(raw||'[]');
   annotationStrokes=Array.isArray(saved)?saved:[];
-  annotationStorageNotice(raw?'已還原記號（'+annotationStrokes.length+'筆）':'此日期尚無已儲存記號');
- }catch(error){console.warn('[annotations] restore failed',error);annotationStrokes=[];annotationStorageNotice('讀取記號失敗，請勿清除網站資料',true)}
+  annotationStorageNotice(raw?'已還原記號（'+annotationStrokes.length+'筆）':'正在檢查備份');
+ }catch(error){console.warn('[annotations] restore failed',error);annotationStrokes=[];annotationStorageNotice('正在嘗試讀取備份')}
+ const requestedDate=annotationDate;
+ readAnnotationDB('bingo-annotations-v2:'+requestedDate).then(raw=>{
+  if(annotationDate!==requestedDate||!raw)return;
+  const saved=JSON.parse(raw);
+  if(Array.isArray(saved)&&saved.length>annotationStrokes.length){
+   annotationStrokes=saved;resizeAnnotation();redrawAnnotation();
+   annotationStorageNotice('已從備份還原記號（'+saved.length+'筆）');
+  }
+ }).catch(error=>console.warn('[annotations] backup restore failed',error));
 }
 function annotationY(p){
  if(!p.issue)return p.y;
