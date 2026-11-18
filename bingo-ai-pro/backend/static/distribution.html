@@ -160,7 +160,7 @@ window.addEventListener('pageshow',connectDrawStream);
 function tickClock(){document.getElementById('liveClock').textContent=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date())}tickClock();setInterval(tickClock,1000);
 // Diagnostic mode: keep the island visible but stop repositioning it on every
 // visualViewport scroll event. This isolates Safari's scroll-linked style updates.
-const distributionBuild='20261029-annotation-input-v9';
+const distributionBuild='20261118-annotation-persistence-v10';
 const island=document.getElementById('dynamicIsland');
 // A fixed element is positioned in the layout viewport on iPad Safari.
 // Translate to the visual viewport so it remains visible while pinch-zoomed.
@@ -240,7 +240,8 @@ let annotationEnabled=false,annotationDrawing=false,annotationCurrent=null,annot
 
 let annotationDate='';
 function persistAnnotations(){
- try{localStorage.setItem('bingo-annotations-v2:'+annotationDate,JSON.stringify(annotationStrokes))}catch(_){}
+ if(!annotationDate)return;
+ try{localStorage.setItem('bingo-annotations-v2:'+annotationDate,JSON.stringify(annotationStrokes))}catch(error){console.warn('[annotations] save failed',error)}
 }
 function restoreAnnotations(){
  if(annotationDate===load.lastDate)return;
@@ -320,12 +321,12 @@ function beginAnnotation(e,p){
  consumeAnnotationEvent(e);
  resizeAnnotation();
  annotationDrawing=true;annotationCurrent=[{...annotationPoint(p),color:annotationPenColor}];
- annotationStrokes.push(annotationCurrent);redrawAnnotation();
+ annotationStrokes.push(annotationCurrent);persistAnnotations();redrawAnnotation();
 }
 function moveAnnotation(e,p){
  if(!annotationDrawing||!annotationCurrent)return;
  consumeAnnotationEvent(e);
- annotationCurrent.push(annotationPoint(p));
+ annotationCurrent.push(annotationPoint(p));persistAnnotations();
  if(!annotationFrame)annotationFrame=requestAnimationFrame(()=>{
   annotationFrame=0;
   if(!annotationCurrent)return;
@@ -369,7 +370,7 @@ document.addEventListener('touchmove',e=>{
  if(annotationPointerId===null&&annotationTouchId!==null)finishAnnotation(e);
 },{capture:true,passive:false}));
 window.addEventListener('blur',resetAnnotationInput);
-window.addEventListener('pageshow',()=>{resetAnnotationInput();resizeAnnotation();scheduleIsland()});
+window.addEventListener('pageshow',()=>{if(annotationDate&&load.lastDate===annotationDate){try{const saved=JSON.parse(localStorage.getItem('bingo-annotations-v2:'+annotationDate)||'[]');if(Array.isArray(saved)&&saved.length>annotationStrokes.length)annotationStrokes=saved}catch(_){}}resetAnnotationInput();resizeAnnotation();redrawAnnotation();scheduleIsland()});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)resetAnnotationInput()});
 window.addEventListener('pagehide',persistAnnotations);
 function refreshAnnotationLayout(){resizeAnnotation();redrawAnnotation();scheduleIsland()}
