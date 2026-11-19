@@ -1,0 +1,25 @@
+name: Top 6 offline research checks
+
+on:
+  pull_request:
+    paths:
+      - 'bingo-ai-pro/backend/research_top6_combinations.py'
+      - 'bingo-ai-pro/backend/test_research_top6_combinations.py'
+      - 'bingo-ai-pro/backend/research_repeat_shadow.py'
+      - 'bingo-ai-pro/backend/services/repeat_number_shadow.py'
+      - '.github/workflows/top6-offline-research.yml'
+  workflow_dispatch:
+
+jobs:
+  isolated-top6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and run isolated tests
+        working-directory: bingo-ai-pro/backend
+        run: |
+          python -m py_compile research_top6_combinations.py test_research_top6_combinations.py
+          python -m unittest -v test_research_top6_combinations
